@@ -1,0 +1,20 @@
+[package]
+name = "encodec-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust process bindings for the wavey-ai EnCodec CLI"
+repository = "https://github.com/wavey-ai/encodec-rs"
+
+[lib]
+name = "encodec_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "encodec-rs"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "1.0"
+
