@@ -1,81 +1,41 @@
 # encodec-rs
 
-Rust bindings for the current `wavey-ai/encodec` binary boundary.
+ONNX-first Rust runtime for the frame encoder and decoder exported from `wavey-ai/encodec`.
 
-This crate is deliberately small and honest: it does not reimplement EnCodec in Rust yet. It wraps the existing `encodec` CLI for the full bitstream path, and it can also run the exported frame-level ONNX bundle directly from Rust.
+The fast path is the `onnx` feature. It loads `encode_frame.onnx` and `decode_frame.onnx` directly from Rust and runs them on CPU or CUDA.
 
-## What it is
+The crate also keeps a small compatibility wrapper around the existing `encodec` CLI for the full `.ecdc` path, because ONNX does not cover the bitstream, LM, or container logic yet.
 
-- Rust library for launching `encodec` against files
-- Rust CLI wrapper with `encode`, `decode`, and `roundtrip`
-- Optional ONNX Runtime loader for the exported frame encoder / decoder bundle
-- Environment-based launcher selection for either:
-  - `encodec` already on `PATH`
-  - `python -m encodec`
-
-## What it is not
-
-- not a native EnCodec implementation
-- not a PyO3 bridge
-- not a rewrite of the model/runtime
-- not a replacement for the `.ecdc` bitstream logic yet
-
-## Environment
-
-- `ENCODEC_BIN=/path/to/encodec`
-- `ENCODEC_PYTHON=/path/to/python`
-
-If neither is set, the crate defaults to `encodec` on `PATH`.
-
-## ONNX frame runtime
-
-Enable the `onnx` feature to load the ONNX frame bundle exported by `wavey-ai/encodec`:
+## ONNX
 
 ```toml
 encodec-rs = { git = "https://github.com/wavey-ai/encodec-rs.git", features = ["onnx"] }
 ```
 
-Expected bundle layout:
-
-- `encode_frame.onnx`
-- `decode_frame.onnx`
-- `bundle.json`
-
-This only covers the neural frame codec boundary. Rust is still expected to own segmentation, overlap-add, and bitstream logic around it.
-
 ```rust
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec};
 
 let mut codec = OnnxFrameCodec::from_dir(
-    "model/encodec_48khz_12kbps_onnx",
+    "model/encodec_48khz_6kbps_onnx",
     ExecutionTarget::Cuda { device_id: 0 },
 )?;
 println!("{:?}", codec.metadata());
 ```
 
-## Library example
+Bundle layout:
+- `encode_frame.onnx`
+- `decode_frame.onnx`
+- `bundle.json`
 
-```rust
-use encodec_rs::{Encodec, EncodecOptions};
+## CLI wrapper
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let encodec = Encodec::from_env();
-    let opts = EncodecOptions {
-        bandwidth: Some(6.0),
-        high_quality: true,
-        language_model: true,
-        force: true,
-        ..Default::default()
-    };
-    encodec.encode_file("input.wav", "output.ecdc", &opts)?;
-    encodec.decode_file("output.ecdc", "decoded.wav", &EncodecOptions::default())?;
-    Ok(())
-}
-```
-
-## CLI example
+For the legacy full-file path, `encodec-rs` can still launch the existing `encodec` binary:
 
 ```bash
 encodec-rs encode input.wav output.ecdc --hq --lm --bandwidth 6 --force
 encodec-rs decode input.ecdc output.wav --force
 ```
+
+Environment:
+- `ENCODEC_BIN=/path/to/encodec`
+- `ENCODEC_PYTHON=/path/to/python`

@@ -3,7 +3,7 @@ name = "encodec-rs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Rust bindings for the wavey-ai EnCodec CLI and ONNX frame bundle"
+description = "Rust ONNX runtime for the wavey-ai EnCodec frame bundle"
 repository = "https://github.com/wavey-ai/encodec-rs"
 
 [lib]
