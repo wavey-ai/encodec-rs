@@ -3,7 +3,7 @@ name = "encodec-rs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Rust process bindings for the wavey-ai EnCodec CLI"
+description = "Rust bindings for the wavey-ai EnCodec CLI and ONNX frame bundle"
 repository = "https://github.com/wavey-ai/encodec-rs"
 
 [lib]
@@ -14,7 +14,15 @@ path = "src/lib.rs"
 name = "encodec-rs"
 path = "src/main.rs"
 
+[features]
+default = []
+onnx = ["dep:anyhow", "dep:ndarray", "dep:ort", "dep:serde", "dep:serde_json"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
-
+anyhow = { version = "1.0.98", optional = true }
+ndarray = { version = "0.17.2", optional = true }
+ort = { git = "https://github.com/pykeio/ort.git", rev = "8724e89ff005ebef4339d7280ff592837404a98d", features = ["tensorrt", "cuda"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }

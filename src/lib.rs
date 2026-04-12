@@ -4,6 +4,9 @@ use std::process::{Command, ExitStatus};
 
 use thiserror::Error;
 
+#[cfg(feature = "onnx")]
+pub mod onnx;
+
 #[derive(Debug, Clone, Default)]
 pub struct EncodecOptions {
     pub bandwidth: Option<f32>,
