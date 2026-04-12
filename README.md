@@ -27,6 +27,10 @@ Bundle layout:
 - `decode_frame.onnx`
 - `bundle.json`
 
+Checked-in canonical bundles:
+- `onnx-bundles/encodec_48khz_6kbps/`
+- `onnx-bundles/encodec_48khz_12kbps/`
+
 ## CLI wrapper
 
 For the legacy full-file path, `encodec-rs` can still launch the existing `encodec` binary:

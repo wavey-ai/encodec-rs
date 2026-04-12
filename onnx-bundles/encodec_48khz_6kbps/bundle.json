@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "model_name": "encodec_48khz",
+  "bandwidth_kbps": 6.0,
+  "sample_rate": 48000,
+  "channels": 2,
+  "segment_samples": 48000,
+  "segment_stride": 47520,
+  "normalize": true,
+  "num_codebooks": 4,
+  "frame_length": 150,
+  "encode_model": "encode_frame.onnx",
+  "decode_model": "decode_frame.onnx",
+  "opset_version": 18
+}
