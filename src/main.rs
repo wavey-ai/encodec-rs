@@ -88,6 +88,8 @@ enum Commands {
         bundle_dir: PathBuf,
         input_wav: PathBuf,
         output_wav: PathBuf,
+        #[arg(long, default_value_t = 16)]
+        batch_size: usize,
         #[arg(long)]
         cuda: bool,
         #[arg(long)]
@@ -219,6 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bundle_dir,
             input_wav,
             output_wav,
+            batch_size,
             cuda,
             tensorrt,
             fp16,
@@ -229,10 +232,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let meta = codec.metadata().clone();
             let (audio, input_frames) = read_wav_f32(&input_wav, meta.channels)?;
             let start_encode = Instant::now();
-            let (codes, scales) = encode_audio_segments(&mut codec, &audio)?;
+            let (codes, scales) = encode_audio_segments(&mut codec, &audio, batch_size.max(1))?;
             let encode_seconds = start_encode.elapsed().as_secs_f64();
             let start_decode = Instant::now();
-            let decoded = decode_audio_segments(&mut codec, &codes, &scales, input_frames)?;
+            let decoded = decode_audio_segments(&mut codec, &codes, &scales, input_frames, batch_size.max(1))?;
             let decode_seconds = start_decode.elapsed().as_secs_f64();
             write_wav_f32(&output_wav, &decoded, meta.sample_rate)?;
             let audio_seconds = input_frames as f64 / meta.sample_rate as f64;
@@ -245,6 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "output_wav": output_wav,
                     "audio_seconds": audio_seconds,
                     "segments": codes.len(),
+                    "batch_size": batch_size.max(1),
                     "encode_seconds": encode_seconds,
                     "encode_rtf": encode_seconds / audio_seconds,
                     "decode_seconds": decode_seconds,
@@ -351,24 +355,36 @@ fn write_wav_f32(path: &PathBuf, audio: &Array3<f32>, sample_rate: usize) -> Res
 fn encode_audio_segments(
     codec: &mut OnnxFrameCodec,
     audio: &Array3<f32>,
+    batch_size: usize,
 ) -> Result<(Vec<Array3<i64>>, Vec<Array2<f32>>), Box<dyn std::error::Error>> {
     let meta = codec.metadata().clone();
     let total_samples = audio.shape()[2];
     let mut codes = Vec::new();
     let mut scales = Vec::new();
-    let mut offset = 0usize;
-    while offset < total_samples {
-        let mut segment = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
-        let copy_len = (total_samples - offset).min(meta.segment_samples);
-        for channel in 0..meta.channels {
-            for t in 0..copy_len {
-                segment[[0, channel, t]] = audio[[0, channel, offset + t]];
+    let segment_starts = segment_starts(total_samples, meta.segment_stride);
+    for chunk in segment_starts.chunks(batch_size) {
+        let mut batch = Array3::<f32>::zeros((chunk.len(), meta.channels, meta.segment_samples));
+        for (batch_index, offset) in chunk.iter().copied().enumerate() {
+            let copy_len = (total_samples - offset).min(meta.segment_samples);
+            for channel in 0..meta.channels {
+                for t in 0..copy_len {
+                    batch[[batch_index, channel, t]] = audio[[0, channel, offset + t]];
+                }
             }
         }
-        let (segment_codes, segment_scale) = codec.encode_frame(&segment)?;
-        codes.push(segment_codes);
-        scales.push(segment_scale);
-        offset += meta.segment_stride;
+        let (batch_codes, batch_scales) = codec.encode_frame(&batch)?;
+        for batch_index in 0..chunk.len() {
+            let mut segment_codes = Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
+            let mut segment_scale = Array2::<f32>::zeros((1, 1));
+            for codebook in 0..meta.num_codebooks {
+                for t in 0..meta.frame_length {
+                    segment_codes[[0, codebook, t]] = batch_codes[[batch_index, codebook, t]];
+                }
+            }
+            segment_scale[[0, 0]] = batch_scales[[batch_index, 0]];
+            codes.push(segment_codes);
+            scales.push(segment_scale);
+        }
     }
     Ok((codes, scales))
 }
@@ -379,11 +395,31 @@ fn decode_audio_segments(
     codes: &[Array3<i64>],
     scales: &[Array2<f32>],
     output_length: usize,
+    batch_size: usize,
 ) -> Result<Array3<f32>, Box<dyn std::error::Error>> {
     let meta = codec.metadata().clone();
     let mut frames = Vec::with_capacity(codes.len());
-    for (segment_codes, segment_scale) in codes.iter().zip(scales.iter()) {
-        frames.push(codec.decode_frame(segment_codes, segment_scale)?);
+    for (code_chunk, scale_chunk) in codes.chunks(batch_size).zip(scales.chunks(batch_size)) {
+        let mut batch_codes = Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, meta.frame_length));
+        let mut batch_scales = Array2::<f32>::zeros((code_chunk.len(), 1));
+        for (batch_index, (segment_codes, segment_scale)) in code_chunk.iter().zip(scale_chunk.iter()).enumerate() {
+            for codebook in 0..meta.num_codebooks {
+                for t in 0..meta.frame_length {
+                    batch_codes[[batch_index, codebook, t]] = segment_codes[[0, codebook, t]];
+                }
+            }
+            batch_scales[[batch_index, 0]] = segment_scale[[0, 0]];
+        }
+        let batch_frames = codec.decode_frame(&batch_codes, &batch_scales)?;
+        for batch_index in 0..code_chunk.len() {
+            let mut frame = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
+            for channel in 0..meta.channels {
+                for t in 0..meta.segment_samples {
+                    frame[[0, channel, t]] = batch_frames[[batch_index, channel, t]];
+                }
+            }
+            frames.push(frame);
+        }
     }
     let reconstructed = linear_overlap_add(&frames, meta.segment_stride);
     let mut trimmed = Array3::<f32>::zeros((1, meta.channels, output_length));
@@ -393,6 +429,17 @@ fn decode_audio_segments(
         }
     }
     Ok(trimmed)
+}
+
+#[cfg(feature = "onnx")]
+fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut offset = 0usize;
+    while offset < total_samples {
+        starts.push(offset);
+        offset += stride;
+    }
+    starts
 }
 
 #[cfg(feature = "onnx")]
