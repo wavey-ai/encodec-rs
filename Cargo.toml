@@ -16,12 +16,13 @@ path = "src/main.rs"
 
 [features]
 default = []
-onnx = ["dep:anyhow", "dep:ndarray", "dep:ort", "dep:serde", "dep:serde_json"]
+onnx = ["dep:anyhow", "dep:hound", "dep:ndarray", "dep:ort", "dep:serde", "dep:serde_json"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
 anyhow = { version = "1.0.98", optional = true }
+hound = { version = "3.5.1", optional = true }
 ndarray = { version = "0.17.2", optional = true }
 ort = { git = "https://github.com/pykeio/ort.git", rev = "8724e89ff005ebef4339d7280ff592837404a98d", features = ["tensorrt", "cuda"], optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
