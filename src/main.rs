@@ -64,6 +64,10 @@ enum Commands {
         bundle_dir: PathBuf,
         #[arg(long)]
         cuda: bool,
+        #[arg(long)]
+        tensorrt: bool,
+        #[arg(long)]
+        fp16: bool,
         #[arg(long, default_value_t = 0)]
         device_id: i32,
     },
@@ -72,6 +76,10 @@ enum Commands {
         bundle_dir: PathBuf,
         #[arg(long)]
         cuda: bool,
+        #[arg(long)]
+        tensorrt: bool,
+        #[arg(long)]
+        fp16: bool,
         #[arg(long, default_value_t = 0)]
         device_id: i32,
     },
@@ -82,6 +90,10 @@ enum Commands {
         output_wav: PathBuf,
         #[arg(long)]
         cuda: bool,
+        #[arg(long)]
+        tensorrt: bool,
+        #[arg(long)]
+        fp16: bool,
         #[arg(long, default_value_t = 0)]
         device_id: i32,
     },
@@ -148,13 +160,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::OnnxInspect {
             bundle_dir,
             cuda,
+            tensorrt,
+            fp16,
             device_id,
         } => {
-            let target = if cuda {
-                ExecutionTarget::Cuda { device_id }
-            } else {
-                ExecutionTarget::Cpu
-            };
+            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
             let codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             println!("{:#?}", codec.metadata());
         }
@@ -162,13 +172,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::OnnxSmoke {
             bundle_dir,
             cuda,
+            tensorrt,
+            fp16,
             device_id,
         } => {
-            let target = if cuda {
-                ExecutionTarget::Cuda { device_id }
-            } else {
-                ExecutionTarget::Cpu
-            };
+            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
             let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             let meta = codec.metadata().clone();
             let mut audio = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
@@ -212,13 +220,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_wav,
             output_wav,
             cuda,
+            tensorrt,
+            fp16,
             device_id,
         } => {
-            let target = if cuda {
-                ExecutionTarget::Cuda { device_id }
-            } else {
-                ExecutionTarget::Cpu
-            };
+            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
             let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             let meta = codec.metadata().clone();
             let (audio, input_frames) = read_wav_f32(&input_wav, meta.channels)?;
@@ -249,6 +255,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "onnx")]
+fn execution_target(
+    bundle_dir: &PathBuf,
+    cuda: bool,
+    tensorrt: bool,
+    fp16: bool,
+    device_id: i32,
+) -> Result<ExecutionTarget, Box<dyn std::error::Error>> {
+    if cuda && tensorrt {
+        return Err("choose only one of --cuda or --tensorrt".into());
+    }
+    if tensorrt {
+        let cache_root = bundle_dir.join(".trt-cache");
+        return Ok(ExecutionTarget::TensorRt {
+            device_id,
+            fp16,
+            engine_cache_path: Some(cache_root.join("engines")),
+            timing_cache_path: Some(cache_root.join("timing.cache")),
+        });
+    }
+    if cuda {
+        return Ok(ExecutionTarget::Cuda { device_id });
+    }
+    if fp16 {
+        return Err("--fp16 requires --tensorrt".into());
+    }
+    Ok(ExecutionTarget::Cpu)
 }
 
 #[cfg(feature = "onnx")]

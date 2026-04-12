@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use ndarray::{Array2, Array3, Ix2, Ix3};
 use ort::execution_providers::{
     CPUExecutionProvider, CUDAExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
+    TensorRT,
 };
 use ort::logging::LogLevel;
 use ort::session::builder::GraphOptimizationLevel;
@@ -16,14 +17,14 @@ fn ort_error<E: std::fmt::Display>(error: E) -> anyhow::Error {
     anyhow::anyhow!(error.to_string())
 }
 
-fn session_from_provider(path: &Path, provider: ExecutionProviderDispatch) -> Result<Session> {
+fn session_from_providers(path: &Path, providers: impl AsRef<[ExecutionProviderDispatch]>) -> Result<Session> {
     Session::builder()
         .map_err(ort_error)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(ort_error)?
         .with_log_level(LogLevel::Warning)
         .map_err(ort_error)?
-        .with_execution_providers([provider])
+        .with_execution_providers(providers)
         .map_err(ort_error)?
         .with_intra_threads(1)
         .map_err(ort_error)?
@@ -31,10 +32,16 @@ fn session_from_provider(path: &Path, provider: ExecutionProviderDispatch) -> Re
         .map_err(ort_error)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionTarget {
     Cpu,
     Cuda { device_id: i32 },
+    TensorRt {
+        device_id: i32,
+        fp16: bool,
+        engine_cache_path: Option<PathBuf>,
+        timing_cache_path: Option<PathBuf>,
+    },
 }
 
 impl Default for ExecutionTarget {
@@ -94,8 +101,8 @@ impl OnnxFrameCodec {
         let cpu = CPUExecutionProvider::default().build();
         let (encoder, decoder) = match target {
             ExecutionTarget::Cpu => (
-                session_from_provider(&encoder_path, cpu.clone())?,
-                session_from_provider(&decoder_path, cpu)?,
+                session_from_providers(&encoder_path, [cpu.clone()])?,
+                session_from_providers(&decoder_path, [cpu])?,
             ),
             ExecutionTarget::Cuda { device_id } => {
                 if !CUDAExecutionProvider::default()
@@ -107,14 +114,54 @@ impl OnnxFrameCodec {
                 let cuda = CUDAExecutionProvider::default()
                     .with_device_id(device_id)
                     .build();
-                let encoder = match session_from_provider(&encoder_path, cuda.clone()) {
+                let encoder = match session_from_providers(&encoder_path, [cuda.clone()]) {
                     Ok(session) => session,
-                    Err(_) => session_from_provider(&encoder_path, cpu.clone())?,
+                    Err(_) => session_from_providers(&encoder_path, [cpu.clone()])?,
                 };
-                let decoder = match session_from_provider(&decoder_path, cuda) {
+                let decoder = match session_from_providers(&decoder_path, [cuda]) {
                     Ok(session) => session,
-                    Err(_) => session_from_provider(&decoder_path, cpu)?,
+                    Err(_) => session_from_providers(&decoder_path, [cpu])?,
                 };
+                (encoder, decoder)
+            }
+            ExecutionTarget::TensorRt {
+                device_id,
+                fp16,
+                engine_cache_path,
+                timing_cache_path,
+            } => {
+                let mut tensorrt = TensorRT::default()
+                    .with_device_id(device_id)
+                    .with_engine_cache(true)
+                    .with_force_sequential_engine_build(true)
+                    .with_builder_optimization_level(5)
+                    .with_timing_cache(true)
+                    .with_fp16(fp16);
+                if let Some(path) = &engine_cache_path {
+                    fs::create_dir_all(path)
+                        .with_context(|| format!("failed to create TensorRT engine cache dir {}", path.display()))?;
+                    tensorrt = tensorrt.with_engine_cache_path(path.display().to_string());
+                }
+                if let Some(path) = &timing_cache_path {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create TensorRT timing cache dir {}", parent.display())
+                        })?;
+                    }
+                    tensorrt = tensorrt.with_timing_cache_path(path.display().to_string());
+                }
+
+                let cuda = CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build();
+                let encoder = session_from_providers(
+                    &encoder_path,
+                    [tensorrt.clone().build(), cuda.clone(), cpu.clone()],
+                )?;
+                let decoder = session_from_providers(
+                    &decoder_path,
+                    [tensorrt.build(), cuda, cpu],
+                )?;
                 (encoder, decoder)
             }
         };
