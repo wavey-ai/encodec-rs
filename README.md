@@ -43,3 +43,21 @@ encodec-rs decode input.ecdc output.wav --force
 Environment:
 - `ENCODEC_BIN=/path/to/encodec`
 - `ENCODEC_PYTHON=/path/to/python`
+
+## Benchmark Harness
+
+Use `scripts/benchmark_variants.py` to compare the current Python fork path against the ONNX frame path on the same machine:
+
+```bash
+python3 scripts/benchmark_variants.py \
+  --input /path/to/input.wav \
+  --fork-repo /path/to/encodec \
+  --bundle-dir onnx-bundles/encodec_48khz_6kbps \
+  --onnx-target cuda \
+  --python-device cuda \
+  --python-decode-device cuda \
+  --lm \
+  --runs 3
+```
+
+The script emits one JSON document containing per-run results plus best/median/worst rollups for each variant.

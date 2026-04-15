@@ -2,12 +2,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use ndarray::{Array2, Array3, Ix2, Ix3};
+use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
 use ort::execution_providers::{
     CPUExecutionProvider, CUDAExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
     TensorRT,
 };
 use ort::logging::LogLevel;
+use ort::inputs;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
@@ -62,9 +63,62 @@ pub struct OnnxFrameBundleMetadata {
     pub normalize: bool,
     pub num_codebooks: usize,
     pub frame_length: usize,
+    #[serde(default)]
+    pub bits_per_codebook: Option<u8>,
+    #[serde(default)]
+    pub codebook_cardinality: Option<usize>,
     pub encode_model: String,
     pub decode_model: String,
+    #[serde(default)]
+    pub lm_model: Option<String>,
+    #[serde(default)]
+    pub lm_dim: Option<usize>,
+    #[serde(default)]
+    pub lm_num_layers: Option<usize>,
+    #[serde(default)]
+    pub lm_past_context: Option<usize>,
+    #[serde(default)]
+    pub lm_logit_step: Option<f32>,
+    #[serde(default)]
+    pub lm_cardinality: Option<usize>,
+    #[serde(default)]
+    pub lm_dtype: Option<String>,
     pub opset_version: usize,
+}
+
+impl OnnxFrameBundleMetadata {
+    pub fn bits_per_codebook(&self) -> u8 {
+        if let Some(bits) = self.bits_per_codebook {
+            return bits;
+        }
+        let cardinality = self.codebook_cardinality.or(self.lm_cardinality).unwrap_or(1024);
+        cardinality.ilog2() as u8
+    }
+
+    pub fn lm_logit_step(&self) -> f64 {
+        self.lm_logit_step.unwrap_or(1.0 / 64.0) as f64
+    }
+
+    pub fn lm_num_layers(&self) -> Result<usize> {
+        self.lm_num_layers
+            .ok_or_else(|| anyhow::anyhow!("bundle metadata is missing lm_num_layers"))
+    }
+
+    pub fn lm_dim(&self) -> Result<usize> {
+        self.lm_dim
+            .ok_or_else(|| anyhow::anyhow!("bundle metadata is missing lm_dim"))
+    }
+
+    pub fn lm_past_context(&self) -> Result<usize> {
+        self.lm_past_context
+            .ok_or_else(|| anyhow::anyhow!("bundle metadata is missing lm_past_context"))
+    }
+
+    pub fn lm_cardinality(&self) -> usize {
+        self.lm_cardinality
+            .or(self.codebook_cardinality)
+            .unwrap_or(1024)
+    }
 }
 
 pub struct OnnxFrameCodec {
@@ -249,5 +303,131 @@ impl OnnxFrameCodec {
             .to_owned()
             .into_dimensionality::<Ix3>()
             .map_err(ort_error)
+    }
+}
+
+pub struct OnnxLmCodec {
+    bundle_dir: PathBuf,
+    metadata: OnnxFrameBundleMetadata,
+    session: Session,
+}
+
+impl OnnxLmCodec {
+    pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
+        let bundle_dir = dir.as_ref().to_path_buf();
+        let metadata_path = bundle_dir.join("bundle.json");
+        let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
+            &fs::read_to_string(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+
+        if metadata.schema_version != 1 {
+            bail!("unsupported bundle schema_version {}", metadata.schema_version);
+        }
+        let lm_model = metadata
+            .lm_model
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("bundle does not include an LM ONNX model"))?;
+        let lm_path = bundle_dir.join(lm_model);
+        if !lm_path.exists() {
+            bail!("bundle is missing LM model file {}", lm_path.display());
+        }
+
+        let cpu = CPUExecutionProvider::default().build();
+        let session = session_from_providers(&lm_path, [cpu])?;
+        metadata.lm_dim()?;
+        metadata.lm_num_layers()?;
+        metadata.lm_past_context()?;
+
+        Ok(Self {
+            bundle_dir,
+            metadata,
+            session,
+        })
+    }
+
+    pub fn bundle_dir(&self) -> &Path {
+        &self.bundle_dir
+    }
+
+    pub fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        &self.metadata
+    }
+
+    pub fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>> {
+        let dim = self.metadata.lm_dim()?;
+        let layers = self.metadata.lm_num_layers()?;
+        Ok((0..layers)
+            // The reference Python path starts teacher-forced LM evaluation with
+            // `states=None`, which becomes a single zero timestep per layer.
+            // Feeding a full `past_context` block of zeros changes attention and
+            // destroys compression efficiency.
+            .map(|_| Array3::<f32>::zeros((batch, 1, dim)))
+            .collect())
+    }
+
+    pub fn forward_logits(
+        &mut self,
+        indices: &Array3<i64>,
+        offset: i64,
+        states: &[Array3<f32>],
+    ) -> Result<(Array4<f32>, i64, Vec<Array3<f32>>)> {
+        let shape = indices.shape();
+        if shape.len() != 3 {
+            bail!("LM indices must have shape [batch, codebooks, steps]");
+        }
+        if shape[1] > self.metadata.num_codebooks {
+            bail!(
+                "LM indices use {} codebooks, but bundle only supports {}",
+                shape[1],
+                self.metadata.num_codebooks
+            );
+        }
+        if states.len() != self.metadata.lm_num_layers()? {
+            bail!(
+                "LM state count {} does not match bundle layer count {}",
+                states.len(),
+                self.metadata.lm_num_layers()?
+            );
+        }
+
+        let offset_tensor = Array0::from_elem((), offset);
+        let mut inputs = inputs![
+            "indices" => OrtTensor::from_array(indices.to_owned()).map_err(ort_error)?,
+            "offset" => OrtTensor::from_array(offset_tensor).map_err(ort_error)?,
+        ];
+        for (index, state) in states.iter().enumerate() {
+            inputs.push((
+                format!("state_{index}").into(),
+                OrtTensor::from_array(state.to_owned()).map_err(ort_error)?.into(),
+            ));
+        }
+
+        let outputs = self.session.run(inputs).map_err(ort_error)?;
+        let logits = outputs["logits"]
+            .try_extract_array::<f32>()
+            .map_err(ort_error)?
+            .to_owned()
+            .into_dimensionality::<Ix4>()
+            .map_err(ort_error)?;
+        let next_offset = outputs["offset_out"]
+            .try_extract_array::<i64>()
+            .map_err(ort_error)?
+            .to_owned()
+            .into_dimensionality::<Ix0>()
+            .map_err(ort_error)?
+            .into_scalar();
+        let next_states = (0..states.len())
+            .map(|index| {
+                outputs[format!("next_state_{index}")]
+                    .try_extract_array::<f32>()
+                    .map_err(ort_error)?
+                    .to_owned()
+                    .into_dimensionality::<Ix3>()
+                    .map_err(ort_error)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok((logits, next_offset, next_states))
     }
 }
