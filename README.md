@@ -31,6 +31,9 @@ Example bundle directories in this repo:
 - `onnx-bundles/encodec_48khz_6kbps`
 - `onnx-bundles/encodec_48khz_12kbps`
 
+Both checked-in example bundles include `lm_logits.onnx`, so LM-assisted `.ecdc`
+compression works without any extra export step.
+
 ## CLI
 
 Inspect a bundle:
