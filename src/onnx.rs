@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
 use ort::execution_providers::{
     CPUExecutionProvider, CUDAExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
     TensorRT,
 };
-use ort::logging::LogLevel;
 use ort::inputs;
+use ort::logging::LogLevel;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
@@ -18,7 +18,10 @@ fn ort_error<E: std::fmt::Display>(error: E) -> anyhow::Error {
     anyhow::anyhow!(error.to_string())
 }
 
-fn session_from_providers(path: &Path, providers: impl AsRef<[ExecutionProviderDispatch]>) -> Result<Session> {
+fn session_from_providers(
+    path: &Path,
+    providers: impl AsRef<[ExecutionProviderDispatch]>,
+) -> Result<Session> {
     Session::builder()
         .map_err(ort_error)?
         .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -36,7 +39,9 @@ fn session_from_providers(path: &Path, providers: impl AsRef<[ExecutionProviderD
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutionTarget {
     Cpu,
-    Cuda { device_id: i32 },
+    Cuda {
+        device_id: i32,
+    },
     TensorRt {
         device_id: i32,
         fp16: bool,
@@ -91,7 +96,10 @@ impl OnnxFrameBundleMetadata {
         if let Some(bits) = self.bits_per_codebook {
             return bits;
         }
-        let cardinality = self.codebook_cardinality.or(self.lm_cardinality).unwrap_or(1024);
+        let cardinality = self
+            .codebook_cardinality
+            .or(self.lm_cardinality)
+            .unwrap_or(1024);
         cardinality.ilog2() as u8
     }
 
@@ -139,7 +147,10 @@ impl OnnxFrameCodec {
         .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
 
         if metadata.schema_version != 1 {
-            bail!("unsupported bundle schema_version {}", metadata.schema_version);
+            bail!(
+                "unsupported bundle schema_version {}",
+                metadata.schema_version
+            );
         }
 
         let encoder_path = bundle_dir.join(&metadata.encode_model);
@@ -168,11 +179,12 @@ impl OnnxFrameCodec {
                 let cuda = CUDAExecutionProvider::default()
                     .with_device_id(device_id)
                     .build();
-                let encoder = match session_from_providers(&encoder_path, [cuda.clone()]) {
-                    Ok(session) => session,
-                    Err(_) => session_from_providers(&encoder_path, [cpu.clone()])?,
-                };
-                let decoder = match session_from_providers(&decoder_path, [cuda]) {
+                let encoder =
+                    match session_from_providers(&encoder_path, [cuda.clone(), cpu.clone()]) {
+                        Ok(session) => session,
+                        Err(_) => session_from_providers(&encoder_path, [cpu.clone()])?,
+                    };
+                let decoder = match session_from_providers(&decoder_path, [cuda, cpu.clone()]) {
                     Ok(session) => session,
                     Err(_) => session_from_providers(&decoder_path, [cpu])?,
                 };
@@ -192,14 +204,21 @@ impl OnnxFrameCodec {
                     .with_timing_cache(true)
                     .with_fp16(fp16);
                 if let Some(path) = &engine_cache_path {
-                    fs::create_dir_all(path)
-                        .with_context(|| format!("failed to create TensorRT engine cache dir {}", path.display()))?;
+                    fs::create_dir_all(path).with_context(|| {
+                        format!(
+                            "failed to create TensorRT engine cache dir {}",
+                            path.display()
+                        )
+                    })?;
                     tensorrt = tensorrt.with_engine_cache_path(path.display().to_string());
                 }
                 if let Some(path) = &timing_cache_path {
                     if let Some(parent) = path.parent() {
                         fs::create_dir_all(parent).with_context(|| {
-                            format!("failed to create TensorRT timing cache dir {}", parent.display())
+                            format!(
+                                "failed to create TensorRT timing cache dir {}",
+                                parent.display()
+                            )
                         })?;
                     }
                     tensorrt = tensorrt.with_timing_cache_path(path.display().to_string());
@@ -212,10 +231,7 @@ impl OnnxFrameCodec {
                     &encoder_path,
                     [tensorrt.clone().build(), cuda.clone(), cpu.clone()],
                 )?;
-                let decoder = session_from_providers(
-                    &decoder_path,
-                    [tensorrt.build(), cuda, cpu],
-                )?;
+                let decoder = session_from_providers(&decoder_path, [tensorrt.build(), cuda, cpu])?;
                 (encoder, decoder)
             }
         };
@@ -270,12 +286,18 @@ impl OnnxFrameCodec {
         Ok((codes, scale))
     }
 
-    pub fn decode_frame(&mut self, codes: &Array3<i64>, scale: &Array2<f32>) -> Result<Array3<f32>> {
+    pub fn decode_frame(
+        &mut self,
+        codes: &Array3<i64>,
+        scale: &Array2<f32>,
+    ) -> Result<Array3<f32>> {
         let code_shape = codes.shape();
         if code_shape.len() != 3 {
             bail!("codes must have shape [batch, num_codebooks, frame_length]");
         }
-        if code_shape[1] != self.metadata.num_codebooks || code_shape[2] != self.metadata.frame_length {
+        if code_shape[1] != self.metadata.num_codebooks
+            || code_shape[2] != self.metadata.frame_length
+        {
             bail!(
                 "codes shape mismatch, expected [batch, {}, {}], got {:?}",
                 self.metadata.num_codebooks,
@@ -313,7 +335,7 @@ pub struct OnnxLmCodec {
 }
 
 impl OnnxLmCodec {
-    pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
+    pub fn from_dir(dir: impl AsRef<Path>, target: ExecutionTarget) -> Result<Self> {
         let bundle_dir = dir.as_ref().to_path_buf();
         let metadata_path = bundle_dir.join("bundle.json");
         let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
@@ -323,7 +345,10 @@ impl OnnxLmCodec {
         .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
 
         if metadata.schema_version != 1 {
-            bail!("unsupported bundle schema_version {}", metadata.schema_version);
+            bail!(
+                "unsupported bundle schema_version {}",
+                metadata.schema_version
+            );
         }
         let lm_model = metadata
             .lm_model
@@ -335,7 +360,63 @@ impl OnnxLmCodec {
         }
 
         let cpu = CPUExecutionProvider::default().build();
-        let session = session_from_providers(&lm_path, [cpu])?;
+        let session = match target {
+            ExecutionTarget::Cpu => session_from_providers(&lm_path, [cpu])?,
+            ExecutionTarget::Cuda { device_id } => {
+                if !CUDAExecutionProvider::default()
+                    .is_available()
+                    .unwrap_or(false)
+                {
+                    bail!("CUDA Execution Provider is not available");
+                }
+                let cuda = CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build();
+                match session_from_providers(&lm_path, [cuda, cpu.clone()]) {
+                    Ok(session) => session,
+                    Err(_) => session_from_providers(&lm_path, [cpu])?,
+                }
+            }
+            ExecutionTarget::TensorRt {
+                device_id,
+                fp16,
+                engine_cache_path,
+                timing_cache_path,
+            } => {
+                let mut tensorrt = TensorRT::default()
+                    .with_device_id(device_id)
+                    .with_engine_cache(true)
+                    .with_force_sequential_engine_build(true)
+                    .with_builder_optimization_level(5)
+                    .with_timing_cache(true)
+                    .with_fp16(fp16);
+                if let Some(path) = &engine_cache_path {
+                    fs::create_dir_all(path).with_context(|| {
+                        format!(
+                            "failed to create TensorRT engine cache dir {}",
+                            path.display()
+                        )
+                    })?;
+                    tensorrt = tensorrt.with_engine_cache_path(path.display().to_string());
+                }
+                if let Some(path) = &timing_cache_path {
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent).with_context(|| {
+                            format!(
+                                "failed to create TensorRT timing cache dir {}",
+                                parent.display()
+                            )
+                        })?;
+                    }
+                    tensorrt = tensorrt.with_timing_cache_path(path.display().to_string());
+                }
+
+                let cuda = CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build();
+                session_from_providers(&lm_path, [tensorrt.build(), cuda, cpu])?
+            }
+        };
         metadata.lm_dim()?;
         metadata.lm_num_layers()?;
         metadata.lm_past_context()?;
@@ -400,7 +481,9 @@ impl OnnxLmCodec {
         for (index, state) in states.iter().enumerate() {
             inputs.push((
                 format!("state_{index}").into(),
-                OrtTensor::from_array(state.to_owned()).map_err(ort_error)?.into(),
+                OrtTensor::from_array(state.to_owned())
+                    .map_err(ort_error)?
+                    .into(),
             ));
         }
 

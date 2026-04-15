@@ -1,63 +1,124 @@
 # encodec-rs
 
-ONNX-first Rust runtime for the frame encoder and decoder exported from `wavey-ai/encodec`.
+`encodec-rs` is a Rust runtime for EnCodec-compatible ONNX bundles.
 
-The fast path is the `onnx` feature. It loads `encode_frame.onnx` and `decode_frame.onnx` directly from Rust and runs them on CPU or CUDA.
+It performs:
+- frame encode in Rust through ONNX Runtime
+- frame decode in Rust through ONNX Runtime
+- LM-assisted `.ecdc` packing in Rust
+- `.ecdc` decode back to PCM in Rust
 
-The crate also keeps a small compatibility wrapper around the existing `encodec` CLI for the full `.ecdc` path, because ONNX does not cover the bitstream, LM, or container logic yet.
+There is no Python bridge and no external `encodec` process in the runtime path.
 
-## ONNX
+## Scope
+
+The current implementation targets the `48 kHz` stereo EnCodec model family exported as ONNX bundles.
+
+The runtime supports:
+- CPU
+- CUDA
+- TensorRT
+
+## Bundle Layout
+
+Each bundle directory must contain:
+- `bundle.json`
+- `encode_frame.onnx`
+- `decode_frame.onnx`
+- the LM ONNX file referenced by `bundle.json`
+
+Example bundle directories in this repo:
+- `onnx-bundles/encodec_48khz_6kbps`
+- `onnx-bundles/encodec_48khz_12kbps`
+
+## CLI
+
+Inspect a bundle:
+
+```bash
+encodec-rs onnx-inspect onnx-bundles/encodec_48khz_6kbps
+```
+
+Encode WAV to `.ecdc`:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc
+```
+
+Decode `.ecdc` to WAV:
+
+```bash
+encodec-rs onnx-decode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.ecdc \
+  output.wav
+```
+
+Roundtrip a WAV directly through the frame model:
+
+```bash
+encodec-rs onnx-roundtrip-wav \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.wav
+```
+
+Run on CUDA:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc \
+  --cuda
+```
+
+Run on TensorRT:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc \
+  --tensorrt \
+  --fp16
+```
+
+Disable LM compression:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc \
+  --no-lm
+```
+
+## Library
+
+Add the crate with the ONNX feature:
 
 ```toml
 encodec-rs = { git = "https://github.com/wavey-ai/encodec-rs.git", features = ["onnx"] }
 ```
 
+Load a frame codec:
+
 ```rust
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec};
 
 let mut codec = OnnxFrameCodec::from_dir(
-    "model/encodec_48khz_6kbps_onnx",
-    ExecutionTarget::Cuda { device_id: 0 },
+    "onnx-bundles/encodec_48khz_6kbps",
+    ExecutionTarget::Cpu,
 )?;
 println!("{:?}", codec.metadata());
 ```
 
-Bundle layout:
-- `encode_frame.onnx`
-- `decode_frame.onnx`
-- `bundle.json`
+## Notes
 
-Checked-in canonical bundles:
-- `onnx-bundles/encodec_48khz_6kbps/`
-- `onnx-bundles/encodec_48khz_12kbps/`
-
-## CLI wrapper
-
-For the legacy full-file path, `encodec-rs` can still launch the existing `encodec` binary:
-
-```bash
-encodec-rs encode input.wav output.ecdc --hq --lm --bandwidth 6 --force
-encodec-rs decode input.ecdc output.wav --force
-```
-
-Environment:
-- `ENCODEC_BIN=/path/to/encodec`
-- `ENCODEC_PYTHON=/path/to/python`
-
-## Benchmark Harness
-
-Use `scripts/benchmark_variants.py` to compare the current Python fork path against the ONNX frame path on the same machine:
-
-```bash
-python3 scripts/benchmark_variants.py \
-  --input /path/to/input.wav \
-  --fork-repo /path/to/encodec \
-  --bundle-dir onnx-bundles/encodec_48khz_6kbps \
-  --onnx-target cuda \
-  --python-device cuda \
-  --python-decode-device cuda \
-  --lm \
-  --runs 3
-```
-
-The script emits one JSON document containing per-run results plus best/median/worst rollups for each variant.
+- The CLI currently expects WAV input for encode.
+- Input resampling is not done inside the CLI. Use `48 kHz` stereo WAV for the `48 kHz` model.
+- `.ecdc` metadata preserves original source sample rate, channel count, and frame count when provided through the CLI path.

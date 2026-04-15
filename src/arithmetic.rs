@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 const EPS_EDGE: f64 = 9.094_947_017_729_282e-13;
 const EPS_PERTURB: f64 = 8.673_617_379_884_035e-19;

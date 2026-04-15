@@ -1,13 +1,56 @@
 use std::io::{Read, Write};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use crc32fast::Hasher;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 const ECDC_MAGIC: &[u8; 4] = b"ECDC";
 const ECDC_VERSION: u8 = 0;
 const CHUNK_HEADER_SIZE: usize = 8;
+
+pub fn write_tagged_header(
+    writer: &mut impl Write,
+    magic: &[u8; 4],
+    version: u8,
+    metadata: &impl Serialize,
+) -> Result<()> {
+    let metadata_json =
+        serde_json::to_vec(metadata).context("failed to serialize header metadata")?;
+    writer
+        .write_all(magic)
+        .context("failed to write file magic")?;
+    writer
+        .write_all(&[version])
+        .context("failed to write file version")?;
+    writer
+        .write_all(&(metadata_json.len() as u32).to_be_bytes())
+        .context("failed to write metadata size")?;
+    writer
+        .write_all(&metadata_json)
+        .context("failed to write metadata body")?;
+    writer.flush().context("failed to flush file header")?;
+    Ok(())
+}
+
+pub fn read_tagged_header<T: DeserializeOwned>(
+    reader: &mut impl Read,
+    magic: &[u8; 4],
+    version: u8,
+) -> Result<T> {
+    let header = read_exactly(reader, 9)?;
+    let actual_magic: [u8; 4] = header[0..4].try_into().expect("slice length");
+    if &actual_magic != magic {
+        bail!("file has unexpected magic");
+    }
+    let actual_version = header[4];
+    if actual_version != version {
+        bail!("unsupported file version {actual_version}");
+    }
+    let meta_len = u32::from_be_bytes(header[5..9].try_into().expect("slice length")) as usize;
+    let meta_bytes = read_exactly(reader, meta_len)?;
+    serde_json::from_slice(&meta_bytes).context("failed to parse metadata JSON")
+}
 
 pub fn read_exactly(reader: &mut impl Read, size: usize) -> Result<Vec<u8>> {
     let mut remaining = size;
@@ -27,36 +70,11 @@ pub fn read_exactly(reader: &mut impl Read, size: usize) -> Result<Vec<u8>> {
 }
 
 pub fn write_ecdc_header(writer: &mut impl Write, metadata: &impl Serialize) -> Result<()> {
-    let metadata_json = serde_json::to_vec(metadata).context("failed to serialize ECDC metadata")?;
-    writer
-        .write_all(ECDC_MAGIC)
-        .context("failed to write ECDC magic")?;
-    writer
-        .write_all(&[ECDC_VERSION])
-        .context("failed to write ECDC version")?;
-    writer
-        .write_all(&(metadata_json.len() as u32).to_be_bytes())
-        .context("failed to write ECDC metadata size")?;
-    writer
-        .write_all(&metadata_json)
-        .context("failed to write ECDC metadata body")?;
-    writer.flush().context("failed to flush ECDC header")?;
-    Ok(())
+    write_tagged_header(writer, ECDC_MAGIC, ECDC_VERSION, metadata)
 }
 
 pub fn read_ecdc_header<T: DeserializeOwned>(reader: &mut impl Read) -> Result<T> {
-    let header = read_exactly(reader, 9)?;
-    let magic: [u8; 4] = header[0..4].try_into().expect("slice length");
-    if &magic != ECDC_MAGIC {
-        bail!("file is not in ECDC format");
-    }
-    let version = header[4];
-    if version != ECDC_VERSION {
-        bail!("unsupported ECDC version {version}");
-    }
-    let meta_len = u32::from_be_bytes(header[5..9].try_into().expect("slice length")) as usize;
-    let meta_bytes = read_exactly(reader, meta_len)?;
-    serde_json::from_slice(&meta_bytes).context("failed to parse ECDC metadata JSON")
+    read_tagged_header(reader, ECDC_MAGIC, ECDC_VERSION)
 }
 
 pub fn write_chunk(writer: &mut impl Write, payload: &[u8]) -> Result<()> {
@@ -84,9 +102,7 @@ pub fn read_chunk_payload(reader: &mut impl Read) -> Result<Vec<u8>> {
     hasher.update(&payload);
     let actual_crc = hasher.finalize();
     if actual_crc != expected_crc {
-        bail!(
-            "chunk CRC mismatch: expected {expected_crc:#010x}, got {actual_crc:#010x}"
-        );
+        bail!("chunk CRC mismatch: expected {expected_crc:#010x}, got {actual_crc:#010x}");
     }
     Ok(payload)
 }
@@ -209,7 +225,9 @@ mod tests {
         }
         let packed = packer.finish();
         let mut unpacker = BitUnpacker::new(10, packed);
-        let rebuilt: Vec<u16> = std::iter::from_fn(|| unpacker.pull()).take(values.len()).collect();
+        let rebuilt: Vec<u16> = std::iter::from_fn(|| unpacker.pull())
+            .take(values.len())
+            .collect();
         assert_eq!(rebuilt, values);
     }
 }

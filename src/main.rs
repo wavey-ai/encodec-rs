@@ -1,11 +1,14 @@
 use std::path::PathBuf;
 #[cfg(feature = "onnx")]
 use std::time::Instant;
+#[cfg(feature = "onnx")]
+use std::fs;
 
 use clap::{Parser, Subcommand};
-use encodec_rs::{Encodec, EncodecOptions};
 #[cfg(feature = "onnx")]
-use encodec_rs::ecdc::{SourceAudioMetadata, decode_ecdc, encode_audio_to_ecdc};
+use encodec_rs::ecdc::{
+    decode_ecdc, encode_audio_to_ecdc, DecodedEcdcAudio, SourceAudioMetadata as EcdcSourceAudioMetadata,
+};
 #[cfg(feature = "onnx")]
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
 #[cfg(feature = "onnx")]
@@ -17,7 +20,7 @@ use serde_json::json;
 
 #[derive(Debug, Parser)]
 #[command(name = "encodec-rs")]
-#[command(about = "Rust CLI wrapper around the wavey-ai EnCodec binary boundary and ONNX frame bundle")]
+#[command(about = "Rust ONNX EnCodec runtime with native ECDC encode/decode")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -25,42 +28,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Encode {
-        input: PathBuf,
-        output: PathBuf,
-        #[arg(long)]
-        bandwidth: Option<f32>,
-        #[arg(long = "hq")]
-        high_quality: bool,
-        #[arg(long = "lm")]
-        language_model: bool,
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        rescale: bool,
-    },
-    Decode {
-        input: PathBuf,
-        output: PathBuf,
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        rescale: bool,
-    },
-    Roundtrip {
-        input: PathBuf,
-        output: PathBuf,
-        #[arg(long)]
-        bandwidth: Option<f32>,
-        #[arg(long = "hq")]
-        high_quality: bool,
-        #[arg(long = "lm")]
-        language_model: bool,
-        #[arg(long)]
-        force: bool,
-        #[arg(long)]
-        rescale: bool,
-    },
+    #[cfg(not(feature = "onnx"))]
+    Unavailable,
     #[cfg(feature = "onnx")]
     OnnxInspect {
         bundle_dir: PathBuf,
@@ -102,10 +71,14 @@ enum Commands {
         device_id: i32,
     },
     #[cfg(feature = "onnx")]
-    OnnxEncodeEcdc {
+    OnnxEncode {
         bundle_dir: PathBuf,
         input_wav: PathBuf,
         output_ecdc: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        batch_size: usize,
+        #[arg(long)]
+        no_lm: bool,
         #[arg(long)]
         cuda: bool,
         #[arg(long)]
@@ -116,7 +89,7 @@ enum Commands {
         device_id: i32,
     },
     #[cfg(feature = "onnx")]
-    OnnxDecodeEcdc {
+    OnnxDecode {
         bundle_dir: PathBuf,
         input_ecdc: PathBuf,
         output_wav: PathBuf,
@@ -133,75 +106,27 @@ enum Commands {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let encodec = Encodec::from_env();
 
     match cli.command {
-        Commands::Encode {
-            input,
-            output,
-            bandwidth,
-            high_quality,
-            language_model,
-            force,
-            rescale,
-        } => encodec.encode_file(
-            input,
-            output,
-            &EncodecOptions {
-                bandwidth,
-                high_quality,
-                language_model,
-                force,
-                rescale,
-            },
-        )?,
-        Commands::Decode {
-            input,
-            output,
-            force,
-            rescale,
-        } => encodec.decode_file(
-            input,
-            output,
-            &EncodecOptions {
-                force,
-                rescale,
-                ..Default::default()
-            },
-        )?,
-        Commands::Roundtrip {
-            input,
-            output,
-            bandwidth,
-            high_quality,
-            language_model,
-            force,
-            rescale,
-        } => encodec.roundtrip_to_wav(
-            input,
-            output,
-            &EncodecOptions {
-                bandwidth,
-                high_quality,
-                language_model,
-                force,
-                rescale,
-            },
-        )?,
+        #[cfg(not(feature = "onnx"))]
+        Commands::Unavailable => {
+            return Err("encodec-rs CLI requires the `onnx` feature".into());
+        }
         #[cfg(feature = "onnx")]
-        Commands::OnnxEncodeEcdc {
+        Commands::OnnxEncode {
             bundle_dir,
             input_wav,
             output_ecdc,
+            batch_size,
+            no_lm,
             cuda,
             tensorrt,
             fp16,
             device_id,
         } => {
             let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
-            let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
+            let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
             let meta = codec.metadata().clone();
-            let mut lm_codec = load_optional_lm_codec(codec.bundle_dir(), meta.lm_model.is_some())?;
             let (audio, input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
             if input_sample_rate as usize != meta.sample_rate {
                 return Err(format!(
@@ -211,36 +136,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
+            let mut lm_codec = if no_lm {
+                None
+            } else {
+                Some(OnnxLmCodec::from_dir(
+                    bundle_dir.clone(),
+                    execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
+                )?)
+            };
             let payload = encode_audio_to_ecdc(
                 &mut codec,
                 lm_codec.as_mut(),
                 &audio,
-                Some(&SourceAudioMetadata {
+                Some(&EcdcSourceAudioMetadata {
                     sample_rate: Some(input_sample_rate),
                     channels: Some(meta.channels as u16),
                     total_frames: Some(input_frames),
                 }),
             )?;
-            std::fs::write(&output_ecdc, &payload)?;
+            fs::write(&output_ecdc, &payload)?;
+            let payload_bytes = fs::metadata(&output_ecdc)?.len();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "bundle_dir": codec.bundle_dir(),
                     "input_wav": input_wav,
                     "output_ecdc": output_ecdc,
-                    "payload_bytes": payload.len(),
+                    "payload_bytes": payload_bytes,
                     "model_name": meta.model_name,
                     "bandwidth_kbps": meta.bandwidth_kbps,
                     "sample_rate": meta.sample_rate,
                     "original_sample_rate": input_sample_rate,
                     "original_frames": input_frames,
-                    "bitstream_version": if lm_codec.is_some() { 4 } else { 0 },
-                    "used_lm": lm_codec.is_some(),
+                    "batch_size": batch_size.max(1),
+                    "language_model": !no_lm,
                 }))?
             );
         }
         #[cfg(feature = "onnx")]
-        Commands::OnnxDecodeEcdc {
+        Commands::OnnxDecode {
             bundle_dir,
             input_ecdc,
             output_wav,
@@ -250,10 +184,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             device_id,
         } => {
             let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
-            let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
-            let payload = std::fs::read(&input_ecdc)?;
-            let mut lm_codec = load_optional_lm_codec(codec.bundle_dir(), codec.metadata().lm_model.is_some())?;
-            let decoded = decode_ecdc(&mut codec, lm_codec.as_mut(), &payload)?;
+            let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
+            let mut lm_codec = OnnxLmCodec::from_dir(
+                bundle_dir.clone(),
+                execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
+            )
+            .ok();
+            let payload = fs::read(&input_ecdc)?;
+            let decoded = DecodedOnnxAudioCompat::from_ecdc(decode_ecdc(
+                &mut codec,
+                lm_codec.as_mut(),
+                &payload,
+            )?);
             write_wav_f32(&output_wav, &decoded.audio, codec.metadata().sample_rate)?;
             println!(
                 "{}",
@@ -266,8 +208,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "original_sample_rate": decoded.metadata.original_sample_rate,
                     "original_channels": decoded.metadata.original_channels,
                     "original_total_frames": decoded.metadata.original_total_frames,
-                    "bitstream_version": decoded.metadata.bitstream_version,
-                    "used_lm": decoded.metadata.use_lm,
                 }))?
             );
         }
@@ -315,7 +255,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mean_abs += diff as f64;
                 count += 1;
             }
-            let mean_abs = if count == 0 { 0.0 } else { mean_abs / count as f64 };
+            let mean_abs = if count == 0 {
+                0.0
+            } else {
+                mean_abs / count as f64
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
@@ -356,7 +300,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let (codes, scales) = encode_audio_segments(&mut codec, &audio, batch_size.max(1))?;
             let encode_seconds = start_encode.elapsed().as_secs_f64();
             let start_decode = Instant::now();
-            let decoded = decode_audio_segments(&mut codec, &codes, &scales, input_frames, batch_size.max(1))?;
+            let decoded = decode_audio_segments(
+                &mut codec,
+                &codes,
+                &scales,
+                input_frames,
+                batch_size.max(1),
+            )?;
             let decode_seconds = start_decode.elapsed().as_secs_f64();
             write_wav_f32(&output_wav, &decoded, meta.sample_rate)?;
             let audio_seconds = input_frames as f64 / meta.sample_rate as f64;
@@ -412,14 +362,30 @@ fn execution_target(
 }
 
 #[cfg(feature = "onnx")]
-fn load_optional_lm_codec(
-    bundle_dir: &std::path::Path,
-    has_lm: bool,
-) -> Result<Option<OnnxLmCodec>, Box<dyn std::error::Error>> {
-    if !has_lm {
-        return Ok(None);
+struct DecodedOnnxAudioCompat {
+    metadata: CompatMetadata,
+    audio: Array3<f32>,
+}
+
+#[cfg(feature = "onnx")]
+struct CompatMetadata {
+    original_sample_rate: Option<u32>,
+    original_channels: Option<u16>,
+    original_total_frames: Option<usize>,
+}
+
+#[cfg(feature = "onnx")]
+impl DecodedOnnxAudioCompat {
+    fn from_ecdc(value: DecodedEcdcAudio) -> Self {
+        Self {
+            metadata: CompatMetadata {
+                original_sample_rate: value.metadata.original_sample_rate,
+                original_channels: value.metadata.original_channels,
+                original_total_frames: value.metadata.original_total_frames,
+            },
+            audio: value.audio,
+        }
     }
-    Ok(Some(OnnxLmCodec::from_dir(bundle_dir)?))
 }
 
 #[cfg(feature = "onnx")]
@@ -465,7 +431,11 @@ fn read_wav_f32(
 }
 
 #[cfg(feature = "onnx")]
-fn write_wav_f32(path: &PathBuf, audio: &Array3<f32>, sample_rate: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn write_wav_f32(
+    path: &PathBuf,
+    audio: &Array3<f32>,
+    sample_rate: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     let shape = audio.shape();
     let channels = shape[1];
     let samples = shape[2];
@@ -509,7 +479,8 @@ fn encode_audio_segments(
         }
         let (batch_codes, batch_scales) = codec.encode_frame(&batch)?;
         for batch_index in 0..chunk.len() {
-            let mut segment_codes = Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
+            let mut segment_codes =
+                Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
             let mut segment_scale = Array2::<f32>::zeros((1, 1));
             for codebook in 0..meta.num_codebooks {
                 for t in 0..meta.frame_length {
@@ -535,9 +506,12 @@ fn decode_audio_segments(
     let meta = codec.metadata().clone();
     let mut frames = Vec::with_capacity(codes.len());
     for (code_chunk, scale_chunk) in codes.chunks(batch_size).zip(scales.chunks(batch_size)) {
-        let mut batch_codes = Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, meta.frame_length));
+        let mut batch_codes =
+            Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, meta.frame_length));
         let mut batch_scales = Array2::<f32>::zeros((code_chunk.len(), 1));
-        for (batch_index, (segment_codes, segment_scale)) in code_chunk.iter().zip(scale_chunk.iter()).enumerate() {
+        for (batch_index, (segment_codes, segment_scale)) in
+            code_chunk.iter().zip(scale_chunk.iter()).enumerate()
+        {
             for codebook in 0..meta.num_codebooks {
                 for t in 0..meta.frame_length {
                     batch_codes[[batch_index, codebook, t]] = segment_codes[[0, codebook, t]];

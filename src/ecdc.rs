@@ -1,15 +1,16 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use ndarray::{Array2, Array3, Array4};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
-    BitPacker, BitUnpacker, read_chunk_payload, read_ecdc_header, read_exactly, write_chunk,
-    write_ecdc_header,
+    read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header, BitPacker,
+    BitUnpacker,
 };
 use crate::onnx::{OnnxFrameBundleMetadata, OnnxFrameCodec, OnnxLmCodec};
 
@@ -125,9 +126,13 @@ fn encode_audio_to_ecdc_impl(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let shape = audio.shape();
     if shape.len() != 3 || shape[0] != 1 {
-        bail!("audio must have shape [1, channels, samples], got {:?}", shape);
+        bail!(
+            "audio must have shape [1, channels, samples], got {:?}",
+            shape
+        );
     }
 
     let model_meta = codec.metadata().clone();
@@ -139,27 +144,49 @@ fn encode_audio_to_ecdc_impl(
         );
     }
 
-    let lm_tau = if lm_codec.is_some() { Some(1.0_f32) } else { None };
+    let lm_tau = if lm_codec.is_some() {
+        Some(1.0_f32)
+    } else {
+        None
+    };
     let use_lm = lm_codec.is_some();
     let mut out = Vec::new();
     let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau);
     write_ecdc_header(&mut out, &metadata)?;
 
-    for (frame_length, batch) in encode_segments(audio, &model_meta) {
-        let (codes_full, scale) = codec.encode_frame(&batch)?;
-        let codes = trim_codes(&codes_full, frame_length);
-        if let Some(lm_codec) = lm_codec.as_deref_mut() {
-            let payload = encode_lm_chunk_payload(
-                lm_codec,
-                &codes,
-                &scale,
-                metadata.fp_scale,
-                metadata.min_range,
-                metadata.lm_tau.unwrap_or(1.0) as f64,
-            )?;
-            write_chunk(&mut out, &payload)?;
-        } else {
-            write_raw_frame_payload(&mut out, &codes, &scale, &model_meta)?;
+    let frame_batch_size = frame_encode_batch_size();
+    for (batch_index, (frame_lengths, batch)) in
+        encode_segment_batches_with_size(audio, &model_meta, frame_batch_size)
+            .into_iter()
+            .enumerate()
+    {
+        let frame_started = profile_enabled.then(Instant::now);
+        let (codes_full, scales) = codec.encode_frame(&batch)?;
+        if let Some(frame_started) = frame_started {
+            let frame_done = Instant::now();
+            eprintln!(
+                "encode_segment_batch batch={} segments={} frame_encode_ms={:.3}",
+                batch_index,
+                frame_lengths.len(),
+                (frame_done - frame_started).as_secs_f64() * 1000.0,
+            );
+        }
+        for (segment_index, frame_length) in frame_lengths.into_iter().enumerate() {
+            let codes = trim_batch_codes(&codes_full, segment_index, frame_length);
+            let scale = extract_scale(&scales, segment_index);
+            if let Some(lm_codec) = lm_codec.as_deref_mut() {
+                let payload = encode_lm_chunk_payload(
+                    lm_codec,
+                    &codes,
+                    &scale,
+                    metadata.fp_scale,
+                    metadata.min_range,
+                    metadata.lm_tau.unwrap_or(1.0) as f64,
+                )?;
+                write_chunk(&mut out, &payload)?;
+            } else {
+                write_raw_frame_payload(&mut out, &codes, &scale, &model_meta)?;
+            }
         }
     }
 
@@ -180,8 +207,11 @@ fn decode_ecdc_impl(
     let starts = segment_starts(metadata.audio_length, bundle_meta.segment_stride.max(1));
     for offset in starts {
         let this_len = (metadata.audio_length - offset).min(bundle_meta.segment_samples);
-        let frame_length =
-            segment_frame_length(this_len, bundle_meta.segment_samples, bundle_meta.frame_length);
+        let frame_length = segment_frame_length(
+            this_len,
+            bundle_meta.segment_samples,
+            bundle_meta.frame_length,
+        );
         let frame = match metadata.bitstream_version {
             RAW_BITSTREAM_VERSION => {
                 decode_raw_frame_payload(codec, &mut reader, &bundle_meta, this_len, frame_length)?
@@ -190,19 +220,16 @@ fn decode_ecdc_impl(
                 let Some(lm_codec) = lm_codec.as_deref_mut() else {
                     bail!("payload requires LM decoding, but no LM bundle was provided");
                 };
-                match read_chunk_payload(&mut reader) {
-                    Ok(chunk) => decode_lm_chunk_payload(
-                        codec,
-                        lm_codec,
-                        &bundle_meta,
-                        &metadata,
-                        &chunk,
-                        this_len,
-                        frame_length,
-                    )
-                    .unwrap_or_else(|_| silence_frame(bundle_meta.channels, this_len)),
-                    Err(_) => silence_frame(bundle_meta.channels, this_len),
-                }
+                let chunk = read_chunk_payload(&mut reader)?;
+                decode_lm_chunk_payload(
+                    codec,
+                    lm_codec,
+                    &bundle_meta,
+                    &metadata,
+                    &chunk,
+                    this_len,
+                    frame_length,
+                )?
             }
             other => bail!("unsupported ECDC bitstream version {other}"),
         };
@@ -279,9 +306,9 @@ fn decode_raw_frame_payload(
     let mut codes = Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
     for t in 0..frame_length {
         for codebook in 0..meta.num_codebooks {
-            let value = unpacker
-                .pull()
-                .ok_or_else(|| anyhow::anyhow!("raw ECDC stream ended before expected code values"))?;
+            let value = unpacker.pull().ok_or_else(|| {
+                anyhow::anyhow!("raw ECDC stream ended before expected code values")
+            })?;
             codes[[0, codebook, t]] = value as i64;
         }
     }
@@ -296,29 +323,75 @@ fn encode_lm_chunk_payload(
     min_range: i64,
     lm_tau: f64,
 ) -> Result<Vec<u8>> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
+    let started = profile_enabled.then(Instant::now);
     let meta = lm_codec.metadata().clone();
-    let frame_shape = codes.shape();
-    let frame_length = frame_shape[2];
-    let teacher = teacher_forced_indices(codes);
-    let initial_states = lm_codec.initial_states(1)?;
-    let (logits, _offset, _states) = lm_codec.forward_logits(&teacher, 0, &initial_states)?;
-    let pdf = probability_columns_from_logits(&logits, lm_tau, meta.lm_logit_step(), fp_scale)?;
-    let symbols = flatten_symbols_time_major(codes)?;
-
     let mut payload = Vec::new();
     if meta.normalize {
         payload.extend_from_slice(&scale[[0, 0]].to_be_bytes());
     }
     let mut encoder = ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)?;
-    encoder.push_pdf_symbols(
-        &pdf,
-        meta.lm_cardinality(),
-        meta.num_codebooks * frame_length,
-        &symbols,
-        fp_scale,
-        min_range,
-    )?;
+    let frame_length = codes.shape()[2];
+    let mut states = lm_codec.initial_states(1)?;
+    let mut offset = 0_i64;
+    let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
+    let mut lm_elapsed = 0.0_f64;
+    let mut pdf_elapsed = 0.0_f64;
+    let mut arithmetic_elapsed = 0.0_f64;
+
+    for t in 0..frame_length {
+        let lm_started = profile_enabled.then(Instant::now);
+        let (logits, next_offset, next_states) = lm_codec.forward_logits(&input, offset, &states)?;
+        if let Some(lm_started) = lm_started {
+            lm_elapsed += lm_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let pdf_started = profile_enabled.then(Instant::now);
+        let pdf =
+            probability_columns_from_logits(&logits, lm_tau, meta.lm_logit_step(), fp_scale)?;
+        if let Some(pdf_started) = pdf_started {
+            pdf_elapsed += pdf_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let mut symbols = Vec::with_capacity(meta.num_codebooks);
+        for codebook in 0..meta.num_codebooks {
+            let value = codes[[0, codebook, t]];
+            if value < 0 {
+                bail!("code symbol must be non-negative, got {value}");
+            }
+            symbols.push(value as usize);
+            input[[0, codebook, 0]] = value + 1;
+        }
+
+        let arithmetic_started = profile_enabled.then(Instant::now);
+        encoder.push_pdf_symbols(
+            &pdf,
+            meta.lm_cardinality(),
+            meta.num_codebooks,
+            &symbols,
+            fp_scale,
+            min_range,
+        )?;
+        if let Some(arithmetic_started) = arithmetic_started {
+            arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        states = next_states;
+        offset = next_offset;
+    }
+
     payload.extend_from_slice(&encoder.finish());
+    if let Some(started) = started {
+        let done = Instant::now();
+        eprintln!(
+            "encode_lm_chunk_payload frame_length={} lm_ms={:.3} pdf_ms={:.3} arithmetic_ms={:.3} total_ms={:.3}",
+            frame_length,
+            lm_elapsed,
+            pdf_elapsed,
+            arithmetic_elapsed,
+            (done - started).as_secs_f64() * 1000.0,
+        );
+    }
     Ok(payload)
 }
 
@@ -352,7 +425,8 @@ fn decode_lm_chunk_payload(
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
 
     for t in 0..frame_length {
-        let (logits, next_offset, next_states) = lm_codec.forward_logits(&input, offset, &states)?;
+        let (logits, next_offset, next_states) =
+            lm_codec.forward_logits(&input, offset, &states)?;
         let pdf = probability_columns_from_logits(
             &logits,
             lm_tau,
@@ -395,65 +469,57 @@ fn decode_codes(
     Ok(trimmed)
 }
 
-fn encode_segments(
+fn encode_segment_batches_with_size(
     audio: &Array3<f32>,
     meta: &OnnxFrameBundleMetadata,
-) -> Vec<(usize, Array3<f32>)> {
+    batch_size: usize,
+) -> Vec<(Vec<usize>, Array3<f32>)> {
     let total_samples = audio.shape()[2];
-    let mut segments = Vec::new();
-    for offset in segment_starts(total_samples, meta.segment_stride.max(1)) {
-        let copy_len = (total_samples - offset).min(meta.segment_samples);
-        let frame_length = segment_frame_length(copy_len, meta.segment_samples, meta.frame_length);
-        let mut batch = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
-        for channel in 0..meta.channels {
-            for index in 0..copy_len {
-                batch[[0, channel, index]] = audio[[0, channel, offset + index]];
+    let starts = segment_starts(total_samples, meta.segment_stride.max(1));
+    let batch_size = batch_size.max(1);
+    let mut batches = Vec::new();
+    for offsets in starts.chunks(batch_size) {
+        let mut frame_lengths = Vec::with_capacity(offsets.len());
+        let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, meta.segment_samples));
+        for (batch_index, offset) in offsets.iter().copied().enumerate() {
+            let copy_len = (total_samples - offset).min(meta.segment_samples);
+            let frame_length =
+                segment_frame_length(copy_len, meta.segment_samples, meta.frame_length);
+            frame_lengths.push(frame_length);
+            for channel in 0..meta.channels {
+                for index in 0..copy_len {
+                    batch[[batch_index, channel, index]] = audio[[0, channel, offset + index]];
+                }
             }
         }
-        segments.push((frame_length, batch));
+        batches.push((frame_lengths, batch));
     }
-    segments
+    batches
 }
 
-fn trim_codes(codes: &Array3<i64>, frame_length: usize) -> Array3<i64> {
+fn trim_batch_codes(codes: &Array3<i64>, batch_index: usize, frame_length: usize) -> Array3<i64> {
     let codebooks = codes.shape()[1];
     let mut trimmed = Array3::<i64>::zeros((1, codebooks, frame_length));
     for codebook in 0..codebooks {
         for t in 0..frame_length {
-            trimmed[[0, codebook, t]] = codes[[0, codebook, t]];
+            trimmed[[0, codebook, t]] = codes[[batch_index, codebook, t]];
         }
     }
     trimmed
 }
 
-fn teacher_forced_indices(codes: &Array3<i64>) -> Array3<i64> {
-    let shape = codes.shape();
-    let codebooks = shape[1];
-    let frame_length = shape[2];
-    let mut teacher = Array3::<i64>::zeros((1, codebooks, frame_length));
-    for codebook in 0..codebooks {
-        for t in 1..frame_length {
-            teacher[[0, codebook, t]] = 1 + codes[[0, codebook, t - 1]];
-        }
-    }
-    teacher
+fn extract_scale(scales: &Array2<f32>, batch_index: usize) -> Array2<f32> {
+    let mut scale = Array2::<f32>::zeros((1, 1));
+    scale[[0, 0]] = scales[[batch_index, 0]];
+    scale
 }
 
-fn flatten_symbols_time_major(codes: &Array3<i64>) -> Result<Vec<usize>> {
-    let shape = codes.shape();
-    let codebooks = shape[1];
-    let frame_length = shape[2];
-    let mut out = Vec::with_capacity(codebooks * frame_length);
-    for t in 0..frame_length {
-        for codebook in 0..codebooks {
-            let value = codes[[0, codebook, t]];
-            if value < 0 {
-                bail!("code symbol must be non-negative, got {value}");
-            }
-            out.push(value as usize);
-        }
-    }
-    Ok(out)
+fn frame_encode_batch_size() -> usize {
+    std::env::var("ENCODEC_RS_FRAME_BATCH")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
 }
 
 fn probability_columns_from_logits(
@@ -464,7 +530,10 @@ fn probability_columns_from_logits(
 ) -> Result<Vec<f64>> {
     let shape = logits.shape();
     if shape.len() != 4 || shape[0] != 1 {
-        bail!("LM logits must have shape [1, card, codebooks, steps], got {:?}", shape);
+        bail!(
+            "LM logits must have shape [1, card, codebooks, steps], got {:?}",
+            shape
+        );
     }
     let card = shape[1];
     let codebooks = shape[2];
@@ -508,8 +577,8 @@ fn probability_columns_from_logits(
                 max_pdf = max_pdf.max(*prob);
                 min_pdf = min_pdf.min(*prob);
             }
-            let near_uniform =
-                (max_value - min_value) <= (2.0 * logit_step) || (max_pdf - min_pdf) <= near_pdf_threshold;
+            let near_uniform = (max_value - min_value) <= (2.0 * logit_step)
+                || (max_pdf - min_pdf) <= near_pdf_threshold;
             let column = step * codebooks + codebook;
             for bin in 0..card {
                 pdf[bin * columns + column] = if near_uniform { uniform } else { probs[bin] };
@@ -569,10 +638,6 @@ fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
 
 fn segment_frame_length(samples: usize, segment_samples: usize, frame_length: usize) -> usize {
     (samples * frame_length).div_ceil(segment_samples)
-}
-
-fn silence_frame(channels: usize, samples: usize) -> Array3<f32> {
-    Array3::<f32>::zeros((1, channels, samples))
 }
 
 fn linear_overlap_add(frames: &[Array3<f32>], stride: usize) -> Array3<f32> {
@@ -662,19 +727,4 @@ mod tests {
         assert_eq!(segment_frame_length(1, 48_000, 75), 1);
     }
 
-    #[test]
-    fn teacher_forced_indices_prefix_zero() {
-        let mut codes = Array3::<i64>::zeros((1, 2, 3));
-        codes[[0, 0, 0]] = 4;
-        codes[[0, 1, 0]] = 9;
-        codes[[0, 0, 1]] = 7;
-        codes[[0, 1, 1]] = 3;
-        let teacher = teacher_forced_indices(&codes);
-        assert_eq!(teacher[[0, 0, 0]], 0);
-        assert_eq!(teacher[[0, 1, 0]], 0);
-        assert_eq!(teacher[[0, 0, 1]], 5);
-        assert_eq!(teacher[[0, 1, 1]], 10);
-        assert_eq!(teacher[[0, 0, 2]], 8);
-        assert_eq!(teacher[[0, 1, 2]], 4);
-    }
 }
