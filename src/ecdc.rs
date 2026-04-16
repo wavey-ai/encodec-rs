@@ -45,6 +45,8 @@ pub struct EcdcMetadata {
     pub bitstream_version: u8,
     #[serde(rename = "tau", skip_serializing_if = "Option::is_none")]
     pub lm_tau: Option<f32>,
+    #[serde(rename = "cc", skip_serializing_if = "Option::is_none")]
+    pub chunk_crc: Option<bool>,
     #[serde(rename = "osr", skip_serializing_if = "Option::is_none")]
     pub original_sample_rate: Option<u32>,
     #[serde(rename = "och", skip_serializing_if = "Option::is_none")]
@@ -62,6 +64,7 @@ impl EcdcMetadata {
         source: Option<&SourceAudioMetadata>,
         use_lm: bool,
         lm_tau: Option<f32>,
+        chunk_crc: bool,
     ) -> Self {
         let meta = codec.metadata();
         Self {
@@ -77,11 +80,20 @@ impl EcdcMetadata {
                 RAW_BITSTREAM_VERSION
             },
             lm_tau,
+            chunk_crc: if use_lm && !chunk_crc {
+                Some(false)
+            } else {
+                None
+            },
             original_sample_rate: source.and_then(|value| value.sample_rate),
             original_channels: source.and_then(|value| value.channels),
             original_total_frames: source.and_then(|value| value.total_frames),
             extra: BTreeMap::new(),
         }
+    }
+
+    pub fn chunk_crc_enabled(&self) -> bool {
+        self.chunk_crc.unwrap_or(true)
     }
 }
 
@@ -112,7 +124,14 @@ pub fn encode_audio_to_ecdc(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(codec, lm_codec, audio, source, frame_encode_batch_size())
+    encode_audio_to_ecdc_impl(
+        codec,
+        lm_codec,
+        audio,
+        source,
+        frame_encode_batch_size(),
+        false,
+    )
 }
 
 pub fn encode_audio_to_ecdc_with_batch_size(
@@ -122,7 +141,32 @@ pub fn encode_audio_to_ecdc_with_batch_size(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(codec, lm_codec, audio, source, frame_batch_size.max(1))
+    encode_audio_to_ecdc_impl(
+        codec,
+        lm_codec,
+        audio,
+        source,
+        frame_batch_size.max(1),
+        false,
+    )
+}
+
+pub fn encode_audio_to_ecdc_with_options(
+    codec: &mut OnnxFrameCodec,
+    lm_codec: Option<&mut OnnxLmCodec>,
+    audio: &Array3<f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+) -> Result<Vec<u8>> {
+    encode_audio_to_ecdc_impl(
+        codec,
+        lm_codec,
+        audio,
+        source,
+        frame_batch_size.max(1),
+        chunk_crc,
+    )
 }
 
 pub fn encode_audio_to_raw_ecdc(
@@ -130,7 +174,14 @@ pub fn encode_audio_to_raw_ecdc(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(codec, None, audio, source, frame_encode_batch_size())
+    encode_audio_to_ecdc_impl(
+        codec,
+        None,
+        audio,
+        source,
+        frame_encode_batch_size(),
+        false,
+    )
 }
 
 pub fn decode_ecdc(
@@ -151,6 +202,7 @@ fn encode_audio_to_ecdc_impl(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
+    chunk_crc: bool,
 ) -> Result<Vec<u8>> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let shape = audio.shape();
@@ -177,7 +229,7 @@ fn encode_audio_to_ecdc_impl(
     };
     let use_lm = lm_codec.is_some();
     let mut out = Vec::new();
-    let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau);
+    let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau, chunk_crc);
     write_ecdc_header(&mut out, &metadata)?;
 
     for (batch_index, (frame_lengths, batch)) in
@@ -208,7 +260,7 @@ fn encode_audio_to_ecdc_impl(
                     metadata.min_range,
                     metadata.lm_tau.unwrap_or(1.0) as f64,
                 )?;
-                write_chunk(&mut out, &payload)?;
+                write_chunk(&mut out, &payload, metadata.chunk_crc_enabled())?;
             } else {
                 write_raw_frame_payload(
                     &mut out,
@@ -252,7 +304,7 @@ fn decode_ecdc_impl(
                 let Some(lm_codec) = lm_codec.as_deref_mut() else {
                     bail!("payload requires LM decoding, but no LM bundle was provided");
                 };
-                let chunk = read_chunk_payload(&mut reader)?;
+                let chunk = read_chunk_payload(&mut reader, metadata.chunk_crc_enabled())?;
                 decode_lm_chunk_payload(
                     codec,
                     lm_codec,
@@ -735,6 +787,7 @@ mod tests {
             min_range: DEFAULT_MIN_RANGE,
             bitstream_version: 0,
             lm_tau: None,
+            chunk_crc: None,
             original_sample_rate: Some(44_100),
             original_channels: Some(2),
             original_total_frames: Some(44_100),
@@ -745,6 +798,7 @@ mod tests {
         assert_eq!(decoded.original_sample_rate, Some(44_100));
         assert_eq!(decoded.original_channels, Some(2));
         assert_eq!(decoded.original_total_frames, Some(44_100));
+        assert!(decoded.chunk_crc_enabled());
     }
 
     #[test]

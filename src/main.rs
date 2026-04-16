@@ -7,7 +7,7 @@ use std::fs;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "onnx")]
 use encodec_rs::ecdc::{
-    decode_ecdc, encode_audio_to_ecdc_with_batch_size, DecodedEcdcAudio,
+    decode_ecdc, encode_audio_to_ecdc_with_options, DecodedEcdcAudio,
     SourceAudioMetadata as EcdcSourceAudioMetadata,
 };
 #[cfg(feature = "onnx")]
@@ -79,6 +79,8 @@ enum Commands {
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
         #[arg(long)]
+        chunk_crc: bool,
+        #[arg(long)]
         no_lm: bool,
         #[arg(long)]
         cuda: bool,
@@ -119,6 +121,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_wav,
             output_ecdc,
             batch_size,
+            chunk_crc,
             no_lm,
             cuda,
             tensorrt,
@@ -145,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
                 )?)
             };
-            let payload = encode_audio_to_ecdc_with_batch_size(
+            let payload = encode_audio_to_ecdc_with_options(
                 &mut codec,
                 lm_codec.as_mut(),
                 &audio,
@@ -155,6 +158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     total_frames: Some(input_frames),
                 }),
                 batch_size.max(1),
+                chunk_crc,
             )?;
             fs::write(&output_ecdc, &payload)?;
             let payload_bytes = fs::metadata(&output_ecdc)?.len();
@@ -171,6 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "original_sample_rate": input_sample_rate,
                     "original_frames": input_frames,
                     "batch_size": batch_size.max(1),
+                    "chunk_crc": chunk_crc,
                     "language_model": !no_lm,
                 }))?
             );

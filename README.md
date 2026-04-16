@@ -140,6 +140,18 @@ encodec-rs onnx-encode \
   --no-lm
 ```
 
+Enable per-chunk CRC wrapping for LM chunk payloads:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc \
+  --chunk-crc
+```
+
+CRC is off by default for new Rust-written `.ecdc` files.
+
 Adjust frame batching:
 
 ```bash

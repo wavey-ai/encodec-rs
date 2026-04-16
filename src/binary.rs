@@ -7,7 +7,8 @@ use serde::Serialize;
 
 const ECDC_MAGIC: &[u8; 4] = b"ECDC";
 const ECDC_VERSION: u8 = 0;
-const CHUNK_HEADER_SIZE: usize = 8;
+const CHUNK_CRC_HEADER_SIZE: usize = 8;
+const CHUNK_PLAIN_HEADER_SIZE: usize = 4;
 
 pub fn write_tagged_header(
     writer: &mut impl Write,
@@ -77,32 +78,44 @@ pub fn read_ecdc_header<T: DeserializeOwned>(reader: &mut impl Read) -> Result<T
     read_tagged_header(reader, ECDC_MAGIC, ECDC_VERSION)
 }
 
-pub fn write_chunk(writer: &mut impl Write, payload: &[u8]) -> Result<()> {
-    let mut hasher = Hasher::new();
-    hasher.update(payload);
-    let checksum = hasher.finalize();
+pub fn write_chunk(writer: &mut impl Write, payload: &[u8], with_crc: bool) -> Result<()> {
     writer
         .write_all(&(payload.len() as u32).to_be_bytes())
         .context("failed to write chunk length")?;
-    writer
-        .write_all(&checksum.to_be_bytes())
-        .context("failed to write chunk checksum")?;
+    if with_crc {
+        let mut hasher = Hasher::new();
+        hasher.update(payload);
+        let checksum = hasher.finalize();
+        writer
+            .write_all(&checksum.to_be_bytes())
+            .context("failed to write chunk checksum")?;
+    }
     writer
         .write_all(payload)
         .context("failed to write chunk payload")?;
     Ok(())
 }
 
-pub fn read_chunk_payload(reader: &mut impl Read) -> Result<Vec<u8>> {
-    let header = read_exactly(reader, CHUNK_HEADER_SIZE)?;
-    let payload_len = u32::from_be_bytes(header[0..4].try_into().expect("slice length")) as usize;
-    let expected_crc = u32::from_be_bytes(header[4..8].try_into().expect("slice length"));
+pub fn read_chunk_payload(reader: &mut impl Read, with_crc: bool) -> Result<Vec<u8>> {
+    let header = read_exactly(
+        reader,
+        if with_crc {
+            CHUNK_CRC_HEADER_SIZE
+        } else {
+            CHUNK_PLAIN_HEADER_SIZE
+        },
+    )?;
+    let payload_len =
+        u32::from_be_bytes(header[0..4].try_into().expect("slice length")) as usize;
     let payload = read_exactly(reader, payload_len)?;
-    let mut hasher = Hasher::new();
-    hasher.update(&payload);
-    let actual_crc = hasher.finalize();
-    if actual_crc != expected_crc {
-        bail!("chunk CRC mismatch: expected {expected_crc:#010x}, got {actual_crc:#010x}");
+    if with_crc {
+        let expected_crc = u32::from_be_bytes(header[4..8].try_into().expect("slice length"));
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let actual_crc = hasher.finalize();
+        if actual_crc != expected_crc {
+            bail!("chunk CRC mismatch: expected {expected_crc:#010x}, got {actual_crc:#010x}");
+        }
     }
     Ok(payload)
 }
@@ -211,8 +224,17 @@ mod tests {
     fn chunk_roundtrip() {
         let payload = b"hello chunk";
         let mut buf = Vec::new();
-        write_chunk(&mut buf, payload).unwrap();
-        let decoded = read_chunk_payload(&mut Cursor::new(buf)).unwrap();
+        write_chunk(&mut buf, payload, true).unwrap();
+        let decoded = read_chunk_payload(&mut Cursor::new(buf), true).unwrap();
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn chunk_roundtrip_without_crc() {
+        let payload = b"hello chunk";
+        let mut buf = Vec::new();
+        write_chunk(&mut buf, payload, false).unwrap();
+        let decoded = read_chunk_payload(&mut Cursor::new(buf), false).unwrap();
         assert_eq!(decoded, payload);
     }
 
