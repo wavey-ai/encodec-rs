@@ -7,8 +7,7 @@ use std::fs;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "onnx")]
 use encodec_rs::ecdc::{
-    decode_ecdc, encode_audio_to_ecdc_with_options, DecodedEcdcAudio,
-    SourceAudioMetadata as EcdcSourceAudioMetadata,
+    decode_ecdc, encode_audio_to_ecdc_with_options,
 };
 #[cfg(feature = "onnx")]
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
@@ -131,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
             let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
             let meta = codec.metadata().clone();
-            let (audio, input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
+            let (audio, _input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
             if input_sample_rate as usize != meta.sample_rate {
                 return Err(format!(
                     "input WAV sample rate {} does not match bundle sample rate {}; resampling is not implemented in encodec-rs yet",
@@ -152,11 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut codec,
                 lm_codec.as_mut(),
                 &audio,
-                Some(&EcdcSourceAudioMetadata {
-                    sample_rate: Some(input_sample_rate),
-                    channels: Some(meta.channels as u16),
-                    total_frames: Some(input_frames),
-                }),
+                None,
                 batch_size.max(1),
                 chunk_crc,
             )?;
@@ -172,8 +167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "model_name": meta.model_name,
                     "bandwidth_kbps": meta.bandwidth_kbps,
                     "sample_rate": meta.sample_rate,
-                    "original_sample_rate": input_sample_rate,
-                    "original_frames": input_frames,
                     "batch_size": batch_size.max(1),
                     "chunk_crc": chunk_crc,
                     "language_model": !no_lm,
@@ -198,11 +191,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .ok();
             let payload = fs::read(&input_ecdc)?;
-            let decoded = DecodedOnnxAudioCompat::from_ecdc(decode_ecdc(
+            let decoded = decode_ecdc(
                 &mut codec,
                 lm_codec.as_mut(),
                 &payload,
-            )?);
+            )?;
             write_wav_f32(&output_wav, &decoded.audio, codec.metadata().sample_rate)?;
             println!(
                 "{}",
@@ -212,9 +205,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "output_wav": output_wav,
                     "decoded_samples": decoded.audio.shape()[2],
                     "sample_rate": codec.metadata().sample_rate,
-                    "original_sample_rate": decoded.metadata.original_sample_rate,
-                    "original_channels": decoded.metadata.original_channels,
-                    "original_total_frames": decoded.metadata.original_total_frames,
                 }))?
             );
         }
@@ -366,33 +356,6 @@ fn execution_target(
         return Err("--fp16 requires --tensorrt".into());
     }
     Ok(ExecutionTarget::Cpu)
-}
-
-#[cfg(feature = "onnx")]
-struct DecodedOnnxAudioCompat {
-    metadata: CompatMetadata,
-    audio: Array3<f32>,
-}
-
-#[cfg(feature = "onnx")]
-struct CompatMetadata {
-    original_sample_rate: Option<u32>,
-    original_channels: Option<u16>,
-    original_total_frames: Option<usize>,
-}
-
-#[cfg(feature = "onnx")]
-impl DecodedOnnxAudioCompat {
-    fn from_ecdc(value: DecodedEcdcAudio) -> Self {
-        Self {
-            metadata: CompatMetadata {
-                original_sample_rate: value.metadata.original_sample_rate,
-                original_channels: value.metadata.original_channels,
-                original_total_frames: value.metadata.original_total_frames,
-            },
-            audio: value.audio,
-        }
-    }
 }
 
 #[cfg(feature = "onnx")]

@@ -47,12 +47,6 @@ pub struct EcdcMetadata {
     pub lm_tau: Option<f32>,
     #[serde(rename = "cc", skip_serializing_if = "Option::is_none")]
     pub chunk_crc: Option<bool>,
-    #[serde(rename = "osr", skip_serializing_if = "Option::is_none")]
-    pub original_sample_rate: Option<u32>,
-    #[serde(rename = "och", skip_serializing_if = "Option::is_none")]
-    pub original_channels: Option<u16>,
-    #[serde(rename = "ofr", skip_serializing_if = "Option::is_none")]
-    pub original_total_frames: Option<usize>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -61,7 +55,7 @@ impl EcdcMetadata {
     pub fn from_codec(
         codec: &OnnxFrameCodec,
         audio_length: usize,
-        source: Option<&SourceAudioMetadata>,
+        _source: Option<&SourceAudioMetadata>,
         use_lm: bool,
         lm_tau: Option<f32>,
         chunk_crc: bool,
@@ -85,9 +79,6 @@ impl EcdcMetadata {
             } else {
                 None
             },
-            original_sample_rate: source.and_then(|value| value.sample_rate),
-            original_channels: source.and_then(|value| value.channels),
-            original_total_frames: source.and_then(|value| value.total_frames),
             extra: BTreeMap::new(),
         }
     }
@@ -777,7 +768,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_serde_roundtrip_keeps_source_fields() {
+    fn metadata_serde_roundtrip_ignores_legacy_source_fields() {
         let metadata = EcdcMetadata {
             model_name: "encodec_48khz".into(),
             audio_length: 48000,
@@ -788,17 +779,16 @@ mod tests {
             bitstream_version: 0,
             lm_tau: None,
             chunk_crc: None,
-            original_sample_rate: Some(44_100),
-            original_channels: Some(2),
-            original_total_frames: Some(44_100),
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
-        let decoded: EcdcMetadata = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.original_sample_rate, Some(44_100));
-        assert_eq!(decoded.original_channels, Some(2));
-        assert_eq!(decoded.original_total_frames, Some(44_100));
+        let legacy_json = json.trim_end_matches('}').to_owned()
+            + ",\"osr\":44100,\"och\":2,\"ofr\":44100}";
+        let decoded: EcdcMetadata = serde_json::from_str(&legacy_json).unwrap();
         assert!(decoded.chunk_crc_enabled());
+        assert_eq!(decoded.extra.get("osr").and_then(Value::as_u64), Some(44_100));
+        assert_eq!(decoded.extra.get("och").and_then(Value::as_u64), Some(2));
+        assert_eq!(decoded.extra.get("ofr").and_then(Value::as_u64), Some(44_100));
     }
 
     #[test]

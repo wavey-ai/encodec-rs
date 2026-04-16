@@ -12,7 +12,6 @@ binary. The runtime path is Rust plus ONNX Runtime only.
 - encodes `48 kHz` stereo WAV to real `.ecdc`
 - decodes `.ecdc` back to WAV
 - runs LM-assisted entropy coding in Rust
-- preserves original source metadata in `.ecdc`
 - runs on CPU, CUDA, or TensorRT
 
 ## Current Scope
@@ -173,13 +172,14 @@ If your source is not already `48 kHz` stereo WAV, normalize it first.
 
 ## Output Metadata
 
-The CLI writes original source metadata into `.ecdc` when it can:
+`encodec-rs` writes only the minimal metadata needed to decode the payload:
 
-- original sample rate
-- original channel count
-- original frame count
-
-That metadata is returned again on decode.
+- model name
+- audio length
+- codebook count
+- LM / arithmetic settings
+- bitstream version
+- optional chunk CRC flag
 
 ## Library Use
 
