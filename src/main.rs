@@ -7,7 +7,8 @@ use std::fs;
 use clap::{Parser, Subcommand};
 #[cfg(feature = "onnx")]
 use encodec_rs::ecdc::{
-    decode_ecdc, encode_audio_to_ecdc, DecodedEcdcAudio, SourceAudioMetadata as EcdcSourceAudioMetadata,
+    decode_ecdc, encode_audio_to_ecdc_with_batch_size, DecodedEcdcAudio,
+    SourceAudioMetadata as EcdcSourceAudioMetadata,
 };
 #[cfg(feature = "onnx")]
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
@@ -144,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
                 )?)
             };
-            let payload = encode_audio_to_ecdc(
+            let payload = encode_audio_to_ecdc_with_batch_size(
                 &mut codec,
                 lm_codec.as_mut(),
                 &audio,
@@ -153,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     channels: Some(meta.channels as u16),
                     total_frames: Some(input_frames),
                 }),
+                batch_size.max(1),
             )?;
             fs::write(&output_ecdc, &payload)?;
             let payload_bytes = fs::metadata(&output_ecdc)?.len();

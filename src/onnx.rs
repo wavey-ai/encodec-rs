@@ -18,6 +18,18 @@ fn ort_error<E: std::fmt::Display>(error: E) -> anyhow::Error {
     anyhow::anyhow!(error.to_string())
 }
 
+fn ort_intra_threads() -> usize {
+    std::env::var("ENCODEC_RS_ORT_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|value| value.get().min(4))
+                .unwrap_or(1)
+        })
+}
+
 fn session_from_providers(
     path: &Path,
     providers: impl AsRef<[ExecutionProviderDispatch]>,
@@ -30,7 +42,7 @@ fn session_from_providers(
         .map_err(ort_error)?
         .with_execution_providers(providers)
         .map_err(ort_error)?
-        .with_intra_threads(1)
+        .with_intra_threads(ort_intra_threads())
         .map_err(ort_error)?
         .commit_from_file(path)
         .map_err(ort_error)

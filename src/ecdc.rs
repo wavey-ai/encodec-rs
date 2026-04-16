@@ -91,13 +91,38 @@ pub struct DecodedEcdcAudio {
     pub audio: Array3<f32>,
 }
 
+#[derive(Default)]
+struct ProbabilityScratch {
+    pdf: Vec<f64>,
+    quantized: Vec<f64>,
+    probs: Vec<f64>,
+}
+
+impl ProbabilityScratch {
+    fn prepare(&mut self, card: usize, columns: usize) {
+        self.pdf.resize(card * columns, 0.0);
+        self.quantized.resize(card, 0.0);
+        self.probs.resize(card, 0.0);
+    }
+}
+
 pub fn encode_audio_to_ecdc(
     codec: &mut OnnxFrameCodec,
     lm_codec: Option<&mut OnnxLmCodec>,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(codec, lm_codec, audio, source)
+    encode_audio_to_ecdc_impl(codec, lm_codec, audio, source, frame_encode_batch_size())
+}
+
+pub fn encode_audio_to_ecdc_with_batch_size(
+    codec: &mut OnnxFrameCodec,
+    lm_codec: Option<&mut OnnxLmCodec>,
+    audio: &Array3<f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+) -> Result<Vec<u8>> {
+    encode_audio_to_ecdc_impl(codec, lm_codec, audio, source, frame_batch_size.max(1))
 }
 
 pub fn encode_audio_to_raw_ecdc(
@@ -105,7 +130,7 @@ pub fn encode_audio_to_raw_ecdc(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(codec, None, audio, source)
+    encode_audio_to_ecdc_impl(codec, None, audio, source, frame_encode_batch_size())
 }
 
 pub fn decode_ecdc(
@@ -125,6 +150,7 @@ fn encode_audio_to_ecdc_impl(
     mut lm_codec: Option<&mut OnnxLmCodec>,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
 ) -> Result<Vec<u8>> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let shape = audio.shape();
@@ -154,7 +180,6 @@ fn encode_audio_to_ecdc_impl(
     let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau);
     write_ecdc_header(&mut out, &metadata)?;
 
-    let frame_batch_size = frame_encode_batch_size();
     for (batch_index, (frame_lengths, batch)) in
         encode_segment_batches_with_size(audio, &model_meta, frame_batch_size)
             .into_iter()
@@ -172,20 +197,27 @@ fn encode_audio_to_ecdc_impl(
             );
         }
         for (segment_index, frame_length) in frame_lengths.into_iter().enumerate() {
-            let codes = trim_batch_codes(&codes_full, segment_index, frame_length);
-            let scale = extract_scale(&scales, segment_index);
             if let Some(lm_codec) = lm_codec.as_deref_mut() {
                 let payload = encode_lm_chunk_payload(
                     lm_codec,
-                    &codes,
-                    &scale,
+                    &codes_full,
+                    &scales,
+                    segment_index,
+                    frame_length,
                     metadata.fp_scale,
                     metadata.min_range,
                     metadata.lm_tau.unwrap_or(1.0) as f64,
                 )?;
                 write_chunk(&mut out, &payload)?;
             } else {
-                write_raw_frame_payload(&mut out, &codes, &scale, &model_meta)?;
+                write_raw_frame_payload(
+                    &mut out,
+                    &codes_full,
+                    &scales,
+                    segment_index,
+                    frame_length,
+                    &model_meta,
+                )?;
             }
         }
     }
@@ -260,17 +292,18 @@ fn decode_ecdc_impl(
 fn write_raw_frame_payload(
     out: &mut Vec<u8>,
     codes: &Array3<i64>,
-    scale: &Array2<f32>,
+    scales: &Array2<f32>,
+    batch_index: usize,
+    frame_length: usize,
     meta: &OnnxFrameBundleMetadata,
 ) -> Result<()> {
     if meta.normalize {
-        out.extend_from_slice(&scale[[0, 0]].to_be_bytes());
+        out.extend_from_slice(&scales[[batch_index, 0]].to_be_bytes());
     }
-    let frame_length = codes.shape()[2];
     let mut packer = BitPacker::new(meta.bits_per_codebook());
     for t in 0..frame_length {
         for codebook in 0..meta.num_codebooks {
-            let value = codes[[0, codebook, t]];
+            let value = codes[[batch_index, codebook, t]];
             if value < 0 || value > u16::MAX as i64 {
                 bail!("code value {value} is out of range for raw ECDC bitpacking");
             }
@@ -318,7 +351,9 @@ fn decode_raw_frame_payload(
 fn encode_lm_chunk_payload(
     lm_codec: &mut OnnxLmCodec,
     codes: &Array3<i64>,
-    scale: &Array2<f32>,
+    scales: &Array2<f32>,
+    batch_index: usize,
+    frame_length: usize,
     fp_scale: i64,
     min_range: i64,
     lm_tau: f64,
@@ -328,13 +363,14 @@ fn encode_lm_chunk_payload(
     let meta = lm_codec.metadata().clone();
     let mut payload = Vec::new();
     if meta.normalize {
-        payload.extend_from_slice(&scale[[0, 0]].to_be_bytes());
+        payload.extend_from_slice(&scales[[batch_index, 0]].to_be_bytes());
     }
     let mut encoder = ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)?;
-    let frame_length = codes.shape()[2];
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
+    let mut symbols = vec![0_usize; meta.num_codebooks];
+    let mut scratch = ProbabilityScratch::default();
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;
@@ -347,25 +383,29 @@ fn encode_lm_chunk_payload(
         }
 
         let pdf_started = profile_enabled.then(Instant::now);
-        let pdf =
-            probability_columns_from_logits(&logits, lm_tau, meta.lm_logit_step(), fp_scale)?;
+        let pdf = probability_columns_from_logits(
+            &logits,
+            lm_tau,
+            meta.lm_logit_step(),
+            fp_scale,
+            &mut scratch,
+        )?;
         if let Some(pdf_started) = pdf_started {
             pdf_elapsed += pdf_started.elapsed().as_secs_f64() * 1000.0;
         }
 
-        let mut symbols = Vec::with_capacity(meta.num_codebooks);
         for codebook in 0..meta.num_codebooks {
-            let value = codes[[0, codebook, t]];
+            let value = codes[[batch_index, codebook, t]];
             if value < 0 {
                 bail!("code symbol must be non-negative, got {value}");
             }
-            symbols.push(value as usize);
+            symbols[codebook] = value as usize;
             input[[0, codebook, 0]] = value + 1;
         }
 
         let arithmetic_started = profile_enabled.then(Instant::now);
         encoder.push_pdf_symbols(
-            &pdf,
+            pdf,
             meta.lm_cardinality(),
             meta.num_codebooks,
             &symbols,
@@ -422,6 +462,7 @@ fn decode_lm_chunk_payload(
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
+    let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
 
     for t in 0..frame_length {
@@ -432,9 +473,10 @@ fn decode_lm_chunk_payload(
             lm_tau,
             lm_codec.metadata().lm_logit_step(),
             metadata.fp_scale,
+            &mut scratch,
         )?;
         let symbols = decoder.pull_symbols(
-            &pdf,
+            pdf,
             lm_codec.metadata().lm_cardinality(),
             model_meta.num_codebooks,
             metadata.fp_scale,
@@ -497,23 +539,6 @@ fn encode_segment_batches_with_size(
     batches
 }
 
-fn trim_batch_codes(codes: &Array3<i64>, batch_index: usize, frame_length: usize) -> Array3<i64> {
-    let codebooks = codes.shape()[1];
-    let mut trimmed = Array3::<i64>::zeros((1, codebooks, frame_length));
-    for codebook in 0..codebooks {
-        for t in 0..frame_length {
-            trimmed[[0, codebook, t]] = codes[[batch_index, codebook, t]];
-        }
-    }
-    trimmed
-}
-
-fn extract_scale(scales: &Array2<f32>, batch_index: usize) -> Array2<f32> {
-    let mut scale = Array2::<f32>::zeros((1, 1));
-    scale[[0, 0]] = scales[[batch_index, 0]];
-    scale
-}
-
 fn frame_encode_batch_size() -> usize {
     std::env::var("ENCODEC_RS_FRAME_BATCH")
         .ok()
@@ -522,12 +547,13 @@ fn frame_encode_batch_size() -> usize {
         .unwrap_or(8)
 }
 
-fn probability_columns_from_logits(
+fn probability_columns_from_logits<'a>(
     logits: &Array4<f32>,
     lm_tau: f64,
     logit_step: f64,
     fp_scale: i64,
-) -> Result<Vec<f64>> {
+    scratch: &'a mut ProbabilityScratch,
+) -> Result<&'a [f64]> {
     let shape = logits.shape();
     if shape.len() != 4 || shape[0] != 1 {
         bail!(
@@ -539,9 +565,10 @@ fn probability_columns_from_logits(
     let codebooks = shape[2];
     let steps = shape[3];
     let columns = codebooks * steps;
-    let mut pdf = vec![0.0_f64; card * columns];
-    let mut quantized = vec![0.0_f64; card];
-    let mut probs = vec![0.0_f64; card];
+    scratch.prepare(card, columns);
+    let pdf = &mut scratch.pdf;
+    let quantized = &mut scratch.quantized;
+    let probs = &mut scratch.probs;
     let uniform = 1.0 / card as f64;
     let near_pdf_threshold = 0.25 / fp_scale as f64;
 
@@ -572,7 +599,7 @@ fn probability_columns_from_logits(
             }
             let mut max_pdf = 0.0_f64;
             let mut min_pdf = f64::INFINITY;
-            for prob in &mut probs {
+            for prob in probs.iter_mut() {
                 *prob /= denom;
                 max_pdf = max_pdf.max(*prob);
                 min_pdf = min_pdf.min(*prob);
@@ -586,7 +613,7 @@ fn probability_columns_from_logits(
         }
     }
 
-    Ok(pdf)
+    Ok(&pdf[..card * columns])
 }
 
 fn quantize_logit(value: f64, step: f64) -> f64 {
