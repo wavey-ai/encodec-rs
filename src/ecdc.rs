@@ -192,6 +192,47 @@ where
     )
 }
 
+pub fn encode_ecdc_header_with_options(
+    codec: &OnnxFrameCodec,
+    audio_length: usize,
+    source: Option<&SourceAudioMetadata>,
+    use_lm: bool,
+    chunk_crc: bool,
+) -> Result<Vec<u8>> {
+    let metadata = EcdcMetadata::from_codec(
+        codec,
+        audio_length,
+        source,
+        use_lm,
+        use_lm.then_some(1.0_f32),
+        chunk_crc,
+    );
+    let mut header = Vec::new();
+    write_ecdc_header(&mut header, &metadata)?;
+    Ok(header)
+}
+
+pub fn encode_ecdc_segment_batch_with_options<F>(
+    codec: &mut OnnxFrameCodec,
+    lm_codec: Option<&mut OnnxLmCodec>,
+    batch: &Array3<f32>,
+    frame_lengths: &[usize],
+    chunk_crc: bool,
+    mut on_bytes: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    encode_ecdc_segment_batch_impl(
+        codec,
+        lm_codec,
+        batch,
+        frame_lengths,
+        chunk_crc,
+        &mut on_bytes,
+    )
+}
+
 pub fn encode_audio_to_raw_ecdc(
     codec: &mut OnnxFrameCodec,
     audio: &Array3<f32>,
@@ -269,8 +310,7 @@ fn encode_audio_to_ecdc_impl(
     };
     let use_lm = lm_codec.is_some();
     let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau, chunk_crc);
-    let mut header = Vec::new();
-    write_ecdc_header(&mut header, &metadata)?;
+    let header = encode_ecdc_header_with_options(codec, shape[2], source, use_lm, chunk_crc)?;
     emit(&header)?;
 
     for (batch_index, (frame_lengths, batch)) in
@@ -278,43 +318,99 @@ fn encode_audio_to_ecdc_impl(
             .into_iter()
             .enumerate()
     {
-        let frame_started = profile_enabled.then(Instant::now);
-        let (codes_full, scales) = codec.encode_frame(&batch)?;
-        if let Some(frame_started) = frame_started {
-            let frame_done = Instant::now();
+        encode_ecdc_segment_batch_impl(
+            codec,
+            lm_codec.as_deref_mut(),
+            &batch,
+            &frame_lengths,
+            chunk_crc,
+            emit,
+        )?;
+        if profile_enabled {
             eprintln!(
-                "encode_segment_batch batch={} segments={} frame_encode_ms={:.3}",
+                "encode_segment_batch batch={} segments={}",
                 batch_index,
                 frame_lengths.len(),
-                (frame_done - frame_started).as_secs_f64() * 1000.0,
             );
         }
-        for (segment_index, frame_length) in frame_lengths.into_iter().enumerate() {
-            let mut encoded_chunk = Vec::new();
-            if let Some(lm_codec) = lm_codec.as_deref_mut() {
-                let payload = encode_lm_chunk_payload(
-                    lm_codec,
-                    &codes_full,
-                    &scales,
-                    segment_index,
-                    frame_length,
-                    metadata.fp_scale,
-                    metadata.min_range,
-                    metadata.lm_tau.unwrap_or(1.0) as f64,
-                )?;
-                write_chunk(&mut encoded_chunk, &payload, metadata.chunk_crc_enabled())?;
-            } else {
-                write_raw_frame_payload(
-                    &mut encoded_chunk,
-                    &codes_full,
-                    &scales,
-                    segment_index,
-                    frame_length,
-                    &model_meta,
-                )?;
-            }
-            emit(&encoded_chunk)?;
+    }
+
+    Ok(())
+}
+
+fn encode_ecdc_segment_batch_impl(
+    codec: &mut OnnxFrameCodec,
+    mut lm_codec: Option<&mut OnnxLmCodec>,
+    batch: &Array3<f32>,
+    frame_lengths: &[usize],
+    chunk_crc: bool,
+    emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
+    let model_meta = codec.metadata().clone();
+    let batch_shape = batch.shape();
+    if batch_shape.len() != 3 {
+        bail!("segment batch must have shape [batch, channels, samples]");
+    }
+    if batch_shape[1] != model_meta.channels || batch_shape[2] != model_meta.segment_samples {
+        bail!(
+            "segment batch shape mismatch, expected [batch, {}, {}], got {:?}",
+            model_meta.channels,
+            model_meta.segment_samples,
+            batch_shape
+        );
+    }
+    if batch_shape[0] != frame_lengths.len() {
+        bail!(
+            "segment batch size {} does not match frame_lengths {}",
+            batch_shape[0],
+            frame_lengths.len()
+        );
+    }
+
+    let frame_started = profile_enabled.then(Instant::now);
+    let (codes_full, scales) = codec.encode_frame(batch)?;
+    if let Some(frame_started) = frame_started {
+        let frame_done = Instant::now();
+        eprintln!(
+            "encode_segment_batch segments={} frame_encode_ms={:.3}",
+            frame_lengths.len(),
+            (frame_done - frame_started).as_secs_f64() * 1000.0,
+        );
+    }
+
+    for (segment_index, frame_length) in frame_lengths.iter().copied().enumerate() {
+        if frame_length == 0 || frame_length > model_meta.frame_length {
+            bail!(
+                "segment frame length {} is out of range for frame_length {}",
+                frame_length,
+                model_meta.frame_length
+            );
         }
+        let mut encoded_chunk = Vec::new();
+        if let Some(lm_codec) = lm_codec.as_deref_mut() {
+            let payload = encode_lm_chunk_payload(
+                lm_codec,
+                &codes_full,
+                &scales,
+                segment_index,
+                frame_length,
+                DEFAULT_FP_SCALE,
+                DEFAULT_MIN_RANGE,
+                1.0,
+            )?;
+            write_chunk(&mut encoded_chunk, &payload, chunk_crc)?;
+        } else {
+            write_raw_frame_payload(
+                &mut encoded_chunk,
+                &codes_full,
+                &scales,
+                segment_index,
+                frame_length,
+                &model_meta,
+            )?;
+        }
+        emit(&encoded_chunk)?;
     }
 
     Ok(())
