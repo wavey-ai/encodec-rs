@@ -115,14 +115,17 @@ pub fn encode_audio_to_ecdc(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(
-        codec,
-        lm_codec,
-        audio,
-        source,
-        frame_encode_batch_size(),
-        false,
-    )
+    collect_ecdc_bytes(|emit| {
+        encode_audio_to_ecdc_impl(
+            codec,
+            lm_codec,
+            audio,
+            source,
+            frame_encode_batch_size(),
+            false,
+            emit,
+        )
+    })
 }
 
 pub fn encode_audio_to_ecdc_with_batch_size(
@@ -132,14 +135,17 @@ pub fn encode_audio_to_ecdc_with_batch_size(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(
-        codec,
-        lm_codec,
-        audio,
-        source,
-        frame_batch_size.max(1),
-        false,
-    )
+    collect_ecdc_bytes(|emit| {
+        encode_audio_to_ecdc_impl(
+            codec,
+            lm_codec,
+            audio,
+            source,
+            frame_batch_size.max(1),
+            false,
+            emit,
+        )
+    })
 }
 
 pub fn encode_audio_to_ecdc_with_options(
@@ -150,6 +156,31 @@ pub fn encode_audio_to_ecdc_with_options(
     frame_batch_size: usize,
     chunk_crc: bool,
 ) -> Result<Vec<u8>> {
+    collect_ecdc_bytes(|emit| {
+        encode_audio_to_ecdc_impl(
+            codec,
+            lm_codec,
+            audio,
+            source,
+            frame_batch_size.max(1),
+            chunk_crc,
+            emit,
+        )
+    })
+}
+
+pub fn encode_audio_to_ecdc_stream_with_options<F>(
+    codec: &mut OnnxFrameCodec,
+    lm_codec: Option<&mut OnnxLmCodec>,
+    audio: &Array3<f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    mut on_bytes: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
     encode_audio_to_ecdc_impl(
         codec,
         lm_codec,
@@ -157,6 +188,7 @@ pub fn encode_audio_to_ecdc_with_options(
         source,
         frame_batch_size.max(1),
         chunk_crc,
+        &mut on_bytes,
     )
 }
 
@@ -165,14 +197,17 @@ pub fn encode_audio_to_raw_ecdc(
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
-    encode_audio_to_ecdc_impl(
-        codec,
-        None,
-        audio,
-        source,
-        frame_encode_batch_size(),
-        false,
-    )
+    collect_ecdc_bytes(|emit| {
+        encode_audio_to_ecdc_impl(
+            codec,
+            None,
+            audio,
+            source,
+            frame_encode_batch_size(),
+            false,
+            emit,
+        )
+    })
 }
 
 pub fn decode_ecdc(
@@ -187,6 +222,19 @@ pub fn decode_raw_ecdc(codec: &mut OnnxFrameCodec, payload: &[u8]) -> Result<Dec
     decode_ecdc_impl(codec, None, payload)
 }
 
+fn collect_ecdc_bytes<F>(encode: F) -> Result<Vec<u8>>
+where
+    F: FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
+{
+    let mut out = Vec::new();
+    let mut emit = |bytes: &[u8]| -> Result<()> {
+        out.extend_from_slice(bytes);
+        Ok(())
+    };
+    encode(&mut emit)?;
+    Ok(out)
+}
+
 fn encode_audio_to_ecdc_impl(
     codec: &mut OnnxFrameCodec,
     mut lm_codec: Option<&mut OnnxLmCodec>,
@@ -194,7 +242,8 @@ fn encode_audio_to_ecdc_impl(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
-) -> Result<Vec<u8>> {
+    emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let shape = audio.shape();
     if shape.len() != 3 || shape[0] != 1 {
@@ -219,9 +268,10 @@ fn encode_audio_to_ecdc_impl(
         None
     };
     let use_lm = lm_codec.is_some();
-    let mut out = Vec::new();
     let metadata = EcdcMetadata::from_codec(codec, shape[2], source, use_lm, lm_tau, chunk_crc);
-    write_ecdc_header(&mut out, &metadata)?;
+    let mut header = Vec::new();
+    write_ecdc_header(&mut header, &metadata)?;
+    emit(&header)?;
 
     for (batch_index, (frame_lengths, batch)) in
         encode_segment_batches_with_size(audio, &model_meta, frame_batch_size)
@@ -240,6 +290,7 @@ fn encode_audio_to_ecdc_impl(
             );
         }
         for (segment_index, frame_length) in frame_lengths.into_iter().enumerate() {
+            let mut encoded_chunk = Vec::new();
             if let Some(lm_codec) = lm_codec.as_deref_mut() {
                 let payload = encode_lm_chunk_payload(
                     lm_codec,
@@ -251,10 +302,10 @@ fn encode_audio_to_ecdc_impl(
                     metadata.min_range,
                     metadata.lm_tau.unwrap_or(1.0) as f64,
                 )?;
-                write_chunk(&mut out, &payload, metadata.chunk_crc_enabled())?;
+                write_chunk(&mut encoded_chunk, &payload, metadata.chunk_crc_enabled())?;
             } else {
                 write_raw_frame_payload(
-                    &mut out,
+                    &mut encoded_chunk,
                     &codes_full,
                     &scales,
                     segment_index,
@@ -262,10 +313,11 @@ fn encode_audio_to_ecdc_impl(
                     &model_meta,
                 )?;
             }
+            emit(&encoded_chunk)?;
         }
     }
 
-    Ok(out)
+    Ok(())
 }
 
 fn decode_ecdc_impl(
@@ -420,7 +472,8 @@ fn encode_lm_chunk_payload(
 
     for t in 0..frame_length {
         let lm_started = profile_enabled.then(Instant::now);
-        let (logits, next_offset, next_states) = lm_codec.forward_logits(&input, offset, &states)?;
+        let (logits, next_offset, next_states) =
+            lm_codec.forward_logits(&input, offset, &states)?;
         if let Some(lm_started) = lm_started {
             lm_elapsed += lm_started.elapsed().as_secs_f64() * 1000.0;
         }
@@ -782,13 +835,19 @@ mod tests {
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
-        let legacy_json = json.trim_end_matches('}').to_owned()
-            + ",\"osr\":44100,\"och\":2,\"ofr\":44100}";
+        let legacy_json =
+            json.trim_end_matches('}').to_owned() + ",\"osr\":44100,\"och\":2,\"ofr\":44100}";
         let decoded: EcdcMetadata = serde_json::from_str(&legacy_json).unwrap();
         assert!(decoded.chunk_crc_enabled());
-        assert_eq!(decoded.extra.get("osr").and_then(Value::as_u64), Some(44_100));
+        assert_eq!(
+            decoded.extra.get("osr").and_then(Value::as_u64),
+            Some(44_100)
+        );
         assert_eq!(decoded.extra.get("och").and_then(Value::as_u64), Some(2));
-        assert_eq!(decoded.extra.get("ofr").and_then(Value::as_u64), Some(44_100));
+        assert_eq!(
+            decoded.extra.get("ofr").and_then(Value::as_u64),
+            Some(44_100)
+        );
     }
 
     #[test]
@@ -797,5 +856,4 @@ mod tests {
         assert_eq!(segment_frame_length(24_000, 48_000, 75), 38);
         assert_eq!(segment_frame_length(1, 48_000, 75), 1);
     }
-
 }
