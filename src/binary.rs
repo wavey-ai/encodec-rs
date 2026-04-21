@@ -105,8 +105,7 @@ pub fn read_chunk_payload(reader: &mut impl Read, with_crc: bool) -> Result<Vec<
             CHUNK_PLAIN_HEADER_SIZE
         },
     )?;
-    let payload_len =
-        u32::from_be_bytes(header[0..4].try_into().expect("slice length")) as usize;
+    let payload_len = u32::from_be_bytes(header[0..4].try_into().expect("slice length")) as usize;
     let payload = read_exactly(reader, payload_len)?;
     if with_crc {
         let expected_crc = u32::from_be_bytes(header[4..8].try_into().expect("slice length"));

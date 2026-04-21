@@ -1,14 +1,12 @@
+#[cfg(feature = "onnx")]
+use std::fs;
 use std::path::PathBuf;
 #[cfg(feature = "onnx")]
 use std::time::Instant;
-#[cfg(feature = "onnx")]
-use std::fs;
 
 use clap::{Parser, Subcommand};
 #[cfg(feature = "onnx")]
-use encodec_rs::ecdc::{
-    decode_ecdc, encode_audio_to_ecdc_with_options,
-};
+use encodec_rs::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options};
 #[cfg(feature = "onnx")]
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
 #[cfg(feature = "onnx")]
@@ -130,7 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
             let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
             let meta = codec.metadata().clone();
-            let (audio, _input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
+            let (audio, _input_frames, input_sample_rate) =
+                read_wav_f32(&input_wav, meta.channels)?;
             if input_sample_rate as usize != meta.sample_rate {
                 return Err(format!(
                     "input WAV sample rate {} does not match bundle sample rate {}; resampling is not implemented in encodec-rs yet",
@@ -191,11 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .ok();
             let payload = fs::read(&input_ecdc)?;
-            let decoded = decode_ecdc(
-                &mut codec,
-                lm_codec.as_mut(),
-                &payload,
-            )?;
+            let decoded = decode_ecdc(&mut codec, lm_codec.as_mut(), &payload)?;
             write_wav_f32(&output_wav, &decoded.audio, codec.metadata().sample_rate)?;
             println!(
                 "{}",
