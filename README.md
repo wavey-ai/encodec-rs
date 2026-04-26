@@ -12,7 +12,7 @@ binary. The runtime path is Rust plus ONNX Runtime only.
 - encodes `48 kHz` stereo WAV to real `.ecdc`
 - decodes `.ecdc` back to WAV
 - runs LM-assisted entropy coding in Rust
-- runs on CPU, CUDA, or TensorRT
+- runs on CPU, CUDA, CoreML, or TensorRT
 
 ## Current Scope
 
@@ -129,6 +129,20 @@ encodec-rs onnx-encode \
   --fp16
 ```
 
+Use CoreML on Apple Silicon:
+
+```bash
+encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_6kbps \
+  input.wav \
+  output.ecdc \
+  --coreml \
+  --coreml-compute-units cpu-and-gpu
+```
+
+CoreML caches compiled model artifacts under `bundle_dir/.coreml-cache/` by
+default. Override that with `--coreml-cache-dir` if needed.
+
 Disable LM compression:
 
 ```bash
@@ -217,6 +231,21 @@ encoding on both runtimes, the latest local comparison was:
 So the current Rust runtime is materially faster than upstream on both encode
 and decode, while payload size is still slightly larger than upstream.
 
+### Apple M4 CoreML Check
+
+On April 26, 2026, the same `Lori Asha - Westside` track was also tested on an
+Apple M4 host using the new CoreML execution target and LM-assisted `6 kbps`
+`.ecdc` encode/decode:
+
+| Runtime | Bitrate | Encode | Decode | `.ecdc` size |
+|---|---:|---:|---:|---:|
+| `encodec-rs` CoreML (`--coreml --coreml-compute-units cpu-and-gpu`) | 6 kbps | 163.84s | 157.26s | 115,572 bytes |
+
+That is roughly `5.9x` slower than the current `encodec-rs` benchmark snapshot
+above (`27.74s` encode / `26.41s` decode at `6 kbps`), so CoreML support is
+functional on Apple Silicon but not yet competitive with the current Linux /
+NVIDIA path.
+
 ## Status
 
 What is done:
@@ -224,7 +253,7 @@ What is done:
 - pure Rust runtime path
 - pure Rust `.ecdc`
 - checked-in LM-capable `6 kbps` and `12 kbps` bundles
-- CPU / CUDA / TensorRT execution targets
+- CPU / CUDA / CoreML / TensorRT execution targets
 
 What is still missing:
 
