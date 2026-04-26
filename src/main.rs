@@ -4,11 +4,11 @@ use std::path::PathBuf;
 #[cfg(feature = "onnx")]
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(feature = "onnx")]
 use encodec_rs::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options};
 #[cfg(feature = "onnx")]
-use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
+use encodec_rs::onnx::{CoreMlComputeUnits, ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
 #[cfg(feature = "onnx")]
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 #[cfg(feature = "onnx")]
@@ -24,6 +24,48 @@ struct Cli {
     command: Commands,
 }
 
+#[cfg(feature = "onnx")]
+#[derive(Clone, Debug, Args)]
+struct OnnxRuntimeArgs {
+    #[arg(long)]
+    cuda: bool,
+    #[arg(long)]
+    tensorrt: bool,
+    #[arg(long)]
+    coreml: bool,
+    #[arg(long)]
+    fp16: bool,
+    #[arg(long, default_value_t = 0)]
+    device_id: i32,
+    #[arg(long, value_enum, default_value_t = CoreMlComputeUnitsArg::CpuAndGpu)]
+    coreml_compute_units: CoreMlComputeUnitsArg,
+    #[arg(long)]
+    coreml_low_precision_accumulation_on_gpu: bool,
+    #[arg(long)]
+    coreml_cache_dir: Option<PathBuf>,
+}
+
+#[cfg(feature = "onnx")]
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CoreMlComputeUnitsArg {
+    All,
+    CpuAndNeuralEngine,
+    CpuAndGpu,
+    CpuOnly,
+}
+
+#[cfg(feature = "onnx")]
+impl From<CoreMlComputeUnitsArg> for CoreMlComputeUnits {
+    fn from(value: CoreMlComputeUnitsArg) -> Self {
+        match value {
+            CoreMlComputeUnitsArg::All => Self::All,
+            CoreMlComputeUnitsArg::CpuAndNeuralEngine => Self::CpuAndNeuralEngine,
+            CoreMlComputeUnitsArg::CpuAndGpu => Self::CpuAndGpu,
+            CoreMlComputeUnitsArg::CpuOnly => Self::CpuOnly,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Commands {
     #[cfg(not(feature = "onnx"))]
@@ -31,26 +73,14 @@ enum Commands {
     #[cfg(feature = "onnx")]
     OnnxInspect {
         bundle_dir: PathBuf,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long)]
-        tensorrt: bool,
-        #[arg(long)]
-        fp16: bool,
-        #[arg(long, default_value_t = 0)]
-        device_id: i32,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
     OnnxSmoke {
         bundle_dir: PathBuf,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long)]
-        tensorrt: bool,
-        #[arg(long)]
-        fp16: bool,
-        #[arg(long, default_value_t = 0)]
-        device_id: i32,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
     OnnxRoundtripWav {
@@ -59,14 +89,8 @@ enum Commands {
         output_wav: PathBuf,
         #[arg(long, default_value_t = 16)]
         batch_size: usize,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long)]
-        tensorrt: bool,
-        #[arg(long)]
-        fp16: bool,
-        #[arg(long, default_value_t = 0)]
-        device_id: i32,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
     OnnxEncode {
@@ -79,28 +103,16 @@ enum Commands {
         chunk_crc: bool,
         #[arg(long)]
         no_lm: bool,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long)]
-        tensorrt: bool,
-        #[arg(long)]
-        fp16: bool,
-        #[arg(long, default_value_t = 0)]
-        device_id: i32,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
     OnnxDecode {
         bundle_dir: PathBuf,
         input_ecdc: PathBuf,
         output_wav: PathBuf,
-        #[arg(long)]
-        cuda: bool,
-        #[arg(long)]
-        tensorrt: bool,
-        #[arg(long)]
-        fp16: bool,
-        #[arg(long, default_value_t = 0)]
-        device_id: i32,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
     },
 }
 
@@ -120,12 +132,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             batch_size,
             chunk_crc,
             no_lm,
-            cuda,
-            tensorrt,
-            fp16,
-            device_id,
+            runtime,
         } => {
-            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
+            let target = execution_target(&bundle_dir, &runtime)?;
             let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
             let meta = codec.metadata().clone();
             let (audio, _input_frames, input_sample_rate) =
@@ -143,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 Some(OnnxLmCodec::from_dir(
                     bundle_dir.clone(),
-                    execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
+                    execution_target(&bundle_dir, &runtime)?,
                 )?)
             };
             let payload = encode_audio_to_ecdc_with_options(
@@ -177,18 +186,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             bundle_dir,
             input_ecdc,
             output_wav,
-            cuda,
-            tensorrt,
-            fp16,
-            device_id,
+            runtime,
         } => {
-            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
+            let target = execution_target(&bundle_dir, &runtime)?;
             let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
-            let mut lm_codec = OnnxLmCodec::from_dir(
-                bundle_dir.clone(),
-                execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?,
-            )
-            .ok();
+            let mut lm_codec =
+                OnnxLmCodec::from_dir(bundle_dir.clone(), execution_target(&bundle_dir, &runtime)?)
+                    .ok();
             let payload = fs::read(&input_ecdc)?;
             let decoded = decode_ecdc(&mut codec, lm_codec.as_mut(), &payload)?;
             write_wav_f32(&output_wav, &decoded.audio, codec.metadata().sample_rate)?;
@@ -206,24 +210,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "onnx")]
         Commands::OnnxInspect {
             bundle_dir,
-            cuda,
-            tensorrt,
-            fp16,
-            device_id,
+            runtime,
         } => {
-            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
+            let target = execution_target(&bundle_dir, &runtime)?;
             let codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             println!("{:#?}", codec.metadata());
         }
         #[cfg(feature = "onnx")]
         Commands::OnnxSmoke {
             bundle_dir,
-            cuda,
-            tensorrt,
-            fp16,
-            device_id,
+            runtime,
         } => {
-            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
+            let target = execution_target(&bundle_dir, &runtime)?;
             let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             let meta = codec.metadata().clone();
             let mut audio = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
@@ -271,12 +269,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_wav,
             output_wav,
             batch_size,
-            cuda,
-            tensorrt,
-            fp16,
-            device_id,
+            runtime,
         } => {
-            let target = execution_target(&bundle_dir, cuda, tensorrt, fp16, device_id)?;
+            let target = execution_target(&bundle_dir, &runtime)?;
             let mut codec = OnnxFrameCodec::from_dir(bundle_dir, target)?;
             let meta = codec.metadata().clone();
             let (audio, input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
@@ -327,28 +322,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "onnx")]
 fn execution_target(
     bundle_dir: &PathBuf,
-    cuda: bool,
-    tensorrt: bool,
-    fp16: bool,
-    device_id: i32,
+    runtime: &OnnxRuntimeArgs,
 ) -> Result<ExecutionTarget, Box<dyn std::error::Error>> {
-    if cuda && tensorrt {
-        return Err("choose only one of --cuda or --tensorrt".into());
+    let selected_targets = runtime.cuda as u8 + runtime.tensorrt as u8 + runtime.coreml as u8;
+    if selected_targets > 1 {
+        return Err("choose only one of --cuda, --tensorrt, or --coreml".into());
     }
-    if tensorrt {
+    if runtime.tensorrt {
         let cache_root = bundle_dir.join(".trt-cache");
         return Ok(ExecutionTarget::TensorRt {
-            device_id,
-            fp16,
+            device_id: runtime.device_id,
+            fp16: runtime.fp16,
             engine_cache_path: Some(cache_root.join("engines")),
             timing_cache_path: Some(cache_root.join("timing.cache")),
         });
     }
-    if cuda {
-        return Ok(ExecutionTarget::Cuda { device_id });
+    if runtime.cuda {
+        return Ok(ExecutionTarget::Cuda {
+            device_id: runtime.device_id,
+        });
     }
-    if fp16 {
+    if runtime.coreml {
+        return Ok(ExecutionTarget::CoreMl {
+            compute_units: runtime.coreml_compute_units.into(),
+            model_cache_dir: Some(
+                runtime
+                    .coreml_cache_dir
+                    .clone()
+                    .unwrap_or_else(|| bundle_dir.join(".coreml-cache")),
+            ),
+            low_precision_accumulation_on_gpu: runtime.coreml_low_precision_accumulation_on_gpu,
+        });
+    }
+    if runtime.fp16 {
         return Err("--fp16 requires --tensorrt".into());
+    }
+    if runtime.coreml_low_precision_accumulation_on_gpu {
+        return Err("--coreml-low-precision-accumulation-on-gpu requires --coreml".into());
+    }
+    if runtime.coreml_cache_dir.is_some() {
+        return Err("--coreml-cache-dir requires --coreml".into());
     }
     Ok(ExecutionTarget::Cpu)
 }

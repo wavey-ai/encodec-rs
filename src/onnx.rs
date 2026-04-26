@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
 use ort::execution_providers::{
-    CPUExecutionProvider, CUDAExecutionProvider, ExecutionProvider, ExecutionProviderDispatch,
-    TensorRT,
+    coreml, CPUExecutionProvider, CUDAExecutionProvider, CoreML, ExecutionProvider,
+    ExecutionProviderDispatch, TensorRT,
 };
 use ort::inputs;
 use ort::logging::LogLevel;
@@ -54,6 +54,11 @@ pub enum ExecutionTarget {
     Cuda {
         device_id: i32,
     },
+    CoreMl {
+        compute_units: CoreMlComputeUnits,
+        model_cache_dir: Option<PathBuf>,
+        low_precision_accumulation_on_gpu: bool,
+    },
     TensorRt {
         device_id: i32,
         fp16: bool,
@@ -66,6 +71,51 @@ impl Default for ExecutionTarget {
     fn default() -> Self {
         Self::Cpu
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreMlComputeUnits {
+    All,
+    CpuAndNeuralEngine,
+    CpuAndGpu,
+    CpuOnly,
+}
+
+impl From<CoreMlComputeUnits> for coreml::ComputeUnits {
+    fn from(value: CoreMlComputeUnits) -> Self {
+        match value {
+            CoreMlComputeUnits::All => Self::All,
+            CoreMlComputeUnits::CpuAndNeuralEngine => Self::CPUAndNeuralEngine,
+            CoreMlComputeUnits::CpuAndGpu => Self::CPUAndGPU,
+            CoreMlComputeUnits::CpuOnly => Self::CPUOnly,
+        }
+    }
+}
+
+fn coreml_provider(
+    compute_units: CoreMlComputeUnits,
+    model_cache_dir: Option<&Path>,
+    low_precision_accumulation_on_gpu: bool,
+) -> Result<ExecutionProviderDispatch> {
+    let base = CoreML::default();
+    if !base.is_available().unwrap_or(false) {
+        bail!("CoreML Execution Provider is not available");
+    }
+
+    let mut coreml = base
+        .with_compute_units(compute_units.into())
+        .with_specialization_strategy(coreml::SpecializationStrategy::FastPrediction);
+    if let Some(path) = model_cache_dir {
+        fs::create_dir_all(path).with_context(|| {
+            format!("failed to create CoreML model cache dir {}", path.display())
+        })?;
+        coreml = coreml.with_model_cache_dir(path.display().to_string());
+    }
+    if low_precision_accumulation_on_gpu {
+        coreml = coreml.with_low_precision_accumulation_on_gpu(true);
+    }
+
+    Ok(coreml.build().error_on_failure())
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -200,6 +250,41 @@ impl OnnxFrameCodec {
                     Ok(session) => session,
                     Err(_) => session_from_providers(&decoder_path, [cpu])?,
                 };
+                (encoder, decoder)
+            }
+            ExecutionTarget::CoreMl {
+                compute_units,
+                model_cache_dir,
+                low_precision_accumulation_on_gpu,
+            } => {
+                let encoder_cache_dir = model_cache_dir
+                    .as_ref()
+                    .map(|path| path.join("encode_frame"));
+                let decoder_cache_dir = model_cache_dir
+                    .as_ref()
+                    .map(|path| path.join("decode_frame"));
+                let encoder = session_from_providers(
+                    &encoder_path,
+                    [
+                        coreml_provider(
+                            compute_units,
+                            encoder_cache_dir.as_deref(),
+                            low_precision_accumulation_on_gpu,
+                        )?,
+                        cpu.clone(),
+                    ],
+                )?;
+                let decoder = session_from_providers(
+                    &decoder_path,
+                    [
+                        coreml_provider(
+                            compute_units,
+                            decoder_cache_dir.as_deref(),
+                            low_precision_accumulation_on_gpu,
+                        )?,
+                        cpu,
+                    ],
+                )?;
                 (encoder, decoder)
             }
             ExecutionTarget::TensorRt {
@@ -388,6 +473,24 @@ impl OnnxLmCodec {
                     Ok(session) => session,
                     Err(_) => session_from_providers(&lm_path, [cpu])?,
                 }
+            }
+            ExecutionTarget::CoreMl {
+                compute_units,
+                model_cache_dir,
+                low_precision_accumulation_on_gpu,
+            } => {
+                let lm_cache_dir = model_cache_dir.as_ref().map(|path| path.join("lm_logits"));
+                session_from_providers(
+                    &lm_path,
+                    [
+                        coreml_provider(
+                            compute_units,
+                            lm_cache_dir.as_deref(),
+                            low_precision_accumulation_on_gpu,
+                        )?,
+                        cpu,
+                    ],
+                )?
             }
             ExecutionTarget::TensorRt {
                 device_id,
