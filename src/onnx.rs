@@ -2,120 +2,25 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
-use ort::execution_providers::{
-    coreml, CPUExecutionProvider, CUDAExecutionProvider, CoreML, ExecutionProvider,
-    ExecutionProviderDispatch, TensorRT,
+use gpu_worker_ort::{
+    build_session_from_target, default_intra_threads, inputs, ort_error, GraphOptimizationLevel,
+    LogLevel, OrtTensor, Session, SessionConfig,
 };
-use ort::inputs;
-use ort::logging::LogLevel;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::session::Session;
-use ort::value::Tensor as OrtTensor;
+pub use gpu_worker_ort::{CoreMlComputeUnits, ExecutionTarget};
+use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
 use serde::Deserialize;
 
-fn ort_error<E: std::fmt::Display>(error: E) -> anyhow::Error {
-    anyhow::anyhow!(error.to_string())
-}
-
-fn ort_intra_threads() -> usize {
-    std::env::var("ENCODEC_RS_ORT_THREADS")
+fn ort_session_config() -> SessionConfig {
+    let intra_threads = std::env::var("ENCODEC_RS_ORT_THREADS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|value| value.get().min(4))
-                .unwrap_or(1)
-        })
-}
-
-fn session_from_providers(
-    path: &Path,
-    providers: impl AsRef<[ExecutionProviderDispatch]>,
-) -> Result<Session> {
-    Session::builder()
-        .map_err(ort_error)?
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .map_err(ort_error)?
-        .with_log_level(LogLevel::Warning)
-        .map_err(ort_error)?
-        .with_execution_providers(providers)
-        .map_err(ort_error)?
-        .with_intra_threads(ort_intra_threads())
-        .map_err(ort_error)?
-        .commit_from_file(path)
-        .map_err(ort_error)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ExecutionTarget {
-    Cpu,
-    Cuda {
-        device_id: i32,
-    },
-    CoreMl {
-        compute_units: CoreMlComputeUnits,
-        model_cache_dir: Option<PathBuf>,
-        low_precision_accumulation_on_gpu: bool,
-    },
-    TensorRt {
-        device_id: i32,
-        fp16: bool,
-        engine_cache_path: Option<PathBuf>,
-        timing_cache_path: Option<PathBuf>,
-    },
-}
-
-impl Default for ExecutionTarget {
-    fn default() -> Self {
-        Self::Cpu
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CoreMlComputeUnits {
-    All,
-    CpuAndNeuralEngine,
-    CpuAndGpu,
-    CpuOnly,
-}
-
-impl From<CoreMlComputeUnits> for coreml::ComputeUnits {
-    fn from(value: CoreMlComputeUnits) -> Self {
-        match value {
-            CoreMlComputeUnits::All => Self::All,
-            CoreMlComputeUnits::CpuAndNeuralEngine => Self::CPUAndNeuralEngine,
-            CoreMlComputeUnits::CpuAndGpu => Self::CPUAndGPU,
-            CoreMlComputeUnits::CpuOnly => Self::CPUOnly,
-        }
-    }
-}
-
-fn coreml_provider(
-    compute_units: CoreMlComputeUnits,
-    model_cache_dir: Option<&Path>,
-    low_precision_accumulation_on_gpu: bool,
-) -> Result<ExecutionProviderDispatch> {
-    let base = CoreML::default();
-    if !base.is_available().unwrap_or(false) {
-        bail!("CoreML Execution Provider is not available");
-    }
-
-    let mut coreml = base
-        .with_compute_units(compute_units.into())
-        .with_specialization_strategy(coreml::SpecializationStrategy::FastPrediction);
-    if let Some(path) = model_cache_dir {
-        fs::create_dir_all(path).with_context(|| {
-            format!("failed to create CoreML model cache dir {}", path.display())
-        })?;
-        coreml = coreml.with_model_cache_dir(path.display().to_string());
-    }
-    if low_precision_accumulation_on_gpu {
-        coreml = coreml.with_low_precision_accumulation_on_gpu(true);
-    }
-
-    Ok(coreml.build().error_on_failure())
+        .unwrap_or_else(|| default_intra_threads(4));
+    SessionConfig::new(
+        GraphOptimizationLevel::Level3,
+        LogLevel::Warning,
+        intra_threads,
+    )
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -225,112 +130,36 @@ impl OnnxFrameCodec {
             );
         }
 
-        let cpu = CPUExecutionProvider::default().build();
+        let session_cfg = ort_session_config();
         let (encoder, decoder) = match target {
-            ExecutionTarget::Cpu => (
-                session_from_providers(&encoder_path, [cpu.clone()])?,
-                session_from_providers(&decoder_path, [cpu])?,
-            ),
-            ExecutionTarget::Cuda { device_id } => {
-                if !CUDAExecutionProvider::default()
-                    .is_available()
-                    .unwrap_or(false)
-                {
-                    bail!("CUDA Execution Provider is not available");
-                }
-                let cuda = CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .build();
-                let encoder =
-                    match session_from_providers(&encoder_path, [cuda.clone(), cpu.clone()]) {
-                        Ok(session) => session,
-                        Err(_) => session_from_providers(&encoder_path, [cpu.clone()])?,
-                    };
-                let decoder = match session_from_providers(&decoder_path, [cuda, cpu.clone()]) {
-                    Ok(session) => session,
-                    Err(_) => session_from_providers(&decoder_path, [cpu])?,
-                };
-                (encoder, decoder)
-            }
             ExecutionTarget::CoreMl {
                 compute_units,
                 model_cache_dir,
                 low_precision_accumulation_on_gpu,
             } => {
-                let encoder_cache_dir = model_cache_dir
-                    .as_ref()
-                    .map(|path| path.join("encode_frame"));
-                let decoder_cache_dir = model_cache_dir
-                    .as_ref()
-                    .map(|path| path.join("decode_frame"));
-                let encoder = session_from_providers(
-                    &encoder_path,
-                    [
-                        coreml_provider(
-                            compute_units,
-                            encoder_cache_dir.as_deref(),
-                            low_precision_accumulation_on_gpu,
-                        )?,
-                        cpu.clone(),
-                    ],
-                )?;
-                let decoder = session_from_providers(
-                    &decoder_path,
-                    [
-                        coreml_provider(
-                            compute_units,
-                            decoder_cache_dir.as_deref(),
-                            low_precision_accumulation_on_gpu,
-                        )?,
-                        cpu,
-                    ],
-                )?;
-                (encoder, decoder)
+                let encoder_target = ExecutionTarget::CoreMl {
+                    compute_units,
+                    model_cache_dir: model_cache_dir
+                        .as_ref()
+                        .map(|path| path.join("encode_frame")),
+                    low_precision_accumulation_on_gpu,
+                };
+                let decoder_target = ExecutionTarget::CoreMl {
+                    compute_units,
+                    model_cache_dir: model_cache_dir
+                        .as_ref()
+                        .map(|path| path.join("decode_frame")),
+                    low_precision_accumulation_on_gpu,
+                };
+                (
+                    build_session_from_target(&encoder_path, &encoder_target, &session_cfg, true)?,
+                    build_session_from_target(&decoder_path, &decoder_target, &session_cfg, true)?,
+                )
             }
-            ExecutionTarget::TensorRt {
-                device_id,
-                fp16,
-                engine_cache_path,
-                timing_cache_path,
-            } => {
-                let mut tensorrt = TensorRT::default()
-                    .with_device_id(device_id)
-                    .with_engine_cache(true)
-                    .with_force_sequential_engine_build(true)
-                    .with_builder_optimization_level(5)
-                    .with_timing_cache(true)
-                    .with_fp16(fp16);
-                if let Some(path) = &engine_cache_path {
-                    fs::create_dir_all(path).with_context(|| {
-                        format!(
-                            "failed to create TensorRT engine cache dir {}",
-                            path.display()
-                        )
-                    })?;
-                    tensorrt = tensorrt.with_engine_cache_path(path.display().to_string());
-                }
-                if let Some(path) = &timing_cache_path {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent).with_context(|| {
-                            format!(
-                                "failed to create TensorRT timing cache dir {}",
-                                parent.display()
-                            )
-                        })?;
-                    }
-                    tensorrt = tensorrt.with_timing_cache_path(path.display().to_string());
-                }
-
-                let cuda = CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .build();
-                let encoder = session_from_providers(
-                    &encoder_path,
-                    [tensorrt.clone().build(), cuda.clone(), cpu.clone()],
-                )?;
-                let decoder = session_from_providers(&decoder_path, [tensorrt.build(), cuda, cpu])?;
-                (encoder, decoder)
-            }
+            other => (
+                build_session_from_target(&encoder_path, &other, &session_cfg, true)?,
+                build_session_from_target(&decoder_path, &other, &session_cfg, true)?,
+            ),
         };
 
         Ok(Self {
@@ -456,81 +285,21 @@ impl OnnxLmCodec {
             bail!("bundle is missing LM model file {}", lm_path.display());
         }
 
-        let cpu = CPUExecutionProvider::default().build();
+        let session_cfg = ort_session_config();
         let session = match target {
-            ExecutionTarget::Cpu => session_from_providers(&lm_path, [cpu])?,
-            ExecutionTarget::Cuda { device_id } => {
-                if !CUDAExecutionProvider::default()
-                    .is_available()
-                    .unwrap_or(false)
-                {
-                    bail!("CUDA Execution Provider is not available");
-                }
-                let cuda = CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .build();
-                match session_from_providers(&lm_path, [cuda, cpu.clone()]) {
-                    Ok(session) => session,
-                    Err(_) => session_from_providers(&lm_path, [cpu])?,
-                }
-            }
             ExecutionTarget::CoreMl {
                 compute_units,
                 model_cache_dir,
                 low_precision_accumulation_on_gpu,
             } => {
-                let lm_cache_dir = model_cache_dir.as_ref().map(|path| path.join("lm_logits"));
-                session_from_providers(
-                    &lm_path,
-                    [
-                        coreml_provider(
-                            compute_units,
-                            lm_cache_dir.as_deref(),
-                            low_precision_accumulation_on_gpu,
-                        )?,
-                        cpu,
-                    ],
-                )?
+                let lm_target = ExecutionTarget::CoreMl {
+                    compute_units,
+                    model_cache_dir: model_cache_dir.as_ref().map(|path| path.join("lm_logits")),
+                    low_precision_accumulation_on_gpu,
+                };
+                build_session_from_target(&lm_path, &lm_target, &session_cfg, true)?
             }
-            ExecutionTarget::TensorRt {
-                device_id,
-                fp16,
-                engine_cache_path,
-                timing_cache_path,
-            } => {
-                let mut tensorrt = TensorRT::default()
-                    .with_device_id(device_id)
-                    .with_engine_cache(true)
-                    .with_force_sequential_engine_build(true)
-                    .with_builder_optimization_level(5)
-                    .with_timing_cache(true)
-                    .with_fp16(fp16);
-                if let Some(path) = &engine_cache_path {
-                    fs::create_dir_all(path).with_context(|| {
-                        format!(
-                            "failed to create TensorRT engine cache dir {}",
-                            path.display()
-                        )
-                    })?;
-                    tensorrt = tensorrt.with_engine_cache_path(path.display().to_string());
-                }
-                if let Some(path) = &timing_cache_path {
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent).with_context(|| {
-                            format!(
-                                "failed to create TensorRT timing cache dir {}",
-                                parent.display()
-                            )
-                        })?;
-                    }
-                    tensorrt = tensorrt.with_timing_cache_path(path.display().to_string());
-                }
-
-                let cuda = CUDAExecutionProvider::default()
-                    .with_device_id(device_id)
-                    .build();
-                session_from_providers(&lm_path, [tensorrt.build(), cuda, cpu])?
-            }
+            other => build_session_from_target(&lm_path, &other, &session_cfg, true)?,
         };
         metadata.lm_dim()?;
         metadata.lm_num_layers()?;
