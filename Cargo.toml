@@ -31,7 +31,7 @@ clap = { version = "4.5", features = ["derive"] }
 thiserror = "1.0"
 anyhow = { version = "1.0.98", optional = true }
 crc32fast = { version = "1.4", optional = true }
-gpu-worker-ort = { path = "../gpu-workers/gpu-worker-ort", optional = true }
+gpu-worker-ort = { git = "https://github.com/wavey-ai/gpu-workers.git", rev = "d7fcea671a28854d263a3eb06a2be629de98af43", optional = true }
 hound = { version = "3.5.1", optional = true }
 ndarray = { version = "0.17.2", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
