@@ -327,4 +327,36 @@ mod tests {
         assert_eq!(decoded.frames[1].frame_length, 2);
         assert_eq!(decoded.frames[1].codes, frames[1].codes);
     }
+
+    #[test]
+    fn incremental_raw_ecdc_matches_full_payload() {
+        let meta = test_meta();
+        let frames = vec![
+            RawEcdcFrame {
+                offset: 0,
+                samples: 7,
+                frame_length: 4,
+                scale: 0.5,
+                codes: vec![0, 1, 2, 3, 10, 11, 12, 13],
+            },
+            RawEcdcFrame {
+                offset: 4,
+                samples: 3,
+                frame_length: 2,
+                scale: 0.25,
+                codes: vec![20, 21, 0, 0, 30, 31, 0, 0],
+            },
+        ];
+
+        let full = encode_raw_ecdc(&meta, 7, &frames).unwrap();
+        let mut incremental = encode_raw_header(&meta, 7).unwrap();
+        for frame in &frames {
+            incremental.extend_from_slice(
+                &encode_raw_frame_payload(&meta, &frame.codes, frame.scale, frame.frame_length)
+                    .unwrap(),
+            );
+        }
+
+        assert_eq!(incremental, full);
+    }
 }

@@ -21,6 +21,13 @@
             Sample
             <input id="sample" type="text" value="mel-spec JFK speech" disabled />
           </label>
+          <label>
+            Mode
+            <select id="encode-mode">
+              <option value="incremental">Incremental</option>
+              <option value="batch">Batch</option>
+            </select>
+          </label>
           <label class="check">
             <input id="decode-playback" type="checkbox" checked />
             Decode + play
@@ -61,6 +68,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=jfk-decode-playback"></script>
+    <script type="module" src="./app.js?v=jfk-incremental"></script>
   </body>
 </html>

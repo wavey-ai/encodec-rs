@@ -15,10 +15,11 @@ Rust.
 
 ## Browser Support
 
-Browser support is currently experimental but functional for the raw `acv=0`
-path:
+The browser path supports raw `acv=0` `.ecdc` encode/decode:
 
 - encode a full audio file in the browser with `encode_frame.onnx`
+- encode incrementally by emitting the `.ecdc` header first and one raw frame
+  payload per ONNX segment
 - package the encoded frames into raw `.ecdc` with Rust wasm
 - decode the raw `.ecdc` frames with `decode_frame.onnx`
 - overlap-add decoded frames in Rust wasm
@@ -53,9 +54,16 @@ Then open:
 http://127.0.0.1:8787/browser-smoke/
 ```
 
-Click `Encode file` to encode the full JFK clip in the browser. With
-`Decode + play` checked, the page decodes the generated raw `.ecdc` payload and
-plays it back.
+Click `Encode file` to encode the full JFK clip in the browser. The `Mode`
+selector switches between:
+
+- `Incremental`: writes the raw `.ecdc` header, runs `encode_frame.onnx` one
+  segment at a time, and appends each `rawEcdcFramePayload`
+- `Batch`: runs all segments in one ONNX batch and packages the complete frame
+  list with `rawEcdcEncode`
+
+With `Decode + play` checked, the page decodes the generated raw `.ecdc`
+payload and plays it back.
 
 The exported wasm helpers used by the page are:
 
@@ -65,8 +73,9 @@ The exported wasm helpers used by the page are:
 - `rawEcdcDecodeFrames(bundleJson, payload)`
 - `rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
 
-LM-assisted `acv=4` payloads still use the native Rust ONNX loop today and need
-a separate browser bridge for iterative LM logits.
+LM-assisted `acv=4` payloads still use the native Rust ONNX loop today. Browser
+LM support needs a separate bridge for iterative `lm_logits.onnx` evaluation and
+arithmetic-coded chunk emission.
 
 ## Native Scope
 

@@ -3,6 +3,8 @@ import init, {
   initPanicHook,
   rawEcdcDecodeFrames,
   rawEcdcEncode,
+  rawEcdcFramePayload,
+  rawEcdcHeader,
   rawEcdcMetadata,
   rawEcdcOverlapAdd,
 } from "../pkg/encodec_rs.js";
@@ -15,6 +17,7 @@ ort.env.wasm.numThreads = 1;
 
 const els = {
   bundle: document.querySelector("#bundle"),
+  encodeMode: document.querySelector("#encode-mode"),
   decodePlayback: document.querySelector("#decode-playback"),
   run: document.querySelector("#run"),
   status: document.querySelector("#status"),
@@ -43,6 +46,7 @@ async function runEncodeSmoke() {
   clearMetrics();
   setStatus("Loading wasm and ONNX assets");
   const started = performance.now();
+  const encodeMode = els.encodeMode.value;
   const shouldDecode = els.decodePlayback.checked;
   if (shouldDecode) {
     await prepareAudioContext();
@@ -56,20 +60,12 @@ async function runEncodeSmoke() {
     const meta = JSON.parse(bundleJson);
     const sample = await loadJfkAudio(meta);
     const segments = buildSegmentBatch(sample.audio, sample.audioLength, meta);
-    setStatus(`Running encode_frame.onnx on ${segments.count} JFK segments`);
-
     const session = await getSession(bundleName, `${bundleRoot}/${meta.encode_model}`);
-    const feeds = {
-      [session.inputNames[0]]: new ort.Tensor("float32", segments.audio, [
-        segments.count,
-        meta.channels,
-        meta.segment_samples,
-      ]),
-    };
-    const outputs = await session.run(feeds);
-    const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
-    const frames = buildRawFrames(codesTensor.data, scaleTensor.data, segments, meta);
-    const ecdc = rawEcdcEncode(bundleJson, sample.audioLength, frames);
+    const encodeSummary =
+      encodeMode === "incremental"
+        ? await encodeIncremental(session, bundleJson, sample, segments, meta)
+        : await encodeBatch(session, bundleJson, sample, segments, meta);
+    const { ecdc, frames } = encodeSummary;
     const ecdcMeta = rawEcdcMetadata(ecdc);
     let decodeSummary = null;
     if (shouldDecode) {
@@ -79,8 +75,8 @@ async function runEncodeSmoke() {
 
     els.model.textContent = `${meta.model_name} ${meta.bandwidth_kbps} kbps`;
     els.input.textContent = `${sample.source.sampleRate} Hz ${sample.source.channels}ch -> [${segments.count}, ${meta.channels}, ${meta.segment_samples}]`;
-    els.codes.textContent = `${codesTensor.type} [${codesTensor.dims.join(", ")}]`;
-    els.scale.textContent = `${scaleTensor.type} [${scaleTensor.dims.join(", ")}]`;
+    els.codes.textContent = encodeSummary.codes;
+    els.scale.textContent = encodeSummary.scale;
     els.ecdc.textContent = `${ecdc.byteLength} bytes, ${sample.audioLength} samples, acv=${ecdcMeta.acv ?? ecdcMeta.bitstream_version ?? 0}`;
     els.elapsed.textContent = `${elapsed.toFixed(1)} ms`;
 
@@ -89,6 +85,7 @@ async function runEncodeSmoke() {
         {
           sessionInputs: session.inputNames,
           sessionOutputs: session.outputNames,
+          encode: encodeSummary.log,
           source: sample.source,
           packagedAudio: {
             audioLength: sample.audioLength,
@@ -98,7 +95,6 @@ async function runEncodeSmoke() {
             firstFrame: summarizeFrame(frames[0]),
             lastFrame: summarizeFrame(frames[frames.length - 1]),
           },
-          outputSummary: summarizeOutputs(outputs),
           decode: decodeSummary,
           ecdcMetadata: ecdcMeta,
           firstCodes: Array.from(frames[0].codes.slice(0, Math.min(16, frames[0].codes.length))),
@@ -112,6 +108,73 @@ async function runEncodeSmoke() {
   } finally {
     els.run.disabled = false;
   }
+}
+
+async function encodeBatch(session, bundleJson, sample, segments, meta) {
+  setStatus(`Running batch encode on ${segments.count} JFK segments`);
+  const feeds = {
+    [session.inputNames[0]]: new ort.Tensor("float32", segments.audio, [
+      segments.count,
+      meta.channels,
+      meta.segment_samples,
+    ]),
+  };
+  const outputs = await session.run(feeds);
+  const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
+  const frames = buildRawFrames(codesTensor.data, scaleTensor.data, segments, meta);
+  const ecdc = rawEcdcEncode(bundleJson, sample.audioLength, frames);
+
+  return {
+    ecdc,
+    frames,
+    codes: `${codesTensor.type} [${codesTensor.dims.join(", ")}]`,
+    scale: `${scaleTensor.type} [${scaleTensor.dims.join(", ")}]`,
+    log: {
+      mode: "batch",
+      emittedChunks: 1,
+      outputSummary: summarizeOutputs(outputs),
+    },
+  };
+}
+
+async function encodeIncremental(session, bundleJson, sample, segments, meta) {
+  setStatus(`Writing raw ECDC header and encoding ${segments.count} segments incrementally`);
+  const chunks = [rawEcdcHeader(bundleJson, sample.audioLength)];
+  const frames = [];
+  let lastOutputSummary = null;
+
+  for (let index = 0; index < segments.count; index += 1) {
+    setStatus(`Incremental encode ${index + 1}/${segments.count}`);
+    const segment = buildSingleSegment(sample.audio, sample.audioLength, segments, index, meta);
+    const feeds = {
+      [session.inputNames[0]]: new ort.Tensor("float32", segment.audio, [
+        1,
+        meta.channels,
+        meta.segment_samples,
+      ]),
+    };
+    const outputs = await session.run(feeds);
+    const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
+    const frame = buildRawFrame(codesTensor.data, scaleTensor.data, segment, meta, index);
+    chunks.push(rawEcdcFramePayload(bundleJson, frame.codes, frame.scale, frame.frameLength));
+    frames.push(frame);
+    lastOutputSummary = summarizeOutputs(outputs);
+    await nextAnimationFrame();
+  }
+
+  return {
+    ecdc: concatUint8Chunks(chunks),
+    frames,
+    codes: `int64 [1, ${meta.num_codebooks}, ${meta.frame_length}] x ${segments.count}`,
+    scale: `float32 [1, 1] x ${segments.count}`,
+    log: {
+      mode: "incremental",
+      emittedChunks: chunks.length,
+      headerBytes: chunks[0].byteLength,
+      payloadBytes: chunks.slice(1).reduce((sum, chunk) => sum + chunk.byteLength, 0),
+      lastOutputSummary,
+    },
+  };
 }
 
 async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength) {
@@ -302,6 +365,26 @@ function buildSegmentBatch(audio, audioLength, meta) {
   };
 }
 
+function buildSingleSegment(audio, audioLength, segments, index, meta) {
+  const offset = segments.starts[index];
+  const samples = Math.min(audioLength - offset, meta.segment_samples);
+  const segment = new Float32Array(meta.channels * meta.segment_samples);
+  for (let channel = 0; channel < meta.channels; channel += 1) {
+    const sourceBase = channel * audioLength + offset;
+    const targetBase = channel * meta.segment_samples;
+    for (let t = 0; t < samples; t += 1) {
+      segment[targetBase + t] = audio[sourceBase + t];
+    }
+  }
+
+  return {
+    audio: segment,
+    offset,
+    samples,
+    frameLength: segments.frameLengths[index],
+  };
+}
+
 function readAscii(view, offset, length) {
   let out = "";
   for (let index = 0; index < length; index += 1) {
@@ -351,21 +434,40 @@ function buildRawFrames(codes, scales, segments, meta) {
   }
 
   for (let batchIndex = 0; batchIndex < segments.count; batchIndex += 1) {
-    const offset = segments.starts[batchIndex];
-    const frameCodes = new Uint16Array(valuesPerSegment);
     const base = batchIndex * valuesPerSegment;
-    for (let index = 0; index < valuesPerSegment; index += 1) {
-      frameCodes[index] = toU16Code(codes[base + index], base + index);
-    }
-    frames.push({
-      offset,
-      samples: Math.min(segments.audioLength - offset, meta.segment_samples),
-      frameLength: segments.frameLengths[batchIndex],
-      scale: Number(scales[batchIndex] ?? 1),
-      codes: frameCodes,
-    });
+    frames.push(
+      buildRawFrame(
+        codes.subarray(base, base + valuesPerSegment),
+        scales.subarray(batchIndex, batchIndex + 1),
+        {
+          offset: segments.starts[batchIndex],
+          samples: Math.min(segments.audioLength - segments.starts[batchIndex], meta.segment_samples),
+          frameLength: segments.frameLengths[batchIndex],
+        },
+        meta,
+        batchIndex,
+      ),
+    );
   }
   return frames;
+}
+
+function buildRawFrame(codes, scales, segment, meta, segmentIndex) {
+  const valuesPerSegment = meta.num_codebooks * meta.frame_length;
+  if (codes.length !== valuesPerSegment) {
+    throw new Error(`Segment ${segmentIndex} codes length ${codes.length} does not match ${valuesPerSegment}`);
+  }
+  const frameCodes = new Uint16Array(valuesPerSegment);
+  for (let index = 0; index < valuesPerSegment; index += 1) {
+    frameCodes[index] = toU16Code(codes[index], segmentIndex * valuesPerSegment + index);
+  }
+  return {
+    offset: segment.offset,
+    samples: segment.samples,
+    frameLength: segment.frameLength,
+    scale: Number(scales[0] ?? 1),
+    codes: frameCodes,
+  };
 }
 
 function buildDecoderInputs(frames, meta) {
@@ -450,6 +552,21 @@ function summarizeOutputs(outputs) {
       },
     ]),
   );
+}
+
+function concatUint8Chunks(chunks) {
+  const byteLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function nextAnimationFrame() {
+  return new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
 function clearMetrics() {
