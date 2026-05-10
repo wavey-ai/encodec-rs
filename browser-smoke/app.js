@@ -30,6 +30,7 @@ const els = {
   codes: document.querySelector("#codes"),
   scale: document.querySelector("#scale"),
   ecdc: document.querySelector("#ecdc"),
+  ecdcBytes: document.querySelector("#ecdc-bytes"),
   runtimeUsed: document.querySelector("#runtime-used"),
   encodeTime: document.querySelector("#encode-time"),
   decodeTime: document.querySelector("#decode-time"),
@@ -104,7 +105,8 @@ async function runEncodeSmoke() {
     els.input.textContent = `${sample.source.sampleRate} Hz ${sample.source.channels}ch -> [${segments.count}, ${meta.channels}, ${meta.segment_samples}]`;
     els.codes.textContent = encodeSummary.codes;
     els.scale.textContent = encodeSummary.scale;
-    els.ecdc.textContent = `${ecdc.byteLength} bytes, ${sample.audioLength} samples, acv=${ecdcMeta.acv ?? ecdcMeta.bitstream_version ?? 0}`;
+    els.ecdc.textContent = `${sample.audioLength} samples, acv=${ecdcMeta.acv ?? ecdcMeta.bitstream_version ?? 0}`;
+    els.ecdcBytes.textContent = `${formatInteger(ecdc.byteLength)} bytes`;
     els.runtimeUsed.textContent = runtime.label;
     els.encodeTime.textContent = formatMs(encodeSummary.totalMs);
     els.decodeTime.textContent = decodeSummary ? formatMs(decodeSummary.totalMs) : "skipped";
@@ -733,6 +735,7 @@ function clearMetrics() {
     "codes",
     "scale",
     "ecdc",
+    "ecdcBytes",
     "runtimeUsed",
     "encodeTime",
     "decodeTime",
@@ -745,6 +748,10 @@ function clearMetrics() {
 
 function formatMs(ms) {
   return `${ms.toFixed(1)} ms`;
+}
+
+function formatInteger(value) {
+  return new Intl.NumberFormat("en-US").format(value);
 }
 
 function roundMs(ms) {
