@@ -3,10 +3,10 @@
 `encodec-rs` is a Rust EnCodec runtime with native and browser `.ecdc`
 encode/decode paths.
 
-It does not shell out to Python. It does not call an external `encodec`
-binary. The native runtime path is Rust plus ONNX Runtime only. The browser path
-runs the EnCodec ONNX frame models with `onnxruntime-web` and uses Rust wasm for
-raw `.ecdc` container work.
+Native execution is implemented in Rust on top of ONNX Runtime, without a
+Python bridge or external codec subprocess. The browser path runs the EnCodec
+ONNX frame models with `onnxruntime-web` and uses Rust wasm for raw `.ecdc`
+container work.
 
 ## What It Does
 
