@@ -1,5 +1,8 @@
 # encodec-rs
 
+Live browser demo:
+[`https://wavey.ai/code/encodec-rs/browser-smoke/`](https://wavey.ai/code/encodec-rs/browser-smoke/)
+
 `encodec-rs` is a Rust EnCodec runtime with native and browser `.ecdc`
 encode/decode paths.
 
