@@ -316,15 +316,7 @@ async function getSession(bundleName, modelPath, runtime) {
 function selectedRuntime() {
   if (els.runtime.value === "webgpu") {
     if (!navigator.gpu) {
-      throw new Error(
-        [
-          "WebGPU is not exposed by this browser context.",
-          "On Safari, use Safari 26 or newer, or Safari Technology Preview with the WebGPU feature enabled.",
-          "Apple Silicon support is not enough by itself; the page needs navigator.gpu.",
-          `secureContext=${window.isSecureContext}`,
-          `userAgent=${navigator.userAgent}`,
-        ].join(" "),
-      );
+      throw new Error(webGpuUnavailableMessage());
     }
     return {
       id: "webgpu",
@@ -338,6 +330,34 @@ function selectedRuntime() {
     label: "WASM CPU",
     executionProviders: ["wasm"],
   };
+}
+
+function webGpuUnavailableMessage() {
+  const context = `secureContext=${window.isSecureContext} userAgent=${navigator.userAgent}`;
+  if (isSafariBrowser()) {
+    return [
+      "WebGPU is not exposed by this Safari context.",
+      "To enable it: Safari > Settings > Advanced > enable Show features for web developers.",
+      "Then open Develop > Feature Flags, search WebGPU, and enable WebGPU.",
+      "If present, also enable GPU Process: DOM Rendering and GPU Process: Canvas Rendering.",
+      "Quit Safari with Cmd+Q, reopen it, reload this page, and check navigator.gpu in the console.",
+      "If navigator.gpu is still undefined, use Safari Technology Preview or Safari 26+.",
+      "Apple Silicon support is not enough by itself; the browser must expose navigator.gpu.",
+      context,
+    ].join(" ");
+  }
+
+  return [
+    "WebGPU is not exposed by this browser context.",
+    "Select WASM CPU or use a WebGPU-capable browser.",
+    "Apple Silicon support is not enough by itself; the page needs navigator.gpu.",
+    context,
+  ].join(" ");
+}
+
+function isSafariBrowser() {
+  const ua = navigator.userAgent;
+  return /\bSafari\//.test(ua) && /\bVersion\//.test(ua) && !/\b(Chrome|Chromium|CriOS|FxiOS|Edg|OPR)\//.test(ua);
 }
 
 async function fetchText(url) {

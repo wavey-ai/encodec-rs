@@ -77,7 +77,10 @@ The `Runtime` selector controls ONNX Runtime Web session creation:
 
 Safari requires Safari 26 or newer for WebGPU, or Safari Technology Preview
 with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself;
-the browser must expose `navigator.gpu` to the page.
+the browser must expose `navigator.gpu` to the page. In Safari, enable
+`Show features for web developers`, then open `Develop > Feature Flags`, search
+for `WebGPU`, and enable it. If present, also enable `GPU Process: DOM Rendering`
+and `GPU Process: Canvas Rendering`, then quit and reopen Safari.
 
 The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
