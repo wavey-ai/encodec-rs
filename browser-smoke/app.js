@@ -12,7 +12,7 @@ import init, {
   rawEcdcHeader,
   rawEcdcMetadata,
   rawEcdcOverlapAdd,
-} from "../pkg/encodec_rs.js";
+} from "../pkg/encodec_rs.js?v=lm-coding-v2";
 
 ort.env.wasm.wasmPaths = new URL(
   "./node_modules/onnxruntime-web/dist/",
@@ -616,7 +616,7 @@ async function decodeLmFrame(lmSession, bundleJson, meta, chunk) {
 
 async function initWasm() {
   if (!wasmReady) {
-    wasmReady = init("../pkg/encodec_rs_bg.wasm").then(() => {
+    wasmReady = init(new URL("../pkg/encodec_rs_bg.wasm?v=lm-coding-v2", window.location.href).href).then(() => {
       initPanicHook();
     });
   }
