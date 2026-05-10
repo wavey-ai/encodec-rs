@@ -1,10 +1,12 @@
 # encodec-rs
 
-`encodec-rs` is a pure Rust EnCodec runtime with native `.ecdc` encode and
-decode.
+`encodec-rs` is a Rust EnCodec runtime with native and browser `.ecdc`
+encode/decode paths.
 
 It does not shell out to Python. It does not call an external `encodec`
-binary. The runtime path is Rust plus ONNX Runtime only.
+binary. The native runtime path is Rust plus ONNX Runtime only. The browser path
+runs the EnCodec ONNX frame models with `onnxruntime-web` and uses Rust wasm for
+raw `.ecdc` container work.
 
 ## What It Does
 
@@ -13,8 +15,65 @@ binary. The runtime path is Rust plus ONNX Runtime only.
 - decodes `.ecdc` back to WAV
 - runs LM-assisted entropy coding in Rust
 - runs on CPU, CUDA, CoreML, or TensorRT
+- runs a browser encode/decode/playback smoke page with `onnxruntime-web` +
+  Rust wasm
 
-## Current Scope
+## Browser Support
+
+Browser support is currently experimental but functional for the raw `acv=0`
+path:
+
+- encode a full audio file in the browser with `encode_frame.onnx`
+- package the encoded frames into raw `.ecdc` with Rust wasm
+- decode the raw `.ecdc` frames with `decode_frame.onnx`
+- overlap-add decoded frames in Rust wasm
+- play reconstructed audio through Web Audio
+
+The checked-in browser smoke page uses the short JFK sample from a sibling
+`mel-spec` checkout:
+
+```text
+../mel-spec/testdata/jfk_f32le.wav
+```
+
+Build the wasm package:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo check --lib --no-default-features --features wasm --target wasm32-unknown-unknown
+cargo install wasm-pack
+wasm-pack build --target web --no-default-features --features wasm
+```
+
+Run the local browser encode/decode/playback page:
+
+```bash
+npm install --prefix browser-smoke
+python3 browser-smoke/serve.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787/browser-smoke/
+```
+
+Click `Encode file` to encode the full JFK clip in the browser. With
+`Decode + play` checked, the page decodes the generated raw `.ecdc` payload and
+plays it back.
+
+The exported wasm helpers used by the page are:
+
+- `rawEcdcHeader(bundleJson, audioLength)`
+- `rawEcdcFramePayload(bundleJson, codes, scale, frameLength)`
+- `rawEcdcEncode(bundleJson, audioLength, frames)`
+- `rawEcdcDecodeFrames(bundleJson, payload)`
+- `rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
+
+LM-assisted `acv=4` payloads still use the native Rust ONNX loop today and need
+a separate browser bridge for iterative LM logits.
+
+## Native Scope
 
 The current checked-in bundles target the `48 kHz` stereo model family:
 
@@ -40,7 +99,7 @@ So LM-assisted `.ecdc` compression works out of the box.
 
 The only non-Rust runtime dependency is ONNX Runtime for model execution.
 
-## Build
+## Native Build
 
 ```bash
 cargo build --release --features onnx
@@ -51,58 +110,6 @@ Run tests:
 ```bash
 cargo test --features onnx
 ```
-
-## Browser / Wasm Experiment
-
-There is an experimental wasm surface for browser work. It intentionally does
-not pull in native ONNX Runtime. The browser side runs `encode_frame.onnx` /
-`decode_frame.onnx` with `onnxruntime-web`, then uses Rust wasm for raw `.ecdc`
-container work.
-
-Build the wasm package:
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo check --lib --no-default-features --features wasm --target wasm32-unknown-unknown
-cargo install wasm-pack
-wasm-pack build --target web --no-default-features --features wasm
-```
-
-Run the local browser encode/decode/playback smoke page:
-
-```bash
-npm install --prefix browser-smoke
-python3 browser-smoke/serve.py
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8787/browser-smoke/
-```
-
-The page loads the short JFK sample from a sibling `mel-spec` checkout:
-
-```text
-../mel-spec/testdata/jfk_f32le.wav
-```
-
-Click `Encode file` to encode the full JFK clip in the browser. With
-`Decode + play` checked, the page then decodes the raw `.ecdc` frames with
-`decode_frame.onnx`, overlap-adds the decoded frames in Rust wasm, and plays the
-reconstructed audio through Web Audio.
-
-The exported wasm helpers used by the page are:
-
-- `rawEcdcHeader(bundleJson, audioLength)`
-- `rawEcdcFramePayload(bundleJson, codes, scale, frameLength)`
-- `rawEcdcEncode(bundleJson, audioLength, frames)`
-- `rawEcdcDecodeFrames(bundleJson, payload)`
-- `rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
-
-This first browser path supports raw `acv=0` `.ecdc` payloads. LM-assisted
-`acv=4` payloads still use the native Rust ONNX loop today and need a separate
-browser bridge for iterative LM logits.
 
 ## CLI
 
