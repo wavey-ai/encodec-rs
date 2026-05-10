@@ -1,4 +1,4 @@
-#[cfg(feature = "onnx")]
+#[cfg(any(feature = "onnx", feature = "wasm"))]
 pub mod arithmetic;
 #[cfg(feature = "ecdc")]
 pub mod binary;

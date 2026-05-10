@@ -9,8 +9,9 @@ encode/decode paths.
 Native execution is implemented in Rust on top of ONNX Runtime and has no
 Python runtime dependency. It does not require a Python bridge or external codec
 subprocess. The browser path runs the EnCodec ONNX frame models with
-`onnxruntime-web` and uses Rust wasm for raw `.ecdc` container work; it also
-has no Python runtime dependency.
+`onnxruntime-web` and uses Rust wasm for `.ecdc` packaging, parsing,
+overlap-add, and LM arithmetic coding. It also has no Python runtime
+dependency.
 
 The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
 WAV to `.ecdc`, decodes `.ecdc` back to WAV, and supports CPU, CUDA, CoreML,
@@ -19,13 +20,15 @@ Rust.
 
 ## Browser Support
 
-The browser path supports raw `acv=0` `.ecdc` encode/decode:
+The browser path supports raw `acv=0` and LM-assisted `acv=4` `.ecdc`
+encode/decode:
 
 - encode a full audio file in the browser with `encode_frame.onnx`
-- encode incrementally by emitting the `.ecdc` header first and one raw frame
-  payload per ONNX segment
-- package the encoded frames into raw `.ecdc` with Rust wasm
-- decode the raw `.ecdc` frames with `decode_frame.onnx`
+- encode incrementally by emitting the `.ecdc` header first and one chunk per
+  ONNX segment
+- package raw frame payloads or LM arithmetic-coded chunks with Rust wasm
+- run `lm_logits.onnx` in the browser for LM encode/decode
+- decode raw or LM `.ecdc` payloads with `decode_frame.onnx`
 - overlap-add decoded frames in Rust wasm
 - play reconstructed audio through Web Audio
 - run ONNX models through either WASM CPU or WebGPU in the browser
@@ -59,15 +62,16 @@ Then open:
 http://127.0.0.1:8787/browser-smoke/
 ```
 
-Click `Encode file` to encode the full JFK clip in the browser. The `Mode`
-selector switches between:
+Click `Encode file` to encode the full JFK clip in the browser. The `Coding`
+selector switches between raw `acv=0` and LM `acv=4`. The `Mode` selector
+switches between:
 
-- `Incremental`: writes the raw `.ecdc` header, runs `encode_frame.onnx` one
-  segment at a time, and appends each `rawEcdcFramePayload`
-- `Batch`: runs all segments in one ONNX batch and packages the complete frame
-  list with `rawEcdcEncode`
+- `Incremental`: writes the `.ecdc` header, runs `encode_frame.onnx` one
+  segment at a time, and appends a raw frame payload or LM chunk immediately
+- `Batch`: runs all segments in one ONNX batch, then packages the complete raw
+  frame list or LM chunk list
 
-With `Decode + play` checked, the page decodes the generated raw `.ecdc`
+With `Decode + play` checked, the page decodes the generated raw or LM `.ecdc`
 payload and plays it back.
 
 The `Runtime` selector controls ONNX Runtime Web session creation:
@@ -88,6 +92,24 @@ and `GPU Process: Canvas Rendering`, then quit and reopen Safari.
 The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
+
+The JFK smoke sample currently reports `8,468` bytes for raw `acv=0`.
+LM `acv=4` reduces that to `5,008` bytes on WebGPU and `5,005` bytes on
+WASM CPU, saving about `40.9%` versus raw mode. Small byte-size differences
+between WebGPU and WASM CPU can happen because ONNX Runtime providers do not
+guarantee bit-identical floating-point model outputs.
+
+Local browser smoke matrix on this M1 Air, using Chrome headless:
+
+| Path | Decode + play | WebGPU size | WebGPU encode | WebGPU decode | WASM CPU size | WASM CPU encode | WASM CPU decode | Result |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| raw `acv=0`, incremental | yes | 8,468 bytes | 1,609.2 ms | 1,467.4 ms | 8,468 bytes | 3,411.6 ms | 3,205.2 ms | pass |
+| LM `acv=4`, incremental | yes | 5,008 bytes | 16,258.9 ms | 16,575.7 ms | 5,005 bytes | 7,883.3 ms | 7,475.0 ms | pass |
+| LM `acv=4`, batch | no | 5,008 bytes | 17,557.8 ms | skipped | 5,005 bytes | 7,892.6 ms | skipped | pass |
+
+These runs used the `48 kHz 6 kbps` bundle and the 11 second JFK sample. LM
+mode saved `3,460` bytes on the WebGPU run and `3,463` bytes on the WASM CPU
+run.
 
 The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
 Large ONNX files are split into static parts during deployment so they stay
@@ -120,10 +142,11 @@ The exported wasm helpers used by the page are:
 - `rawEcdcEncode(bundleJson, audioLength, frames)`
 - `rawEcdcDecodeFrames(bundleJson, payload)`
 - `rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
-
-LM-assisted `acv=4` payloads still use the native Rust ONNX loop today. Browser
-LM support needs a separate bridge for iterative `lm_logits.onnx` evaluation and
-arithmetic-coded chunk emission.
+- `lmEcdcHeader(bundleJson, audioLength)`
+- `lmEcdcChunk(payload)`
+- `lmEcdcDecodeChunks(bundleJson, payload)`
+- `LmChunkEncoder`
+- `LmChunkDecoder`
 
 ## Native Scope
 

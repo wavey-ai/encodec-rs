@@ -1,6 +1,11 @@
 import * as ort from "./node_modules/onnxruntime-web/dist/ort.webgpu.min.mjs";
 import init, {
   initPanicHook,
+  lmEcdcChunk,
+  lmEcdcDecodeChunks,
+  lmEcdcHeader,
+  LmChunkDecoder,
+  LmChunkEncoder,
   rawEcdcDecodeFrames,
   rawEcdcEncode,
   rawEcdcFramePayload,
@@ -22,6 +27,7 @@ const els = {
   bundle: document.querySelector("#bundle"),
   runtime: document.querySelector("#runtime"),
   encodeMode: document.querySelector("#encode-mode"),
+  coding: document.querySelector("#coding"),
   decodePlayback: document.querySelector("#decode-playback"),
   run: document.querySelector("#run"),
   status: document.querySelector("#status"),
@@ -57,6 +63,7 @@ async function runEncodeSmoke() {
   try {
     const runtime = selectedRuntime();
     const encodeMode = els.encodeMode.value;
+    const coding = els.coding.value;
     const shouldDecode = els.decodePlayback.checked;
     els.runtimeUsed.textContent = runtime.label;
     setStatus(`Loading wasm and ONNX assets (${runtime.label})`);
@@ -73,14 +80,23 @@ async function runEncodeSmoke() {
     const segments = buildSegmentBatch(sample.audio, sample.audioLength, meta);
     const encodeStarted = performance.now();
     const encodeSessionStarted = performance.now();
-    const session = await getSession(bundleName, `${bundleRoot}/${meta.encode_model}`, runtime);
+    const encodeSession = await getSession(bundleName, `${bundleRoot}/${meta.encode_model}`, runtime);
+    const lmSession =
+      coding === "lm"
+        ? await getSession(`${bundleName}:lm`, `${bundleRoot}/${meta.lm_model}`, runtime)
+        : null;
     const encodeSessionMs = performance.now() - encodeSessionStarted;
     const encodeSummary =
-      encodeMode === "incremental"
-        ? await encodeIncremental(session, bundleJson, sample, segments, meta)
-        : await encodeBatch(session, bundleJson, sample, segments, meta);
+      coding === "lm"
+        ? encodeMode === "incremental"
+          ? await encodeLmIncremental(encodeSession, lmSession, bundleJson, sample, segments, meta)
+          : await encodeLmBatch(encodeSession, lmSession, bundleJson, sample, segments, meta)
+        : encodeMode === "incremental"
+          ? await encodeIncremental(encodeSession, bundleJson, sample, segments, meta)
+          : await encodeBatch(encodeSession, bundleJson, sample, segments, meta);
     encodeSummary.totalMs = performance.now() - encodeStarted;
     encodeSummary.sessionMs = encodeSessionMs;
+    encodeSummary.log.coding = coding;
     encodeSummary.log.runtime = runtime.label;
     encodeSummary.log.executionProviders = runtime.executionProviders;
     encodeSummary.log.timings.sessionMs = roundMs(encodeSessionMs);
@@ -120,8 +136,10 @@ async function runEncodeSmoke() {
             executionProviders: runtime.executionProviders,
             browserGpu: runtime.id === "webgpu" ? "WebGPU; Metal-backed on macOS browser implementations" : null,
           },
-          sessionInputs: session.inputNames,
-          sessionOutputs: session.outputNames,
+          sessionInputs: encodeSession.inputNames,
+          sessionOutputs: encodeSession.outputNames,
+          lmSessionInputs: lmSession?.inputNames ?? null,
+          lmSessionOutputs: lmSession?.outputNames ?? null,
           encode: encodeSummary.log,
           source: sample.source,
           packagedAudio: {
@@ -242,7 +260,197 @@ async function encodeIncremental(session, bundleJson, sample, segments, meta) {
   };
 }
 
+async function encodeLmBatch(encodeSession, lmSession, bundleJson, sample, segments, meta) {
+  if (!lmSession) {
+    throw new Error("LM coding requires lm_logits.onnx");
+  }
+  setStatus(`Running batch encode on ${segments.count} JFK segments for LM coding`);
+  const started = performance.now();
+  const feeds = {
+    [encodeSession.inputNames[0]]: new ort.Tensor("float32", segments.audio, [
+      segments.count,
+      meta.channels,
+      meta.segment_samples,
+    ]),
+  };
+  const frameStarted = performance.now();
+  const outputs = await encodeSession.run(feeds);
+  const frameOnnxMs = performance.now() - frameStarted;
+  const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
+  const frames = buildRawFrames(codesTensor.data, scaleTensor.data, segments, meta);
+  const lmSummary = await encodeLmFrames(lmSession, bundleJson, sample.audioLength, frames, meta);
+  const workMs = performance.now() - started;
+
+  return {
+    ecdc: lmSummary.ecdc,
+    frames,
+    codes: `${codesTensor.type} [${codesTensor.dims.join(", ")}]`,
+    scale: `${scaleTensor.type} [${scaleTensor.dims.join(", ")}]`,
+    log: {
+      mode: "batch",
+      emittedChunks: lmSummary.emittedChunks,
+      headerBytes: lmSummary.headerBytes,
+      payloadBytes: lmSummary.payloadBytes,
+      timings: {
+        onnxMs: roundMs(frameOnnxMs + lmSummary.lmOnnxMs),
+        frameOnnxMs: roundMs(frameOnnxMs),
+        lmOnnxMs: roundMs(lmSummary.lmOnnxMs),
+        arithmeticMs: roundMs(lmSummary.arithmeticMs),
+        packMs: roundMs(lmSummary.packMs),
+        workMs: roundMs(workMs),
+      },
+      outputSummary: summarizeOutputs(outputs),
+      lastLmOutputSummary: lmSummary.lastOutputSummary,
+    },
+  };
+}
+
+async function encodeLmIncremental(encodeSession, lmSession, bundleJson, sample, segments, meta) {
+  if (!lmSession) {
+    throw new Error("LM coding requires lm_logits.onnx");
+  }
+  setStatus(`Writing LM ECDC header and encoding ${segments.count} segments incrementally`);
+  const started = performance.now();
+  let packStarted = performance.now();
+  const chunks = [lmEcdcHeader(bundleJson, sample.audioLength)];
+  let packMs = performance.now() - packStarted;
+  let frameOnnxMs = 0;
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  const frames = [];
+  let lastOutputSummary = null;
+  let lastLmOutputSummary = null;
+
+  for (let index = 0; index < segments.count; index += 1) {
+    setStatus(`LM incremental encode ${index + 1}/${segments.count}`);
+    const segment = buildSingleSegment(sample.audio, sample.audioLength, segments, index, meta);
+    const feeds = {
+      [encodeSession.inputNames[0]]: new ort.Tensor("float32", segment.audio, [
+        1,
+        meta.channels,
+        meta.segment_samples,
+      ]),
+    };
+    const frameStarted = performance.now();
+    const outputs = await encodeSession.run(feeds);
+    frameOnnxMs += performance.now() - frameStarted;
+    const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
+    const frame = buildRawFrame(codesTensor.data, scaleTensor.data, segment, meta, index);
+    const lmFrame = await encodeLmFrame(lmSession, bundleJson, frame, meta);
+    lmOnnxMs += lmFrame.lmOnnxMs;
+    arithmeticMs += lmFrame.arithmeticMs;
+    packStarted = performance.now();
+    chunks.push(lmEcdcChunk(lmFrame.payload));
+    packMs += performance.now() - packStarted;
+    frames.push(frame);
+    lastOutputSummary = summarizeOutputs(outputs);
+    lastLmOutputSummary = lmFrame.lastOutputSummary;
+    await nextAnimationFrame();
+  }
+  packStarted = performance.now();
+  const ecdc = concatUint8Chunks(chunks);
+  packMs += performance.now() - packStarted;
+  const workMs = performance.now() - started;
+
+  return {
+    ecdc,
+    frames,
+    codes: `int64 [1, ${meta.num_codebooks}, ${meta.frame_length}] x ${segments.count}`,
+    scale: `float32 [1, 1] x ${segments.count}`,
+    log: {
+      mode: "incremental",
+      emittedChunks: chunks.length,
+      headerBytes: chunks[0].byteLength,
+      payloadBytes: chunks.slice(1).reduce((sum, chunk) => sum + chunk.byteLength, 0),
+      timings: {
+        onnxMs: roundMs(frameOnnxMs + lmOnnxMs),
+        frameOnnxMs: roundMs(frameOnnxMs),
+        lmOnnxMs: roundMs(lmOnnxMs),
+        arithmeticMs: roundMs(arithmeticMs),
+        packMs: roundMs(packMs),
+        workMs: roundMs(workMs),
+      },
+      lastOutputSummary,
+      lastLmOutputSummary,
+    },
+  };
+}
+
+async function encodeLmFrames(lmSession, bundleJson, audioLength, frames, meta) {
+  let packStarted = performance.now();
+  const chunks = [lmEcdcHeader(bundleJson, audioLength)];
+  let packMs = performance.now() - packStarted;
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  let lastOutputSummary = null;
+
+  for (let index = 0; index < frames.length; index += 1) {
+    setStatus(`LM coding frame ${index + 1}/${frames.length}`);
+    const lmFrame = await encodeLmFrame(lmSession, bundleJson, frames[index], meta);
+    lmOnnxMs += lmFrame.lmOnnxMs;
+    arithmeticMs += lmFrame.arithmeticMs;
+    lastOutputSummary = lmFrame.lastOutputSummary;
+    packStarted = performance.now();
+    chunks.push(lmEcdcChunk(lmFrame.payload));
+    packMs += performance.now() - packStarted;
+    await nextAnimationFrame();
+  }
+  packStarted = performance.now();
+  const ecdc = concatUint8Chunks(chunks);
+  packMs += performance.now() - packStarted;
+
+  return {
+    ecdc,
+    emittedChunks: chunks.length,
+    headerBytes: chunks[0].byteLength,
+    payloadBytes: chunks.slice(1).reduce((sum, chunk) => sum + chunk.byteLength, 0),
+    lmOnnxMs,
+    arithmeticMs,
+    packMs,
+    lastOutputSummary,
+  };
+}
+
+async function encodeLmFrame(lmSession, bundleJson, frame, meta) {
+  const encoder = new LmChunkEncoder(bundleJson, frame.scale);
+  let states = initialLmStates(meta);
+  let offset = 0;
+  let inputValues = new BigInt64Array(meta.num_codebooks);
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  let lastOutputSummary = null;
+
+  for (let step = 0; step < frame.frameLength; step += 1) {
+    const lmStarted = performance.now();
+    const lm = await runLmStep(lmSession, meta, inputValues, offset, states);
+    lmOnnxMs += performance.now() - lmStarted;
+    const stepCodes = frameStepCodes(frame, meta, step);
+    const arithmeticStarted = performance.now();
+    encoder.push(lm.logits.data, stepCodes);
+    arithmeticMs += performance.now() - arithmeticStarted;
+    inputValues = lmInputFromCodes(stepCodes);
+    states = lm.nextStates;
+    offset = lm.nextOffset;
+    lastOutputSummary = lm.outputSummary;
+  }
+
+  return {
+    payload: encoder.finish(),
+    lmOnnxMs,
+    arithmeticMs,
+    lastOutputSummary,
+  };
+}
+
 async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime) {
+  const metadata = rawEcdcMetadata(ecdc);
+  if ((metadata.acv ?? metadata.bitstream_version ?? 0) === 4) {
+    return decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime);
+  }
+  return decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime);
+}
+
+async function decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime) {
   const started = performance.now();
   setStatus("Parsing raw ECDC frames in wasm");
   const parseStarted = performance.now();
@@ -289,6 +497,120 @@ async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, aud
       overlapMs: roundMs(overlapMs),
       totalMs: roundMs(totalMs),
     },
+  };
+}
+
+async function decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime) {
+  const started = performance.now();
+  setStatus("Parsing LM ECDC chunks in wasm");
+  const parseStarted = performance.now();
+  const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
+  const parseMs = performance.now() - parseStarted;
+
+  setStatus(`Running lm_logits.onnx on ${parsed.chunks.length} LM chunks`);
+  const lmSessionStarted = performance.now();
+  const lmSession = await getSession(`${bundleName}:lm`, `${bundleRoot}/${meta.lm_model}`, runtime);
+  const lmSessionMs = performance.now() - lmSessionStarted;
+
+  const frames = [];
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  let lastLmOutputSummary = null;
+  for (let index = 0; index < parsed.chunks.length; index += 1) {
+    setStatus(`LM decode chunk ${index + 1}/${parsed.chunks.length}`);
+    const frame = await decodeLmFrame(lmSession, bundleJson, meta, parsed.chunks[index]);
+    frames.push(frame.frame);
+    lmOnnxMs += frame.lmOnnxMs;
+    arithmeticMs += frame.arithmeticMs;
+    lastLmOutputSummary = frame.lastOutputSummary;
+    await nextAnimationFrame();
+  }
+
+  const decoderInputs = buildDecoderInputs(frames, meta);
+  setStatus(`Running decode_frame.onnx on ${frames.length} JFK segments`);
+  const decodeSessionStarted = performance.now();
+  const decodeSession = await getSession(`${bundleName}:decode`, `${bundleRoot}/${meta.decode_model}`, runtime);
+  const decodeSessionMs = performance.now() - decodeSessionStarted;
+  const feeds = {
+    [decodeSession.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
+      frames.length,
+      meta.num_codebooks,
+      meta.frame_length,
+    ]),
+    [decodeSession.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
+  };
+  const decodeStarted = performance.now();
+  const outputs = await decodeSession.run(feeds);
+  const decodeOnnxMs = performance.now() - decodeStarted;
+  const decodedTensor = findDecodeOutput(outputs);
+
+  setStatus("Overlap-adding decoded frames in wasm");
+  const overlapStarted = performance.now();
+  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const overlapMs = performance.now() - overlapStarted;
+  playPlanarAudio(decodedAudio, meta.channels, meta.sample_rate);
+  const totalMs = performance.now() - started;
+
+  return {
+    parsedFrames: frames.length,
+    lmInputs: lmSession.inputNames,
+    lmOutputs: lmSession.outputNames,
+    decoderInputs: decodeSession.inputNames,
+    decoderOutputs: decodeSession.outputNames,
+    decodedShape: decodedTensor.dims,
+    playbackSeconds: Number((audioLength / meta.sample_rate).toFixed(3)),
+    totalMs,
+    timings: {
+      parseMs: roundMs(parseMs),
+      lmSessionMs: roundMs(lmSessionMs),
+      lmOnnxMs: roundMs(lmOnnxMs),
+      arithmeticMs: roundMs(arithmeticMs),
+      decodeSessionMs: roundMs(decodeSessionMs),
+      decodeOnnxMs: roundMs(decodeOnnxMs),
+      overlapMs: roundMs(overlapMs),
+      totalMs: roundMs(totalMs),
+    },
+    lastLmOutputSummary,
+  };
+}
+
+async function decodeLmFrame(lmSession, bundleJson, meta, chunk) {
+  const decoder = new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
+  let states = initialLmStates(meta);
+  let offset = 0;
+  let inputValues = new BigInt64Array(meta.num_codebooks);
+  const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  let lastOutputSummary = null;
+
+  for (let step = 0; step < chunk.frameLength; step += 1) {
+    const lmStarted = performance.now();
+    const lm = await runLmStep(lmSession, meta, inputValues, offset, states);
+    lmOnnxMs += performance.now() - lmStarted;
+    const arithmeticStarted = performance.now();
+    const symbols = decoder.pull(lm.logits.data);
+    arithmeticMs += performance.now() - arithmeticStarted;
+    for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+      codes[codebook * meta.frame_length + step] = symbols[codebook];
+    }
+    inputValues = lmInputFromCodes(symbols);
+    states = lm.nextStates;
+    offset = lm.nextOffset;
+    lastOutputSummary = lm.outputSummary;
+  }
+
+  return {
+    frame: {
+      offset: chunk.offset,
+      samples: chunk.samples,
+      frameLength: chunk.frameLength,
+      scale: decoder.scale(),
+      codes,
+    },
+    lmOnnxMs,
+    arithmeticMs,
+    lastOutputSummary,
   };
 }
 
@@ -570,6 +892,80 @@ function findDecodeOutput(outputs) {
     throw new Error(`Unexpected decoder outputs: ${JSON.stringify(summarizeOutputs(outputs))}`);
   }
   return tensor;
+}
+
+function initialLmStates(meta) {
+  return Array.from({ length: meta.lm_num_layers }, () => ({
+    data: new Float32Array(meta.lm_dim),
+    dims: [1, 1, meta.lm_dim],
+  }));
+}
+
+async function runLmStep(session, meta, inputValues, offset, states) {
+  const feeds = {
+    indices: new ort.Tensor("int64", new BigInt64Array(inputValues), [1, meta.num_codebooks, 1]),
+    offset: new ort.Tensor("int64", new BigInt64Array([BigInt(offset)]), []),
+  };
+  for (let index = 0; index < states.length; index += 1) {
+    feeds[`state_${index}`] = new ort.Tensor("float32", states[index].data, states[index].dims);
+  }
+  const outputs = await session.run(feeds);
+  const logits = outputs.logits ?? findLmLogitsOutput(outputs, meta);
+  const offsetTensor = outputs.offset_out ?? findLmOffsetOutput(outputs);
+  const nextStates = states.map((_, index) => {
+    const tensor = outputs[`next_state_${index}`];
+    if (!tensor) {
+      throw new Error(`LM output next_state_${index} was not returned`);
+    }
+    return {
+      data: tensor.data,
+      dims: tensor.dims,
+    };
+  });
+  return {
+    logits,
+    nextOffset: Number(offsetTensor.data[0]),
+    nextStates,
+    outputSummary: summarizeOutputs(outputs),
+  };
+}
+
+function findLmLogitsOutput(outputs, meta) {
+  const tensor = Object.values(outputs).find(
+    (candidate) =>
+      candidate.type === "float32" &&
+      candidate.dims.length === 4 &&
+      candidate.dims[1] === meta.lm_cardinality &&
+      candidate.dims[2] === meta.num_codebooks,
+  );
+  if (!tensor) {
+    throw new Error(`Unexpected LM outputs: ${JSON.stringify(summarizeOutputs(outputs))}`);
+  }
+  return tensor;
+}
+
+function findLmOffsetOutput(outputs) {
+  const tensor = Object.values(outputs).find((candidate) => candidate.type === "int64" && candidate.data.length === 1);
+  if (!tensor) {
+    throw new Error(`Unexpected LM outputs: ${JSON.stringify(summarizeOutputs(outputs))}`);
+  }
+  return tensor;
+}
+
+function frameStepCodes(frame, meta, step) {
+  const codes = new Uint16Array(meta.num_codebooks);
+  for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+    codes[codebook] = frame.codes[codebook * meta.frame_length + step];
+  }
+  return codes;
+}
+
+function lmInputFromCodes(codes) {
+  const input = new BigInt64Array(codes.length);
+  for (let index = 0; index < codes.length; index += 1) {
+    input[index] = BigInt(codes[index] + 1);
+  }
+  return input;
 }
 
 function toU16Code(raw, index) {
