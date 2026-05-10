@@ -52,6 +52,58 @@ Run tests:
 cargo test --features onnx
 ```
 
+## Browser / Wasm Experiment
+
+There is an experimental wasm surface for browser work. It intentionally does
+not pull in native ONNX Runtime. The browser side runs `encode_frame.onnx` /
+`decode_frame.onnx` with `onnxruntime-web`, then uses Rust wasm for raw `.ecdc`
+container work.
+
+Build the wasm package:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo check --lib --no-default-features --features wasm --target wasm32-unknown-unknown
+cargo install wasm-pack
+wasm-pack build --target web --no-default-features --features wasm
+```
+
+Run the local browser encode/decode/playback smoke page:
+
+```bash
+npm install --prefix browser-smoke
+python3 browser-smoke/serve.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787/browser-smoke/
+```
+
+The page loads the short JFK sample from a sibling `mel-spec` checkout:
+
+```text
+../mel-spec/testdata/jfk_f32le.wav
+```
+
+Click `Encode file` to encode the full JFK clip in the browser. With
+`Decode + play` checked, the page then decodes the raw `.ecdc` frames with
+`decode_frame.onnx`, overlap-adds the decoded frames in Rust wasm, and plays the
+reconstructed audio through Web Audio.
+
+The exported wasm helpers used by the page are:
+
+- `rawEcdcHeader(bundleJson, audioLength)`
+- `rawEcdcFramePayload(bundleJson, codes, scale, frameLength)`
+- `rawEcdcEncode(bundleJson, audioLength, frames)`
+- `rawEcdcDecodeFrames(bundleJson, payload)`
+- `rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
+
+This first browser path supports raw `acv=0` `.ecdc` payloads. LM-assisted
+`acv=4` payloads still use the native Rust ONNX loop today and need a separate
+browser bridge for iterative LM logits.
+
 ## CLI
 
 Inspect a bundle:

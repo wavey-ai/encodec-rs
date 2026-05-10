@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>encodec-rs browser encode smoke</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <div class="toolbar">
+          <label>
+            Bundle
+            <select id="bundle">
+              <option value="encodec_48khz_6kbps">48 kHz 6 kbps</option>
+              <option value="encodec_48khz_12kbps">48 kHz 12 kbps</option>
+            </select>
+          </label>
+          <label>
+            Sample
+            <input id="sample" type="text" value="mel-spec JFK speech" disabled />
+          </label>
+          <label class="check">
+            <input id="decode-playback" type="checkbox" checked />
+            Decode + play
+          </label>
+          <button id="run">Encode file</button>
+        </div>
+
+        <div class="status" id="status">Idle</div>
+
+        <dl class="metrics">
+          <div>
+            <dt>Model</dt>
+            <dd id="model">-</dd>
+          </div>
+          <div>
+            <dt>Input</dt>
+            <dd id="input">-</dd>
+          </div>
+          <div>
+            <dt>Codes</dt>
+            <dd id="codes">-</dd>
+          </div>
+          <div>
+            <dt>Scale</dt>
+            <dd id="scale">-</dd>
+          </div>
+          <div>
+            <dt>ECDC</dt>
+            <dd id="ecdc">-</dd>
+          </div>
+          <div>
+            <dt>Elapsed</dt>
+            <dd id="elapsed">-</dd>
+          </div>
+        </dl>
+
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js?v=jfk-decode-playback"></script>
+  </body>
+</html>

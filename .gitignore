@@ -1,3 +1,5 @@
 target/
+pkg/
+browser-smoke/node_modules/
 onnx-bundles/**/.coreml-cache/
 onnx-bundles/**/.trt-cache/

@@ -1,8 +1,16 @@
 #[cfg(feature = "onnx")]
 pub mod arithmetic;
-#[cfg(feature = "onnx")]
+#[cfg(feature = "ecdc")]
 pub mod binary;
 #[cfg(feature = "onnx")]
 pub mod ecdc;
+#[cfg(feature = "ecdc")]
+pub mod format;
+#[cfg(feature = "ecdc")]
+pub mod metadata;
 #[cfg(feature = "onnx")]
 pub mod onnx;
+#[cfg(feature = "ecdc")]
+pub mod raw;
+#[cfg(feature = "wasm")]
+pub mod wasm;
