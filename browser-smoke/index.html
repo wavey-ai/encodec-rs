@@ -22,6 +22,13 @@
             <input id="sample" type="text" value="mel-spec JFK speech" disabled />
           </label>
           <label>
+            Runtime
+            <select id="runtime">
+              <option value="wasm">WASM CPU</option>
+              <option value="webgpu">WebGPU</option>
+            </select>
+          </label>
+          <label>
             Mode
             <select id="encode-mode">
               <option value="incremental">Incremental</option>
@@ -59,6 +66,18 @@
             <dd id="ecdc">-</dd>
           </div>
           <div>
+            <dt>Runtime</dt>
+            <dd id="runtime-used">-</dd>
+          </div>
+          <div>
+            <dt>Encode Time</dt>
+            <dd id="encode-time">-</dd>
+          </div>
+          <div>
+            <dt>Decode Time</dt>
+            <dd id="decode-time">-</dd>
+          </div>
+          <div>
             <dt>Elapsed</dt>
             <dd id="elapsed">-</dd>
           </div>
@@ -68,6 +87,6 @@
       </section>
     </main>
 
-    <script type="module" src="./app.js?v=jfk-incremental"></script>
+    <script type="module" src="./app.js?v=jfk-runtime-timing"></script>
   </body>
 </html>

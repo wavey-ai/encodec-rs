@@ -1,4 +1,4 @@
-import * as ort from "./node_modules/onnxruntime-web/dist/ort.wasm.min.mjs";
+import * as ort from "./node_modules/onnxruntime-web/dist/ort.webgpu.min.mjs";
 import init, {
   initPanicHook,
   rawEcdcDecodeFrames,
@@ -14,9 +14,13 @@ ort.env.wasm.wasmPaths = new URL(
   window.location.href,
 ).href;
 ort.env.wasm.numThreads = 1;
+if (ort.env.webgpu) {
+  ort.env.webgpu.powerPreference = "high-performance";
+}
 
 const els = {
   bundle: document.querySelector("#bundle"),
+  runtime: document.querySelector("#runtime"),
   encodeMode: document.querySelector("#encode-mode"),
   decodePlayback: document.querySelector("#decode-playback"),
   run: document.querySelector("#run"),
@@ -26,6 +30,9 @@ const els = {
   codes: document.querySelector("#codes"),
   scale: document.querySelector("#scale"),
   ecdc: document.querySelector("#ecdc"),
+  runtimeUsed: document.querySelector("#runtime-used"),
+  encodeTime: document.querySelector("#encode-time"),
+  decodeTime: document.querySelector("#decode-time"),
   elapsed: document.querySelector("#elapsed"),
   log: document.querySelector("#log"),
 };
@@ -44,15 +51,18 @@ els.run.addEventListener("click", () => {
 async function runEncodeSmoke() {
   els.run.disabled = true;
   clearMetrics();
-  setStatus("Loading wasm and ONNX assets");
   const started = performance.now();
-  const encodeMode = els.encodeMode.value;
-  const shouldDecode = els.decodePlayback.checked;
-  if (shouldDecode) {
-    await prepareAudioContext();
-  }
 
   try {
+    const runtime = selectedRuntime();
+    const encodeMode = els.encodeMode.value;
+    const shouldDecode = els.decodePlayback.checked;
+    els.runtimeUsed.textContent = runtime.label;
+    setStatus(`Loading wasm and ONNX assets (${runtime.label})`);
+    if (shouldDecode) {
+      await prepareAudioContext();
+    }
+
     await initWasm();
     const bundleName = els.bundle.value;
     const bundleRoot = `../onnx-bundles/${bundleName}`;
@@ -60,16 +70,33 @@ async function runEncodeSmoke() {
     const meta = JSON.parse(bundleJson);
     const sample = await loadJfkAudio(meta);
     const segments = buildSegmentBatch(sample.audio, sample.audioLength, meta);
-    const session = await getSession(bundleName, `${bundleRoot}/${meta.encode_model}`);
+    const encodeStarted = performance.now();
+    const encodeSessionStarted = performance.now();
+    const session = await getSession(bundleName, `${bundleRoot}/${meta.encode_model}`, runtime);
+    const encodeSessionMs = performance.now() - encodeSessionStarted;
     const encodeSummary =
       encodeMode === "incremental"
         ? await encodeIncremental(session, bundleJson, sample, segments, meta)
         : await encodeBatch(session, bundleJson, sample, segments, meta);
+    encodeSummary.totalMs = performance.now() - encodeStarted;
+    encodeSummary.sessionMs = encodeSessionMs;
+    encodeSummary.log.runtime = runtime.label;
+    encodeSummary.log.executionProviders = runtime.executionProviders;
+    encodeSummary.log.timings.sessionMs = roundMs(encodeSessionMs);
+    encodeSummary.log.timings.totalMs = roundMs(encodeSummary.totalMs);
     const { ecdc, frames } = encodeSummary;
     const ecdcMeta = rawEcdcMetadata(ecdc);
     let decodeSummary = null;
     if (shouldDecode) {
-      decodeSummary = await decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, sample.audioLength);
+      decodeSummary = await decodeAndPlay(
+        bundleName,
+        bundleRoot,
+        bundleJson,
+        meta,
+        ecdc,
+        sample.audioLength,
+        runtime,
+      );
     }
     const elapsed = performance.now() - started;
 
@@ -78,11 +105,19 @@ async function runEncodeSmoke() {
     els.codes.textContent = encodeSummary.codes;
     els.scale.textContent = encodeSummary.scale;
     els.ecdc.textContent = `${ecdc.byteLength} bytes, ${sample.audioLength} samples, acv=${ecdcMeta.acv ?? ecdcMeta.bitstream_version ?? 0}`;
-    els.elapsed.textContent = `${elapsed.toFixed(1)} ms`;
+    els.runtimeUsed.textContent = runtime.label;
+    els.encodeTime.textContent = formatMs(encodeSummary.totalMs);
+    els.decodeTime.textContent = decodeSummary ? formatMs(decodeSummary.totalMs) : "skipped";
+    els.elapsed.textContent = formatMs(elapsed);
 
     writeLog(
       JSON.stringify(
         {
+          runtime: {
+            selected: runtime.label,
+            executionProviders: runtime.executionProviders,
+            browserGpu: runtime.id === "webgpu" ? "WebGPU; Metal-backed on macOS browser implementations" : null,
+          },
           sessionInputs: session.inputNames,
           sessionOutputs: session.outputNames,
           encode: encodeSummary.log,
@@ -112,6 +147,7 @@ async function runEncodeSmoke() {
 
 async function encodeBatch(session, bundleJson, sample, segments, meta) {
   setStatus(`Running batch encode on ${segments.count} JFK segments`);
+  const started = performance.now();
   const feeds = {
     [session.inputNames[0]]: new ort.Tensor("float32", segments.audio, [
       segments.count,
@@ -119,10 +155,15 @@ async function encodeBatch(session, bundleJson, sample, segments, meta) {
       meta.segment_samples,
     ]),
   };
+  const onnxStarted = performance.now();
   const outputs = await session.run(feeds);
+  const onnxMs = performance.now() - onnxStarted;
+  const packStarted = performance.now();
   const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
   const frames = buildRawFrames(codesTensor.data, scaleTensor.data, segments, meta);
   const ecdc = rawEcdcEncode(bundleJson, sample.audioLength, frames);
+  const packMs = performance.now() - packStarted;
+  const workMs = performance.now() - started;
 
   return {
     ecdc,
@@ -132,6 +173,11 @@ async function encodeBatch(session, bundleJson, sample, segments, meta) {
     log: {
       mode: "batch",
       emittedChunks: 1,
+      timings: {
+        onnxMs: roundMs(onnxMs),
+        packMs: roundMs(packMs),
+        workMs: roundMs(workMs),
+      },
       outputSummary: summarizeOutputs(outputs),
     },
   };
@@ -139,7 +185,11 @@ async function encodeBatch(session, bundleJson, sample, segments, meta) {
 
 async function encodeIncremental(session, bundleJson, sample, segments, meta) {
   setStatus(`Writing raw ECDC header and encoding ${segments.count} segments incrementally`);
+  const started = performance.now();
+  let packStarted = performance.now();
   const chunks = [rawEcdcHeader(bundleJson, sample.audioLength)];
+  let packMs = performance.now() - packStarted;
+  let onnxMs = 0;
   const frames = [];
   let lastOutputSummary = null;
 
@@ -153,17 +203,25 @@ async function encodeIncremental(session, bundleJson, sample, segments, meta) {
         meta.segment_samples,
       ]),
     };
+    const onnxStarted = performance.now();
     const outputs = await session.run(feeds);
+    onnxMs += performance.now() - onnxStarted;
+    packStarted = performance.now();
     const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
     const frame = buildRawFrame(codesTensor.data, scaleTensor.data, segment, meta, index);
     chunks.push(rawEcdcFramePayload(bundleJson, frame.codes, frame.scale, frame.frameLength));
+    packMs += performance.now() - packStarted;
     frames.push(frame);
     lastOutputSummary = summarizeOutputs(outputs);
     await nextAnimationFrame();
   }
+  packStarted = performance.now();
+  const ecdc = concatUint8Chunks(chunks);
+  packMs += performance.now() - packStarted;
+  const workMs = performance.now() - started;
 
   return {
-    ecdc: concatUint8Chunks(chunks),
+    ecdc,
     frames,
     codes: `int64 [1, ${meta.num_codebooks}, ${meta.frame_length}] x ${segments.count}`,
     scale: `float32 [1, 1] x ${segments.count}`,
@@ -172,19 +230,29 @@ async function encodeIncremental(session, bundleJson, sample, segments, meta) {
       emittedChunks: chunks.length,
       headerBytes: chunks[0].byteLength,
       payloadBytes: chunks.slice(1).reduce((sum, chunk) => sum + chunk.byteLength, 0),
+      timings: {
+        onnxMs: roundMs(onnxMs),
+        packMs: roundMs(packMs),
+        workMs: roundMs(workMs),
+      },
       lastOutputSummary,
     },
   };
 }
 
-async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength) {
+async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime) {
+  const started = performance.now();
   setStatus("Parsing raw ECDC frames in wasm");
+  const parseStarted = performance.now();
   const parsed = rawEcdcDecodeFrames(bundleJson, ecdc);
   const frames = parsed.frames;
   const decoderInputs = buildDecoderInputs(frames, meta);
+  const parseMs = performance.now() - parseStarted;
   setStatus(`Running decode_frame.onnx on ${frames.length} JFK segments`);
 
-  const session = await getSession(`${bundleName}:decode`, `${bundleRoot}/${meta.decode_model}`);
+  const sessionStarted = performance.now();
+  const session = await getSession(`${bundleName}:decode`, `${bundleRoot}/${meta.decode_model}`, runtime);
+  const sessionMs = performance.now() - sessionStarted;
   const feeds = {
     [session.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
       frames.length,
@@ -193,12 +261,17 @@ async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, aud
     ]),
     [session.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
   };
+  const onnxStarted = performance.now();
   const outputs = await session.run(feeds);
+  const onnxMs = performance.now() - onnxStarted;
   const decodedTensor = findDecodeOutput(outputs);
 
   setStatus("Overlap-adding decoded frames in wasm");
+  const overlapStarted = performance.now();
   const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const overlapMs = performance.now() - overlapStarted;
   playPlanarAudio(decodedAudio, meta.channels, meta.sample_rate);
+  const totalMs = performance.now() - started;
 
   return {
     parsedFrames: frames.length,
@@ -206,6 +279,14 @@ async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, aud
     decoderOutputs: session.outputNames,
     decodedShape: decodedTensor.dims,
     playbackSeconds: Number((audioLength / meta.sample_rate).toFixed(3)),
+    totalMs,
+    timings: {
+      parseMs: roundMs(parseMs),
+      sessionMs: roundMs(sessionMs),
+      onnxMs: roundMs(onnxMs),
+      overlapMs: roundMs(overlapMs),
+      totalMs: roundMs(totalMs),
+    },
   };
 }
 
@@ -218,18 +299,45 @@ async function initWasm() {
   return wasmReady;
 }
 
-async function getSession(bundleName, modelPath) {
-  const cacheKey = `${bundleName}:${modelPath}`;
+async function getSession(bundleName, modelPath, runtime) {
+  const cacheKey = `${runtime.id}:${bundleName}:${modelPath}`;
   if (!sessionCache.has(cacheKey)) {
     sessionCache.set(
       cacheKey,
       ort.InferenceSession.create(modelPath, {
-        executionProviders: ["wasm"],
+        executionProviders: [...runtime.executionProviders],
         graphOptimizationLevel: "all",
       }),
     );
   }
   return sessionCache.get(cacheKey);
+}
+
+function selectedRuntime() {
+  if (els.runtime.value === "webgpu") {
+    if (!navigator.gpu) {
+      throw new Error(
+        [
+          "WebGPU is not exposed by this browser context.",
+          "On Safari, use Safari 26 or newer, or Safari Technology Preview with the WebGPU feature enabled.",
+          "Apple Silicon support is not enough by itself; the page needs navigator.gpu.",
+          `secureContext=${window.isSecureContext}`,
+          `userAgent=${navigator.userAgent}`,
+        ].join(" "),
+      );
+    }
+    return {
+      id: "webgpu",
+      label: "WebGPU (Metal-backed on macOS)",
+      executionProviders: ["webgpu", "wasm"],
+    };
+  }
+
+  return {
+    id: "wasm",
+    label: "WASM CPU",
+    executionProviders: ["wasm"],
+  };
 }
 
 async function fetchText(url) {
@@ -570,10 +678,28 @@ function nextAnimationFrame() {
 }
 
 function clearMetrics() {
-  for (const key of ["model", "input", "codes", "scale", "ecdc", "elapsed"]) {
+  for (const key of [
+    "model",
+    "input",
+    "codes",
+    "scale",
+    "ecdc",
+    "runtimeUsed",
+    "encodeTime",
+    "decodeTime",
+    "elapsed",
+  ]) {
     els[key].textContent = "-";
   }
   writeLog("");
+}
+
+function formatMs(ms) {
+  return `${ms.toFixed(1)} ms`;
+}
+
+function roundMs(ms) {
+  return Number(ms.toFixed(1));
 }
 
 function setStatus(message, kind = "") {

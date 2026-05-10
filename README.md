@@ -6,7 +6,8 @@ encode/decode paths.
 Native execution is implemented in Rust on top of ONNX Runtime and has no
 Python runtime dependency. It does not require a Python bridge or external codec
 subprocess. The browser path runs the EnCodec ONNX frame models with
-`onnxruntime-web` and uses Rust wasm for raw `.ecdc` container work.
+`onnxruntime-web` and uses Rust wasm for raw `.ecdc` container work; it also
+has no Python runtime dependency.
 
 The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
 WAV to `.ecdc`, decodes `.ecdc` back to WAV, and supports CPU, CUDA, CoreML,
@@ -24,6 +25,7 @@ The browser path supports raw `acv=0` `.ecdc` encode/decode:
 - decode the raw `.ecdc` frames with `decode_frame.onnx`
 - overlap-add decoded frames in Rust wasm
 - play reconstructed audio through Web Audio
+- run ONNX models through either WASM CPU or WebGPU in the browser
 
 The checked-in browser smoke page uses the short JFK sample from a sibling
 `mel-spec` checkout:
@@ -64,6 +66,22 @@ selector switches between:
 
 With `Decode + play` checked, the page decodes the generated raw `.ecdc`
 payload and plays it back.
+
+The `Runtime` selector controls ONNX Runtime Web session creation:
+
+- `WASM CPU`: runs the ONNX models through the browser WASM backend
+- `WebGPU`: asks ONNX Runtime Web to use the browser WebGPU execution provider,
+  with WASM available for unsupported nodes. On macOS this browser GPU path is
+  backed by Metal in the browser implementation; JavaScript does not get a
+  direct Metal execution provider.
+
+Safari requires Safari 26 or newer for WebGPU, or Safari Technology Preview
+with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself;
+the browser must expose `navigator.gpu` to the page.
+
+The page reports total encode and decode time after each run. Those totals
+include ONNX session creation when the selected bundle/runtime has not already
+been cached in the page.
 
 The exported wasm helpers used by the page are:
 
