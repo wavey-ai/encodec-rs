@@ -86,6 +86,30 @@ The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
 
+The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
+Large ONNX files are split into static parts during deployment so they stay
+under Cloudflare Pages' per-file asset limit; the browser reassembles those
+parts before creating ONNX Runtime Web sessions.
+
+Deploy the Cloudflare demo:
+
+```bash
+wasm-pack build --target web --no-default-features --features wasm
+npm install --prefix browser-smoke
+node scripts/build-cloudflare-browser-smoke.mjs
+
+CLOUDFLARE_EMAIL=jamie@wavey.ai \
+CLOUDFLARE_API_KEY="$(tr -d '\n\r' < /Users/jamie/wavey.ai/.cloudflare-token)" \
+npx wrangler pages deploy build/cloudflare-pages \
+  --project-name encodec-rs-browser-smoke \
+  --branch main \
+  --commit-dirty=true
+
+CLOUDFLARE_EMAIL=jamie@wavey.ai \
+CLOUDFLARE_API_KEY="$(tr -d '\n\r' < /Users/jamie/wavey.ai/.cloudflare-token)" \
+npx wrangler deploy
+```
+
 The exported wasm helpers used by the page are:
 
 - `rawEcdcHeader(bundleJson, audioLength)`

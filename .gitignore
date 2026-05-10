@@ -1,4 +1,6 @@
 target/
+build/
+.wrangler/
 pkg/
 browser-smoke/node_modules/
 onnx-bundles/**/.coreml-cache/

@@ -304,13 +304,42 @@ async function getSession(bundleName, modelPath, runtime) {
   if (!sessionCache.has(cacheKey)) {
     sessionCache.set(
       cacheKey,
-      ort.InferenceSession.create(modelPath, {
-        executionProviders: [...runtime.executionProviders],
-        graphOptimizationLevel: "all",
-      }),
+      loadModelForOrt(modelPath).then((model) =>
+        ort.InferenceSession.create(model, {
+          executionProviders: [...runtime.executionProviders],
+          graphOptimizationLevel: "all",
+        }),
+      ),
     );
   }
   return sessionCache.get(cacheKey);
+}
+
+async function loadModelForOrt(modelPath) {
+  const partsManifestUrl = new URL(`${modelPath}.parts.json`, window.location.href).href;
+  const manifestResponse = await fetch(partsManifestUrl, { cache: "force-cache" });
+  if (manifestResponse.status === 404) {
+    return modelPath;
+  }
+  if (!manifestResponse.ok) {
+    throw new Error(`Failed to fetch ${partsManifestUrl}: ${manifestResponse.status}`);
+  }
+
+  const manifest = await manifestResponse.json();
+  if (!Array.isArray(manifest.parts) || !Number.isInteger(manifest.byteLength)) {
+    throw new Error(`Invalid model parts manifest: ${partsManifestUrl}`);
+  }
+
+  const chunks = await Promise.all(
+    manifest.parts.map(async (part) => new Uint8Array(await fetchArrayBuffer(new URL(part, partsManifestUrl).href))),
+  );
+  const model = concatUint8Chunks(chunks);
+  if (model.byteLength !== manifest.byteLength) {
+    throw new Error(
+      `Model parts for ${modelPath} produced ${model.byteLength} bytes, expected ${manifest.byteLength}`,
+    );
+  }
+  return model;
 }
 
 function selectedRuntime() {

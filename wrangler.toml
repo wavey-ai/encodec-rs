@@ -1,0 +1,8 @@
+name = "encodec-rs-browser-smoke"
+main = "deploy/cloudflare/encodec-rs-browser-smoke-worker.js"
+compatibility_date = "2026-05-10"
+account_id = "c57bb20727aa3564966d2bb693abddce"
+
+routes = [
+  { pattern = "wavey.ai/code/encodec-rs*", zone_name = "wavey.ai" },
+]
