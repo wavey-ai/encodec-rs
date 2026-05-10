@@ -8,15 +8,10 @@ Python runtime dependency. It does not require a Python bridge or external codec
 subprocess. The browser path runs the EnCodec ONNX frame models with
 `onnxruntime-web` and uses Rust wasm for raw `.ecdc` container work.
 
-## What It Does
-
-- loads EnCodec-compatible ONNX bundles
-- encodes `48 kHz` stereo WAV to real `.ecdc`
-- decodes `.ecdc` back to WAV
-- runs LM-assisted entropy coding in Rust
-- runs on CPU, CUDA, CoreML, or TensorRT
-- runs a browser encode/decode/playback smoke page with `onnxruntime-web` +
-  Rust wasm
+The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
+WAV to `.ecdc`, decodes `.ecdc` back to WAV, and supports CPU, CUDA, CoreML,
+and TensorRT execution targets. LM-assisted entropy coding is implemented in
+Rust.
 
 ## Browser Support
 
@@ -89,7 +84,7 @@ Both checked-in bundles include:
 
 So LM-assisted `.ecdc` compression works out of the box.
 
-## Runtime Guarantees
+## Runtime Notes
 
 - Pure Rust `.ecdc` container logic
 - Pure Rust arithmetic coding
