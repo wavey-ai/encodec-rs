@@ -422,41 +422,45 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
   const encoder = deterministic
     ? new DeterministicLmChunkEncoder(bundleJson, lmRuntime.weights, frame.scale)
     : new LmChunkEncoder(bundleJson, frame.scale);
-  let states = initialLmStates(meta);
-  let offset = 0;
-  let inputValues = new BigInt64Array(meta.num_codebooks);
-  let lmOnnxMs = 0;
-  let lmDeterministicMs = 0;
-  let arithmeticMs = 0;
-  let lastOutputSummary = null;
+  try {
+    let states = initialLmStates(meta);
+    let offset = 0;
+    let inputValues = new BigInt64Array(meta.num_codebooks);
+    let lmOnnxMs = 0;
+    let lmDeterministicMs = 0;
+    let arithmeticMs = 0;
+    let lastOutputSummary = null;
 
-  for (let step = 0; step < frame.frameLength; step += 1) {
-    const stepCodes = frameStepCodes(frame, meta, step);
-    if (deterministic) {
-      const lmStarted = performance.now();
-      encoder.push(stepCodes);
-      lmDeterministicMs += performance.now() - lmStarted;
-    } else {
-      const lmStarted = performance.now();
-      const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
-      lmOnnxMs += performance.now() - lmStarted;
-      const arithmeticStarted = performance.now();
-      encoder.push(lm.logits.data, stepCodes);
-      arithmeticMs += performance.now() - arithmeticStarted;
-      inputValues = lmInputFromCodes(stepCodes);
-      states = lm.nextStates;
-      offset = lm.nextOffset;
-      lastOutputSummary = lm.outputSummary;
+    for (let step = 0; step < frame.frameLength; step += 1) {
+      const stepCodes = frameStepCodes(frame, meta, step);
+      if (deterministic) {
+        const lmStarted = performance.now();
+        encoder.push(stepCodes);
+        lmDeterministicMs += performance.now() - lmStarted;
+      } else {
+        const lmStarted = performance.now();
+        const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
+        lmOnnxMs += performance.now() - lmStarted;
+        const arithmeticStarted = performance.now();
+        encoder.push(lm.logits.data, stepCodes);
+        arithmeticMs += performance.now() - arithmeticStarted;
+        inputValues = lmInputFromCodes(stepCodes);
+        states = lm.nextStates;
+        offset = lm.nextOffset;
+        lastOutputSummary = lm.outputSummary;
+      }
     }
-  }
 
-  return {
-    payload: encoder.finish(),
-    lmOnnxMs,
-    lmDeterministicMs,
-    arithmeticMs,
-    lastOutputSummary,
-  };
+    return {
+      payload: encoder.finish(),
+      lmOnnxMs,
+      lmDeterministicMs,
+      arithmeticMs,
+      lastOutputSummary,
+    };
+  } finally {
+    encoder.free();
+  }
 }
 
 async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime, lmRuntime = null) {
@@ -599,51 +603,55 @@ async function decodeLmFrame(lmRuntime, bundleJson, meta, chunk) {
   const decoder = deterministic
     ? new DeterministicLmChunkDecoder(bundleJson, lmRuntime.weights, Uint8Array.from(chunk.payload))
     : new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
-  let states = initialLmStates(meta);
-  let offset = 0;
-  let inputValues = new BigInt64Array(meta.num_codebooks);
-  const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
-  let lmOnnxMs = 0;
-  let lmDeterministicMs = 0;
-  let arithmeticMs = 0;
-  let lastOutputSummary = null;
+  try {
+    let states = initialLmStates(meta);
+    let offset = 0;
+    let inputValues = new BigInt64Array(meta.num_codebooks);
+    const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
+    let lmOnnxMs = 0;
+    let lmDeterministicMs = 0;
+    let arithmeticMs = 0;
+    let lastOutputSummary = null;
 
-  for (let step = 0; step < chunk.frameLength; step += 1) {
-    let symbols;
-    if (deterministic) {
-      const lmStarted = performance.now();
-      symbols = decoder.pull();
-      lmDeterministicMs += performance.now() - lmStarted;
-    } else {
-      const lmStarted = performance.now();
-      const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
-      lmOnnxMs += performance.now() - lmStarted;
-      const arithmeticStarted = performance.now();
-      symbols = decoder.pull(lm.logits.data);
-      arithmeticMs += performance.now() - arithmeticStarted;
-      inputValues = lmInputFromCodes(symbols);
-      states = lm.nextStates;
-      offset = lm.nextOffset;
-      lastOutputSummary = lm.outputSummary;
+    for (let step = 0; step < chunk.frameLength; step += 1) {
+      let symbols;
+      if (deterministic) {
+        const lmStarted = performance.now();
+        symbols = decoder.pull();
+        lmDeterministicMs += performance.now() - lmStarted;
+      } else {
+        const lmStarted = performance.now();
+        const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
+        lmOnnxMs += performance.now() - lmStarted;
+        const arithmeticStarted = performance.now();
+        symbols = decoder.pull(lm.logits.data);
+        arithmeticMs += performance.now() - arithmeticStarted;
+        inputValues = lmInputFromCodes(symbols);
+        states = lm.nextStates;
+        offset = lm.nextOffset;
+        lastOutputSummary = lm.outputSummary;
+      }
+      for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+        codes[codebook * meta.frame_length + step] = symbols[codebook];
+      }
     }
-    for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
-      codes[codebook * meta.frame_length + step] = symbols[codebook];
-    }
+
+    return {
+      frame: {
+        offset: chunk.offset,
+        samples: chunk.samples,
+        frameLength: chunk.frameLength,
+        scale: decoder.scale(),
+        codes,
+      },
+      lmOnnxMs,
+      lmDeterministicMs,
+      arithmeticMs,
+      lastOutputSummary,
+    };
+  } finally {
+    decoder.free();
   }
-
-  return {
-    frame: {
-      offset: chunk.offset,
-      samples: chunk.samples,
-      frameLength: chunk.frameLength,
-      scale: decoder.scale(),
-      codes,
-    },
-    lmOnnxMs,
-    lmDeterministicMs,
-    arithmeticMs,
-    lastOutputSummary,
-  };
 }
 
 async function initWasm() {
