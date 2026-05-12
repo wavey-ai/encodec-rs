@@ -291,6 +291,7 @@ mod tests {
             lm_num_layers: None,
             lm_past_context: None,
             lm_logit_step: None,
+            lm_portable_logit_step: None,
             lm_cardinality: None,
             lm_dtype: None,
             opset_version: 17,

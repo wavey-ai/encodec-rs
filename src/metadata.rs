@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-pub const PORTABLE_LM_LOGIT_STEP: f64 = 4.0;
+pub const PORTABLE_LM_LOGIT_STEP: f64 = 2.1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OnnxFrameBundleMetadata {
@@ -32,6 +32,8 @@ pub struct OnnxFrameBundleMetadata {
     #[serde(default)]
     pub lm_logit_step: Option<f32>,
     #[serde(default)]
+    pub lm_portable_logit_step: Option<f32>,
+    #[serde(default)]
     pub lm_cardinality: Option<usize>,
     #[serde(default)]
     pub lm_dtype: Option<String>,
@@ -55,7 +57,10 @@ impl OnnxFrameBundleMetadata {
     }
 
     pub fn portable_lm_logit_step(&self) -> f64 {
-        self.lm_logit_step().max(PORTABLE_LM_LOGIT_STEP)
+        self.lm_logit_step().max(
+            self.lm_portable_logit_step
+                .unwrap_or(PORTABLE_LM_LOGIT_STEP as f32) as f64,
+        )
     }
 
     pub fn lm_num_layers(&self) -> Result<usize> {

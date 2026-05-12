@@ -93,7 +93,7 @@ The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
 
-`acv=5` is the portable LM bitstream. It uses a coarser deterministic logit
+`acv=5` is the portable LM bitstream. It uses a deterministic logit
 quantization floor before arithmetic coding so browser ONNX Runtime Web and
 native ONNX Runtime produce the same entropy-decoding model across providers
 and CPU architectures. Native decode still accepts legacy `acv=4`, but new LM
@@ -106,11 +106,11 @@ bundle:
 | Encoder | Coding | ECDC version | ECDC bytes | Rust decode | WASM decode |
 |---|---|---:|---:|---|---|
 | Rust ONNX | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
-| Rust ONNX | LM | `acv=5` | 4,989 | pass, 192,000 samples | pass, 192,000 samples |
+| Rust ONNX | LM | `acv=5` | 4,503 | pass, 192,000 samples | pass, 192,000 samples |
 | ONNX Runtime Web/WASM | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
-| ONNX Runtime Web/WASM | LM | `acv=5` | 4,994 | pass, 192,000 samples | pass, 192,000 samples |
+| ONNX Runtime Web/WASM | LM | `acv=5` | 4,507 | pass, 192,000 samples | pass, 192,000 samples |
 
-On this fixture, portable LM saves about `19%` versus raw mode while remaining
+On this fixture, portable LM saves about `27%` versus raw mode while remaining
 decodable across native Rust and browser/WASM runtimes.
 
 The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
