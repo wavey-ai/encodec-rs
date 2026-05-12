@@ -466,7 +466,7 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
 async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime, lmRuntime = null) {
   const metadata = rawEcdcMetadata(ecdc);
   const acv = metadata.acv ?? metadata.bitstream_version ?? 0;
-  if (metadata.lm === true || metadata.use_lm === true || acv === 4 || acv === 5) {
+  if (metadata.lm === true || metadata.use_lm === true || acv === 1 || acv === 4 || acv === 5) {
     return decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime, lmRuntime);
   }
   return decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime);

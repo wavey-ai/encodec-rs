@@ -9,8 +9,9 @@ use crate::metadata::OnnxFrameBundleMetadata;
 pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
 pub const DEFAULT_MIN_RANGE: i64 = 2;
 pub const RAW_BITSTREAM_VERSION: u8 = 0;
+pub const PORTABLE_LM_BITSTREAM_VERSION: u8 = 1;
 pub const LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = 4;
-pub const PORTABLE_LM_BITSTREAM_VERSION: u8 = 5;
+pub const LEGACY_PORTABLE_LM_BITSTREAM_VERSION: u8 = 5;
 pub const DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = PORTABLE_LM_BITSTREAM_VERSION;
 pub const ARITHMETIC_TOTAL_RANGE_BITS: u32 = 24;
 
@@ -99,23 +100,40 @@ pub fn validate_metadata(
             bundle_meta.num_codebooks
         );
     }
-    match metadata.bitstream_version {
+    let bitstream_version = metadata.bitstream_version;
+    match bitstream_version {
         RAW_BITSTREAM_VERSION => {
             if metadata.use_lm {
                 bail!("raw acv=0 payload unexpectedly advertises lm=true");
             }
         }
-        LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION | PORTABLE_LM_BITSTREAM_VERSION => {
+        version if is_lm_bitstream_version(version) => {
             if !metadata.use_lm {
                 bail!(
                     "deterministic acv={} payload unexpectedly advertises lm=false",
-                    metadata.bitstream_version
+                    bitstream_version
                 );
             }
         }
         other => bail!("unsupported ECDC bitstream version {other}"),
     }
     Ok(())
+}
+
+pub fn is_lm_bitstream_version(bitstream_version: u8) -> bool {
+    matches!(
+        bitstream_version,
+        PORTABLE_LM_BITSTREAM_VERSION
+            | LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
+            | LEGACY_PORTABLE_LM_BITSTREAM_VERSION
+    )
+}
+
+pub fn uses_portable_lm_logit_step(bitstream_version: u8) -> bool {
+    matches!(
+        bitstream_version,
+        PORTABLE_LM_BITSTREAM_VERSION | LEGACY_PORTABLE_LM_BITSTREAM_VERSION
+    )
 }
 
 pub fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
@@ -172,6 +190,26 @@ mod tests {
             decoded.extra.get("ofr").and_then(Value::as_u64),
             Some(44_100)
         );
+    }
+
+    #[test]
+    fn lm_version_helpers_keep_legacy_decode_paths() {
+        assert!(!is_lm_bitstream_version(RAW_BITSTREAM_VERSION));
+        assert!(is_lm_bitstream_version(PORTABLE_LM_BITSTREAM_VERSION));
+        assert!(is_lm_bitstream_version(
+            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
+        ));
+        assert!(is_lm_bitstream_version(
+            LEGACY_PORTABLE_LM_BITSTREAM_VERSION
+        ));
+
+        assert!(uses_portable_lm_logit_step(PORTABLE_LM_BITSTREAM_VERSION));
+        assert!(uses_portable_lm_logit_step(
+            LEGACY_PORTABLE_LM_BITSTREAM_VERSION
+        ));
+        assert!(!uses_portable_lm_logit_step(
+            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
+        ));
     }
 
     #[test]

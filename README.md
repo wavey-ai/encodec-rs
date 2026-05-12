@@ -20,7 +20,7 @@ Rust.
 
 ## Browser Support
 
-The browser path supports raw `acv=0` and LM-assisted `acv=5` `.ecdc`
+The browser path supports raw `acv=0` and LM-assisted `acv=1` `.ecdc`
 encode/decode:
 
 - encode a full audio file in the browser with `encode_frame.onnx`
@@ -63,7 +63,7 @@ http://127.0.0.1:8787/browser-smoke/
 ```
 
 Click `Encode file` to encode the full JFK clip in the browser. The `Coding`
-selector switches between raw `acv=0` and LM `acv=5`. The `Mode` selector
+selector switches between raw `acv=0` and LM `acv=1`. The `Mode` selector
 switches between:
 
 - `Incremental`: writes the `.ecdc` header, runs `encode_frame.onnx` one
@@ -93,11 +93,13 @@ The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
 
-`acv=5` is the portable LM bitstream. New LM encodes use the same deterministic
-Rust LM implementation in native and wasm, loaded from `lm_weights.bin`, before
-the integer arithmetic coder. ONNX Runtime is still used for `encode_frame.onnx`
-and `decode_frame.onnx`, but it is no longer on the entropy-decoding critical
-path. Native decode still accepts legacy `acv=4`; new LM encodes write `acv=5`.
+`acv=0` is the raw EnCodec-code payload. `acv=1` is the portable LM bitstream.
+New LM encodes use the same deterministic Rust LM implementation in native and
+wasm, loaded from `lm_weights.bin`, before the integer arithmetic coder. ONNX
+Runtime is still used for `encode_frame.onnx` and `decode_frame.onnx`, but it is
+no longer on the entropy-decoding critical path. Native and browser decode also
+accept transitional `acv=4` and `acv=5` LM files written before the public
+version reset.
 
 Local cross-runtime matrix on this M1 Air, using the checked-in
 `testdata/westside_4s_48khz_stereo.wav` fixture and the `48 kHz 12 kbps`
@@ -106,9 +108,9 @@ bundle:
 | Encoder | Coding | ECDC version | ECDC bytes | Rust decode | WASM decode |
 |---|---|---:|---:|---|---|
 | Rust ONNX | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
-| Rust ONNX | LM | `acv=5` | 4,503 | pass, 192,000 samples | pass, 192,000 samples |
+| Rust ONNX | LM | `acv=1` | 4,503 | pass, 192,000 samples | pass, 192,000 samples |
 | Browser WASM | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
-| Browser WASM | LM | `acv=5` | 4,507 | pass, 192,000 samples | pass, 192,000 samples |
+| Browser WASM | LM | `acv=1` | 4,507 | pass, 192,000 samples | pass, 192,000 samples |
 
 On this fixture, portable LM saves about `27%` versus raw mode while remaining
 decodable across native Rust and browser/WASM runtimes.
@@ -126,7 +128,8 @@ four-second fixtures:
 
 Full-song cross-architecture matrix, run on May 12, 2026, using the
 `Lori Asha - Westside` premix track normalized to `48 kHz` stereo WAV, the
-`48 kHz 12 kbps` bundle, and LM-assisted `acv=5` `.ecdc`:
+`48 kHz 12 kbps` bundle, and the portable LM `.ecdc` bitstream now written as
+`acv=1`:
 
 | Encoder | `.ecdc` bytes | Mac WASM decode | Mac Rust decode | Ada Linux WASM decode | Ada Linux Rust decode |
 |---|---:|---|---|---|---|

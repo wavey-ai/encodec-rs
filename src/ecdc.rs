@@ -9,11 +9,14 @@ use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header, BitPacker,
     BitUnpacker,
 };
-use crate::format::{segment_frame_length, segment_starts, validate_metadata};
+use crate::format::{
+    is_lm_bitstream_version, segment_frame_length, segment_starts, uses_portable_lm_logit_step,
+    validate_metadata,
+};
 pub use crate::format::{
     EcdcMetadata, SourceAudioMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
-    DEFAULT_MIN_RANGE, LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION, PORTABLE_LM_BITSTREAM_VERSION,
-    RAW_BITSTREAM_VERSION,
+    DEFAULT_MIN_RANGE, LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION,
+    LEGACY_PORTABLE_LM_BITSTREAM_VERSION, PORTABLE_LM_BITSTREAM_VERSION, RAW_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::onnx::{OnnxFrameCodec, OnnxLmCodec};
@@ -383,7 +386,7 @@ fn decode_ecdc_impl(
             RAW_BITSTREAM_VERSION => {
                 decode_raw_frame_payload(codec, &mut reader, &bundle_meta, this_len, frame_length)?
             }
-            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION | PORTABLE_LM_BITSTREAM_VERSION => {
+            version if is_lm_bitstream_version(version) => {
                 let Some(lm_codec) = lm_codec.as_deref_mut() else {
                     bail!("payload requires LM decoding, but no LM bundle was provided");
                 };
@@ -600,7 +603,7 @@ fn decode_lm_chunk_payload(
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
-    let lm_logit_step = if metadata.bitstream_version >= PORTABLE_LM_BITSTREAM_VERSION {
+    let lm_logit_step = if uses_portable_lm_logit_step(metadata.bitstream_version) {
         lm_codec.metadata().portable_lm_logit_step()
     } else {
         lm_codec.metadata().lm_logit_step()
