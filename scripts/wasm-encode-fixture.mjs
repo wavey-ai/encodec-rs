@@ -173,23 +173,12 @@ async function decodeFixture(options) {
   }
   const parseMs = performance.now() - parseStarted;
 
-  const decoderInputs = buildDecoderInputs(frames, meta);
   const decodeSessionStarted = performance.now();
   const decodeSession = await createSession(path.join(options.bundleDir, meta.decode_model));
   const decodeSessionMs = performance.now() - decodeSessionStarted;
-  const decodeStarted = performance.now();
-  const outputs = await decodeSession.run({
-    [decodeSession.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
-      frames.length,
-      meta.num_codebooks,
-      meta.frame_length,
-    ]),
-    [decodeSession.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
-  });
-  const decodeOnnxMs = performance.now() - decodeStarted;
-  const decodedTensor = findDecodeOutput(outputs);
+  const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta);
   const overlapStarted = performance.now();
-  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   mkdirSync(path.dirname(options.outputWav), { recursive: true });
   writeWav(options.outputWav, decodedAudio, meta.channels, meta.sample_rate);
@@ -211,11 +200,51 @@ async function decodeFixture(options) {
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       decodeSessionMs: roundMs(decodeSessionMs),
-      decodeOnnxMs: roundMs(decodeOnnxMs),
+      decodeOnnxMs: roundMs(decodedFrames.decodeOnnxMs),
       overlapMs: roundMs(overlapMs),
       totalDecodeMs: roundMs(performance.now() - started),
     },
-    decoderOutputs: summarizeOutputs(outputs),
+    decoderBatchSize: decodedFrames.batchSize,
+    decodedShape: decodedFrames.shape,
+    decoderOutputs: decodedFrames.outputSummary,
+  };
+}
+
+async function decodeFrameBatch(session, frames, meta, batchSize = 32) {
+  const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
+  const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
+  let decodeOnnxMs = 0;
+  let outputSummary = null;
+
+  for (let start = 0; start < frames.length; start += batchSize) {
+    const end = Math.min(start + batchSize, frames.length);
+    const batch = frames.slice(start, end);
+    const decoderInputs = buildDecoderInputs(batch, meta);
+    const decodeStarted = performance.now();
+    const outputs = await session.run({
+      [session.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
+        batch.length,
+        meta.num_codebooks,
+        meta.frame_length,
+      ]),
+      [session.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [batch.length, 1]),
+    });
+    decodeOnnxMs += performance.now() - decodeStarted;
+    const decodedTensor = findDecodeOutput(outputs);
+    const expected = batch.length * samplesPerDecodedFrame;
+    if (decodedTensor.data.length !== expected) {
+      throw new Error(`decoder batch ${start}-${end} returned ${decodedTensor.data.length} samples, expected ${expected}`);
+    }
+    audio.set(decodedTensor.data, start * samplesPerDecodedFrame);
+    outputSummary = summarizeOutputs(outputs);
+  }
+
+  return {
+    audio,
+    batchSize,
+    decodeOnnxMs,
+    outputSummary,
+    shape: [frames.length, meta.channels, meta.segment_samples],
   };
 }
 

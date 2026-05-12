@@ -478,29 +478,20 @@ async function decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, 
   const parseStarted = performance.now();
   const parsed = rawEcdcDecodeFrames(bundleJson, ecdc);
   const frames = parsed.frames;
-  const decoderInputs = buildDecoderInputs(frames, meta);
   const parseMs = performance.now() - parseStarted;
-  setStatus(`Running decode_frame.onnx on ${frames.length} JFK segments`);
+  setStatus(`Running decode_frame.onnx on ${frames.length} segments`);
 
   const sessionStarted = performance.now();
   const session = await getSession(`${bundleName}:decode`, `${bundleRoot}/${meta.decode_model}`, runtime);
   const sessionMs = performance.now() - sessionStarted;
-  const feeds = {
-    [session.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
-      frames.length,
-      meta.num_codebooks,
-      meta.frame_length,
-    ]),
-    [session.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
-  };
-  const onnxStarted = performance.now();
-  const outputs = await session.run(feeds);
-  const onnxMs = performance.now() - onnxStarted;
-  const decodedTensor = findDecodeOutput(outputs);
+  const decodedFrames = await decodeFrameBatch(session, frames, meta, async (start, end) => {
+    setStatus(`decode_frame.onnx batch ${start + 1}-${end}/${frames.length}`);
+    await nextAnimationFrame();
+  });
 
   setStatus("Overlap-adding decoded frames in wasm");
   const overlapStarted = performance.now();
-  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   playPlanarAudio(decodedAudio, meta.channels, meta.sample_rate);
   const totalMs = performance.now() - started;
@@ -509,13 +500,13 @@ async function decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, 
     parsedFrames: frames.length,
     decoderInputs: session.inputNames,
     decoderOutputs: session.outputNames,
-    decodedShape: decodedTensor.dims,
+    decodedShape: decodedFrames.shape,
     playbackSeconds: Number((audioLength / meta.sample_rate).toFixed(3)),
     totalMs,
     timings: {
       parseMs: roundMs(parseMs),
       sessionMs: roundMs(sessionMs),
-      onnxMs: roundMs(onnxMs),
+      onnxMs: roundMs(decodedFrames.decodeOnnxMs),
       overlapMs: roundMs(overlapMs),
       totalMs: roundMs(totalMs),
     },
@@ -550,27 +541,18 @@ async function decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, a
     await nextAnimationFrame();
   }
 
-  const decoderInputs = buildDecoderInputs(frames, meta);
-  setStatus(`Running decode_frame.onnx on ${frames.length} JFK segments`);
+  setStatus(`Running decode_frame.onnx on ${frames.length} segments`);
   const decodeSessionStarted = performance.now();
   const decodeSession = await getSession(`${bundleName}:decode`, `${bundleRoot}/${meta.decode_model}`, runtime);
   const decodeSessionMs = performance.now() - decodeSessionStarted;
-  const feeds = {
-    [decodeSession.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
-      frames.length,
-      meta.num_codebooks,
-      meta.frame_length,
-    ]),
-    [decodeSession.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
-  };
-  const decodeStarted = performance.now();
-  const outputs = await decodeSession.run(feeds);
-  const decodeOnnxMs = performance.now() - decodeStarted;
-  const decodedTensor = findDecodeOutput(outputs);
+  const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta, async (start, end) => {
+    setStatus(`decode_frame.onnx batch ${start + 1}-${end}/${frames.length}`);
+    await nextAnimationFrame();
+  });
 
   setStatus("Overlap-adding decoded frames in wasm");
   const overlapStarted = performance.now();
-  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   playPlanarAudio(decodedAudio, meta.channels, meta.sample_rate);
   const totalMs = performance.now() - started;
@@ -580,7 +562,7 @@ async function decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, a
     lmRuntime: summarizeLmRuntime(lmRuntime),
     decoderInputs: decodeSession.inputNames,
     decoderOutputs: decodeSession.outputNames,
-    decodedShape: decodedTensor.dims,
+    decodedShape: decodedFrames.shape,
     playbackSeconds: Number((audioLength / meta.sample_rate).toFixed(3)),
     totalMs,
     timings: {
@@ -590,11 +572,53 @@ async function decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, a
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       decodeSessionMs: roundMs(decodeSessionMs),
-      decodeOnnxMs: roundMs(decodeOnnxMs),
+      decodeOnnxMs: roundMs(decodedFrames.decodeOnnxMs),
       overlapMs: roundMs(overlapMs),
       totalMs: roundMs(totalMs),
     },
     lastLmOutputSummary,
+  };
+}
+
+async function decodeFrameBatch(session, frames, meta, onBatch, batchSize = 32) {
+  const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
+  const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
+  let decodeOnnxMs = 0;
+  let outputSummary = null;
+
+  for (let start = 0; start < frames.length; start += batchSize) {
+    const end = Math.min(start + batchSize, frames.length);
+    if (onBatch) {
+      await onBatch(start, end);
+    }
+    const batch = frames.slice(start, end);
+    const decoderInputs = buildDecoderInputs(batch, meta);
+    const decodeStarted = performance.now();
+    const outputs = await session.run({
+      [session.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
+        batch.length,
+        meta.num_codebooks,
+        meta.frame_length,
+      ]),
+      [session.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [batch.length, 1]),
+    });
+    decodeOnnxMs += performance.now() - decodeStarted;
+
+    const decodedTensor = findDecodeOutput(outputs);
+    const expected = batch.length * samplesPerDecodedFrame;
+    if (decodedTensor.data.length !== expected) {
+      throw new Error(`decoder batch ${start}-${end} returned ${decodedTensor.data.length} samples, expected ${expected}`);
+    }
+    audio.set(decodedTensor.data, start * samplesPerDecodedFrame);
+    outputSummary = summarizeOutputs(outputs);
+  }
+
+  return {
+    audio,
+    batchSize,
+    decodeOnnxMs,
+    outputSummary,
+    shape: [frames.length, meta.channels, meta.segment_samples],
   };
 }
 
