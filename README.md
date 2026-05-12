@@ -10,8 +10,8 @@ Native execution is implemented in Rust on top of ONNX Runtime and has no
 Python runtime dependency. It does not require a Python bridge or external codec
 subprocess. The browser path runs the EnCodec ONNX frame models with
 `onnxruntime-web` and uses Rust wasm for `.ecdc` packaging, parsing,
-overlap-add, and LM arithmetic coding. It also has no Python runtime
-dependency.
+overlap-add, and deterministic LM arithmetic coding. It also has no Python
+runtime dependency.
 
 The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
 WAV to `.ecdc`, decodes `.ecdc` back to WAV, and supports CPU, CUDA, CoreML,
@@ -27,7 +27,7 @@ encode/decode:
 - encode incrementally by emitting the `.ecdc` header first and one chunk per
   ONNX segment
 - package raw frame payloads or LM arithmetic-coded chunks with Rust wasm
-- run `lm_logits.onnx` in the browser for LM encode/decode
+- run deterministic LM entropy encode/decode in Rust wasm from `lm_weights.bin`
 - decode raw or LM `.ecdc` payloads with `decode_frame.onnx`
 - overlap-add decoded frames in Rust wasm
 - play reconstructed audio through Web Audio
@@ -93,11 +93,11 @@ The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
 
-`acv=5` is the portable LM bitstream. It uses a deterministic logit
-quantization floor before arithmetic coding so browser ONNX Runtime Web and
-native ONNX Runtime produce the same entropy-decoding model across providers
-and CPU architectures. Native decode still accepts legacy `acv=4`, but new LM
-encodes write `acv=5`.
+`acv=5` is the portable LM bitstream. New LM encodes use the same deterministic
+Rust LM implementation in native and wasm, loaded from `lm_weights.bin`, before
+the integer arithmetic coder. ONNX Runtime is still used for `encode_frame.onnx`
+and `decode_frame.onnx`, but it is no longer on the entropy-decoding critical
+path. Native decode still accepts legacy `acv=4`; new LM encodes write `acv=5`.
 
 Local cross-runtime matrix on this M1 Air, using the checked-in
 `testdata/westside_4s_48khz_stereo.wav` fixture and the `48 kHz 12 kbps`
@@ -107,11 +107,22 @@ bundle:
 |---|---|---:|---:|---|---|
 | Rust ONNX | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
 | Rust ONNX | LM | `acv=5` | 4,503 | pass, 192,000 samples | pass, 192,000 samples |
-| ONNX Runtime Web/WASM | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
-| ONNX Runtime Web/WASM | LM | `acv=5` | 4,507 | pass, 192,000 samples | pass, 192,000 samples |
+| Browser WASM | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
+| Browser WASM | LM | `acv=5` | 4,507 | pass, 192,000 samples | pass, 192,000 samples |
 
 On this fixture, portable LM saves about `27%` versus raw mode while remaining
 decodable across native Rust and browser/WASM runtimes.
+
+Broader local matrix on the same M1 Air, using the `48 kHz 12 kbps` bundle and
+four-second fixtures:
+
+| Fixture | WASM LM encode bytes | Native decode | Native LM encode bytes | WASM decode |
+|---|---:|---|---:|---|
+| Westside music | 4,507 | pass | 4,503 | pass |
+| JFK speech | 4,089 | pass | 4,091 | pass |
+| 440 Hz sine | 2,821 | pass | 2,826 | pass |
+| silence | 219 | pass | 219 | pass |
+| noise | 1,373 | pass | 1,377 | pass |
 
 The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
 Large ONNX files are split into static parts during deployment so they stay
@@ -149,6 +160,8 @@ The exported wasm helpers used by the page are:
 - `lmEcdcDecodeChunks(bundleJson, payload)`
 - `LmChunkEncoder`
 - `LmChunkDecoder`
+- `DeterministicLmChunkEncoder`
+- `DeterministicLmChunkDecoder`
 
 ## Native Scope
 
@@ -162,19 +175,26 @@ Both checked-in bundles include:
 - `encode_frame.onnx`
 - `decode_frame.onnx`
 - `lm_logits.onnx`
+- `lm_weights.bin`
 - `bundle.json`
 
 So LM-assisted `.ecdc` compression works out of the box.
+
+When `lm_weights.bin` is present, native and browser LM entropy coding use the
+deterministic Rust/wasm LM backend by default. `lm_logits.onnx` is retained for
+inspection and fallback. Set `ENCODEC_RS_LM_BACKEND=ort` to force the native
+runtime back to the ONNX LM path for comparison.
 
 ## Runtime Notes
 
 - Pure Rust `.ecdc` container logic
 - Pure Rust arithmetic coding
-- Pure Rust LM-driven entropy path
+- Pure Rust deterministic LM-driven entropy path
 - No Python bridge
 - No external codec subprocess
 
-The only non-Rust runtime dependency is ONNX Runtime for model execution.
+The only non-Rust runtime dependency is ONNX Runtime for the neural frame
+encoder/decoder.
 
 ## Native Build
 

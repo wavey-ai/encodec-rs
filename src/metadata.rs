@@ -24,6 +24,8 @@ pub struct OnnxFrameBundleMetadata {
     #[serde(default)]
     pub lm_model: Option<String>,
     #[serde(default)]
+    pub lm_weight_model: Option<String>,
+    #[serde(default)]
     pub lm_dim: Option<usize>,
     #[serde(default)]
     pub lm_num_layers: Option<usize>,

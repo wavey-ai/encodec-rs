@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as ort from "../browser-smoke/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs";
 import {
+  DeterministicLmChunkDecoder,
+  DeterministicLmChunkEncoder,
   initSync,
   initPanicHook,
   lmEcdcChunk,
@@ -45,8 +47,8 @@ async function run(options) {
 async function encodeFixture(options) {
   const bundleJson = readFileSync(path.join(options.bundleDir, "bundle.json"), "utf8");
   const meta = JSON.parse(bundleJson);
-  if (options.coding === "lm" && !meta.lm_model) {
-    throw new Error("LM coding requested, but bundle has no lm_model");
+  if (options.coding === "lm" && !meta.lm_model && !meta.lm_weight_model) {
+    throw new Error("LM coding requested, but bundle has no LM runtime");
   }
 
   const wavBytes = readFileSync(options.inputWav);
@@ -63,8 +65,7 @@ async function encodeFixture(options) {
   const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
   const sessionsStarted = performance.now();
   const encodeSession = await createSession(path.join(options.bundleDir, meta.encode_model));
-  const lmSession =
-    options.coding === "lm" ? await createSession(path.join(options.bundleDir, meta.lm_model)) : null;
+  const lmRuntime = options.coding === "lm" ? await getLmRuntime(options.bundleDir, meta) : null;
   const sessionMs = performance.now() - sessionsStarted;
 
   const encodedStarted = performance.now();
@@ -73,6 +74,7 @@ async function encodeFixture(options) {
   const frames = [];
   let frameOnnxMs = 0;
   let lmOnnxMs = 0;
+  let lmDeterministicMs = 0;
   let arithmeticMs = 0;
 
   for (let index = 0; index < segments.count; index += 1) {
@@ -91,8 +93,9 @@ async function encodeFixture(options) {
     frames.push(frame);
 
     if (options.coding === "lm") {
-      const lmFrame = await encodeLmFrame(lmSession, bundleJson, frame, meta);
+      const lmFrame = await encodeLmFrame(lmRuntime, bundleJson, frame, meta);
       lmOnnxMs += lmFrame.lmOnnxMs;
+      lmDeterministicMs += lmFrame.lmDeterministicMs;
       arithmeticMs += lmFrame.arithmeticMs;
       chunks.push(lmEcdcChunk(lmFrame.payload));
     } else {
@@ -123,6 +126,7 @@ async function encodeFixture(options) {
       sessionMs: roundMs(sessionMs),
       frameOnnxMs: roundMs(frameOnnxMs),
       lmOnnxMs: roundMs(lmOnnxMs),
+      lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       totalEncodeMs: roundMs(totalEncodeMs),
     },
@@ -147,19 +151,21 @@ async function decodeFixture(options) {
   let frames;
   let lmSessionMs = 0;
   let lmOnnxMs = 0;
+  let lmDeterministicMs = 0;
   let arithmeticMs = 0;
   if (acv === 0) {
     frames = rawEcdcDecodeFrames(bundleJson, ecdc).frames;
   } else if (metadata.lm === true || metadata.use_lm === true) {
     const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
     const lmSessionStarted = performance.now();
-    const lmSession = await createSession(path.join(options.bundleDir, meta.lm_model));
+    const lmRuntime = await getLmRuntime(options.bundleDir, meta);
     lmSessionMs = performance.now() - lmSessionStarted;
     frames = [];
     for (let index = 0; index < parsed.chunks.length; index += 1) {
-      const decoded = await decodeLmFrame(lmSession, bundleJson, meta, parsed.chunks[index]);
+      const decoded = await decodeLmFrame(lmRuntime, bundleJson, meta, parsed.chunks[index]);
       frames.push(decoded.frame);
       lmOnnxMs += decoded.lmOnnxMs;
+      lmDeterministicMs += decoded.lmDeterministicMs;
       arithmeticMs += decoded.arithmeticMs;
     }
   } else {
@@ -202,6 +208,7 @@ async function decodeFixture(options) {
       parseMs: roundMs(parseMs),
       lmSessionMs: roundMs(lmSessionMs),
       lmOnnxMs: roundMs(lmOnnxMs),
+      lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       decodeSessionMs: roundMs(decodeSessionMs),
       decodeOnnxMs: roundMs(decodeOnnxMs),
@@ -286,6 +293,22 @@ function initEncodecWasm() {
   const wasmPath = path.join(repoRoot, "pkg/encodec_rs_bg.wasm");
   initSync({ module: readFileSync(wasmPath) });
   initPanicHook();
+}
+
+async function getLmRuntime(bundleDir, meta) {
+  if (meta.lm_weight_model) {
+    return {
+      kind: "deterministic",
+      weights: new Uint8Array(readFileSync(path.join(bundleDir, meta.lm_weight_model))),
+    };
+  }
+  if (!meta.lm_model) {
+    throw new Error("LM coding requires lm_weights.bin or lm_logits.onnx");
+  }
+  return {
+    kind: "ort",
+    session: await createSession(path.join(bundleDir, meta.lm_model)),
+  };
 }
 
 async function createSession(modelPath) {
@@ -387,56 +410,78 @@ function buildSingleSegment(audio, audioLength, segments, index, meta) {
   };
 }
 
-async function encodeLmFrame(lmSession, bundleJson, frame, meta) {
-  const encoder = new LmChunkEncoder(bundleJson, frame.scale);
+async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
+  const deterministic = lmRuntime.kind === "deterministic";
+  const encoder = deterministic
+    ? new DeterministicLmChunkEncoder(bundleJson, lmRuntime.weights, frame.scale)
+    : new LmChunkEncoder(bundleJson, frame.scale);
   let states = initialLmStates(meta);
   let offset = 0;
   let inputValues = new BigInt64Array(meta.num_codebooks);
   let lmOnnxMs = 0;
+  let lmDeterministicMs = 0;
   let arithmeticMs = 0;
 
   for (let step = 0; step < frame.frameLength; step += 1) {
-    const lmStarted = performance.now();
-    const lm = await runLmStep(lmSession, meta, inputValues, offset, states);
-    lmOnnxMs += performance.now() - lmStarted;
     const stepCodes = frameStepCodes(frame, meta, step);
-    const arithmeticStarted = performance.now();
-    encoder.push(lm.logits.data, stepCodes);
-    arithmeticMs += performance.now() - arithmeticStarted;
-    inputValues = lmInputFromCodes(stepCodes);
-    states = lm.nextStates;
-    offset = lm.nextOffset;
+    if (deterministic) {
+      const lmStarted = performance.now();
+      encoder.push(stepCodes);
+      lmDeterministicMs += performance.now() - lmStarted;
+    } else {
+      const lmStarted = performance.now();
+      const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
+      lmOnnxMs += performance.now() - lmStarted;
+      const arithmeticStarted = performance.now();
+      encoder.push(lm.logits.data, stepCodes);
+      arithmeticMs += performance.now() - arithmeticStarted;
+      inputValues = lmInputFromCodes(stepCodes);
+      states = lm.nextStates;
+      offset = lm.nextOffset;
+    }
   }
 
   return {
     payload: encoder.finish(),
     lmOnnxMs,
+    lmDeterministicMs,
     arithmeticMs,
   };
 }
 
-async function decodeLmFrame(lmSession, bundleJson, meta, chunk) {
-  const decoder = new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
+async function decodeLmFrame(lmRuntime, bundleJson, meta, chunk) {
+  const deterministic = lmRuntime.kind === "deterministic";
+  const decoder = deterministic
+    ? new DeterministicLmChunkDecoder(bundleJson, lmRuntime.weights, Uint8Array.from(chunk.payload))
+    : new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
   let states = initialLmStates(meta);
   let offset = 0;
   let inputValues = new BigInt64Array(meta.num_codebooks);
   const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
   let lmOnnxMs = 0;
+  let lmDeterministicMs = 0;
   let arithmeticMs = 0;
 
   for (let step = 0; step < chunk.frameLength; step += 1) {
-    const lmStarted = performance.now();
-    const lm = await runLmStep(lmSession, meta, inputValues, offset, states);
-    lmOnnxMs += performance.now() - lmStarted;
-    const arithmeticStarted = performance.now();
-    const symbols = decoder.pull(lm.logits.data);
-    arithmeticMs += performance.now() - arithmeticStarted;
+    let symbols;
+    if (deterministic) {
+      const lmStarted = performance.now();
+      symbols = decoder.pull();
+      lmDeterministicMs += performance.now() - lmStarted;
+    } else {
+      const lmStarted = performance.now();
+      const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
+      lmOnnxMs += performance.now() - lmStarted;
+      const arithmeticStarted = performance.now();
+      symbols = decoder.pull(lm.logits.data);
+      arithmeticMs += performance.now() - arithmeticStarted;
+      inputValues = lmInputFromCodes(symbols);
+      states = lm.nextStates;
+      offset = lm.nextOffset;
+    }
     for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
       codes[codebook * meta.frame_length + step] = symbols[codebook];
     }
-    inputValues = lmInputFromCodes(symbols);
-    states = lm.nextStates;
-    offset = lm.nextOffset;
   }
 
   return {
@@ -448,6 +493,7 @@ async function decodeLmFrame(lmSession, bundleJson, meta, chunk) {
       codes,
     },
     lmOnnxMs,
+    lmDeterministicMs,
     arithmeticMs,
   };
 }

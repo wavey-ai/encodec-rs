@@ -2,6 +2,8 @@
 pub mod arithmetic;
 #[cfg(feature = "ecdc")]
 pub mod binary;
+#[cfg(feature = "ecdc")]
+pub mod deterministic_lm;
 #[cfg(feature = "onnx")]
 pub mod ecdc;
 #[cfg(feature = "ecdc")]

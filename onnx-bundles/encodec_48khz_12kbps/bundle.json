@@ -20,5 +20,6 @@
   "lm_past_context": 525,
   "lm_logit_step": 0.015625,
   "lm_cardinality": 1024,
-  "lm_dtype": "float32"
+  "lm_dtype": "float32",
+  "lm_weight_model": "lm_weights.bin"
 }

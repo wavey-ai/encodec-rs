@@ -9,6 +9,7 @@ use gpu_worker_ort::{
 pub use gpu_worker_ort::{CoreMlComputeUnits, ExecutionTarget};
 use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
 
+use crate::deterministic_lm::{DeterministicLm, DeterministicLmState, DeterministicLmWeights};
 pub use crate::metadata::OnnxFrameBundleMetadata;
 
 fn ort_session_config() -> SessionConfig {
@@ -185,7 +186,15 @@ impl OnnxFrameCodec {
 pub struct OnnxLmCodec {
     bundle_dir: PathBuf,
     metadata: OnnxFrameBundleMetadata,
-    session: Session,
+    backend: OnnxLmBackend,
+}
+
+enum OnnxLmBackend {
+    Ort(Session),
+    Deterministic {
+        lm: DeterministicLm,
+        state: Option<DeterministicLmState>,
+    },
 }
 
 impl OnnxLmCodec {
@@ -204,39 +213,36 @@ impl OnnxLmCodec {
                 metadata.schema_version
             );
         }
-        let lm_model = metadata
-            .lm_model
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("bundle does not include an LM ONNX model"))?;
-        let lm_path = bundle_dir.join(lm_model);
-        if !lm_path.exists() {
-            bail!("bundle is missing LM model file {}", lm_path.display());
-        }
-
-        let session_cfg = ort_session_config();
-        let session = match target {
-            ExecutionTarget::CoreMl {
-                compute_units,
-                model_cache_dir,
-                low_precision_accumulation_on_gpu,
-            } => {
-                let lm_target = ExecutionTarget::CoreMl {
-                    compute_units,
-                    model_cache_dir: model_cache_dir.as_ref().map(|path| path.join("lm_logits")),
-                    low_precision_accumulation_on_gpu,
-                };
-                build_session_from_target(&lm_path, &lm_target, &session_cfg, true)?
-            }
-            other => build_session_from_target(&lm_path, &other, &session_cfg, true)?,
-        };
         metadata.lm_dim()?;
         metadata.lm_num_layers()?;
         metadata.lm_past_context()?;
 
+        let backend = if let Some(weight_model) = metadata.lm_weight_model.clone() {
+            let use_ort = std::env::var("ENCODEC_RS_LM_BACKEND")
+                .map(|value| value.eq_ignore_ascii_case("ort"))
+                .unwrap_or(false);
+            if use_ort {
+                OnnxLmBackend::Ort(load_lm_session(&bundle_dir, &metadata, target)?)
+            } else {
+                let weights_path = bundle_dir.join(weight_model);
+                let weights = fs::read(&weights_path)
+                    .with_context(|| format!("failed to read {}", weights_path.display()))?;
+                let weights = DeterministicLmWeights::from_bytes(&weights)
+                    .with_context(|| format!("failed to parse {}", weights_path.display()))?;
+                weights.validate_for_codebooks(metadata.num_codebooks)?;
+                OnnxLmBackend::Deterministic {
+                    lm: DeterministicLm::new(weights),
+                    state: None,
+                }
+            }
+        } else {
+            OnnxLmBackend::Ort(load_lm_session(&bundle_dir, &metadata, target)?)
+        };
+
         Ok(Self {
             bundle_dir,
             metadata,
-            session,
+            backend,
         })
     }
 
@@ -286,6 +292,32 @@ impl OnnxLmCodec {
         }
 
         let offset_tensor = Array0::from_elem((), offset);
+        if let OnnxLmBackend::Deterministic { lm, state } = &mut self.backend {
+            if shape[0] != 1 || shape[2] != 1 {
+                bail!("deterministic LM only supports shape [1, codebooks, 1]");
+            }
+            if offset == 0 || state.is_none() {
+                *state = Some(lm.initial_state());
+            }
+            let state = state.as_mut().expect("state initialized");
+            let mut input_symbols = Vec::with_capacity(shape[1]);
+            for codebook in 0..shape[1] {
+                let value = indices[[0, codebook, 0]];
+                if value < 0 {
+                    bail!("LM input symbol must be non-negative, got {value}");
+                }
+                input_symbols.push(value as usize);
+            }
+            let logits = lm.forward_step(state, &input_symbols)?;
+            let card = self.metadata.lm_cardinality();
+            let codebooks = self.metadata.num_codebooks;
+            let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits).expect("shape");
+            return Ok((logits, offset + 1, self.initial_states(shape[0])?));
+        }
+
+        let OnnxLmBackend::Ort(session) = &mut self.backend else {
+            unreachable!("deterministic LM returned above");
+        };
         let mut inputs = inputs![
             "indices" => OrtTensor::from_array(indices.to_owned()).map_err(ort_error)?,
             "offset" => OrtTensor::from_array(offset_tensor).map_err(ort_error)?,
@@ -299,7 +331,7 @@ impl OnnxLmCodec {
             ));
         }
 
-        let outputs = self.session.run(inputs).map_err(ort_error)?;
+        let outputs = session.run(inputs).map_err(ort_error)?;
         let logits = outputs["logits"]
             .try_extract_array::<f32>()
             .map_err(ort_error)?
@@ -324,5 +356,37 @@ impl OnnxLmCodec {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok((logits, next_offset, next_states))
+    }
+}
+
+fn load_lm_session(
+    bundle_dir: &Path,
+    metadata: &OnnxFrameBundleMetadata,
+    target: ExecutionTarget,
+) -> Result<Session> {
+    let lm_model = metadata
+        .lm_model
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("bundle does not include an LM ONNX model"))?;
+    let lm_path = bundle_dir.join(lm_model);
+    if !lm_path.exists() {
+        bail!("bundle is missing LM model file {}", lm_path.display());
+    }
+
+    let session_cfg = ort_session_config();
+    match target {
+        ExecutionTarget::CoreMl {
+            compute_units,
+            model_cache_dir,
+            low_precision_accumulation_on_gpu,
+        } => {
+            let lm_target = ExecutionTarget::CoreMl {
+                compute_units,
+                model_cache_dir: model_cache_dir.as_ref().map(|path| path.join("lm_logits")),
+                low_precision_accumulation_on_gpu,
+            };
+            build_session_from_target(&lm_path, &lm_target, &session_cfg, true)
+        }
+        other => build_session_from_target(&lm_path, &other, &session_cfg, true),
     }
 }

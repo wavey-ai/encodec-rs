@@ -287,6 +287,7 @@ mod tests {
             encode_model: "encode_frame.onnx".into(),
             decode_model: "decode_frame.onnx".into(),
             lm_model: None,
+            lm_weight_model: None,
             lm_dim: None,
             lm_num_layers: None,
             lm_past_context: None,

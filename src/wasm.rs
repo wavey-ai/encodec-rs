@@ -7,6 +7,7 @@ use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
+use crate::deterministic_lm::{DeterministicLm, DeterministicLmState, DeterministicLmWeights};
 use crate::format::{
     segment_frame_length, segment_starts, validate_metadata, EcdcMetadata,
     ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
@@ -242,6 +243,155 @@ impl LmChunkDecoder {
                 DEFAULT_MIN_RANGE,
             )
             .map_err(to_js_error)?;
+        symbols
+            .into_iter()
+            .map(|symbol| {
+                u16::try_from(symbol)
+                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))
+            })
+            .collect()
+    }
+}
+
+#[wasm_bindgen]
+pub struct DeterministicLmChunkEncoder {
+    meta: OnnxFrameBundleMetadata,
+    lm: DeterministicLm,
+    state: DeterministicLmState,
+    input_symbols: Vec<usize>,
+    encoder: ArithmeticEncoder,
+    prefix: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl DeterministicLmChunkEncoder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        bundle_json: &str,
+        weights: &[u8],
+        scale: f32,
+    ) -> Result<DeterministicLmChunkEncoder, JsValue> {
+        let meta = parse_bundle(bundle_json)?;
+        validate_lm_metadata(&meta).map_err(to_js_error)?;
+        let weights = DeterministicLmWeights::from_bytes(weights).map_err(to_js_error)?;
+        weights
+            .validate_for_codebooks(meta.num_codebooks)
+            .map_err(to_js_error)?;
+        let lm = DeterministicLm::new(weights);
+        let state = lm.initial_state();
+        let mut prefix = Vec::new();
+        if meta.normalize {
+            prefix.extend_from_slice(&scale.to_be_bytes());
+        }
+        Ok(Self {
+            input_symbols: vec![0; meta.num_codebooks],
+            meta,
+            lm,
+            state,
+            encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
+            prefix,
+        })
+    }
+
+    pub fn push(&mut self, codes: &[u16]) -> Result<(), JsValue> {
+        let symbols = symbols_from_codes(codes, &self.meta).map_err(to_js_error)?;
+        let logits = self
+            .lm
+            .forward_step(&mut self.state, &self.input_symbols)
+            .map_err(to_js_error)?;
+        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0).map_err(to_js_error)?;
+        self.encoder
+            .push_pdf_symbols(
+                &pdf,
+                self.meta.lm_cardinality(),
+                self.meta.num_codebooks,
+                &symbols,
+                DEFAULT_FP_SCALE,
+                DEFAULT_MIN_RANGE,
+            )
+            .map_err(to_js_error)?;
+        for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols) {
+            *dst = symbol + 1;
+        }
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Vec<u8> {
+        let mut out = std::mem::take(&mut self.prefix);
+        out.extend_from_slice(&self.encoder.finish());
+        out
+    }
+}
+
+#[wasm_bindgen]
+pub struct DeterministicLmChunkDecoder {
+    meta: OnnxFrameBundleMetadata,
+    lm: DeterministicLm,
+    state: DeterministicLmState,
+    input_symbols: Vec<usize>,
+    decoder: ArithmeticDecoder,
+    scale: f32,
+}
+
+#[wasm_bindgen]
+impl DeterministicLmChunkDecoder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        bundle_json: &str,
+        weights: &[u8],
+        payload: &[u8],
+    ) -> Result<DeterministicLmChunkDecoder, JsValue> {
+        let meta = parse_bundle(bundle_json)?;
+        validate_lm_metadata(&meta).map_err(to_js_error)?;
+        let weights = DeterministicLmWeights::from_bytes(weights).map_err(to_js_error)?;
+        weights
+            .validate_for_codebooks(meta.num_codebooks)
+            .map_err(to_js_error)?;
+        let lm = DeterministicLm::new(weights);
+        let state = lm.initial_state();
+        let mut cursor = Cursor::new(payload);
+        let scale = if meta.normalize {
+            let bytes = read_exactly(&mut cursor, 4).map_err(to_js_error)?;
+            f32::from_be_bytes(bytes.try_into().expect("slice length"))
+        } else {
+            1.0
+        };
+        let remaining = payload.len().saturating_sub(cursor.position() as usize);
+        let encoded = read_exactly(&mut cursor, remaining).map_err(to_js_error)?;
+        Ok(Self {
+            input_symbols: vec![0; meta.num_codebooks],
+            meta,
+            lm,
+            state,
+            decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
+                .map_err(to_js_error)?,
+            scale,
+        })
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> {
+        let logits = self
+            .lm
+            .forward_step(&mut self.state, &self.input_symbols)
+            .map_err(to_js_error)?;
+        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0).map_err(to_js_error)?;
+        let symbols = self
+            .decoder
+            .pull_symbols(
+                &pdf,
+                self.meta.lm_cardinality(),
+                self.meta.num_codebooks,
+                DEFAULT_FP_SCALE,
+                DEFAULT_MIN_RANGE,
+            )
+            .map_err(to_js_error)?;
+        for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
+            *dst = symbol + 1;
+        }
         symbols
             .into_iter()
             .map(|symbol| {

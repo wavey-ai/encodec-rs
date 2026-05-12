@@ -18,7 +18,7 @@ const ortFiles = [
   "ort-wasm-simd-threaded.jsep.wasm",
 ];
 const bundles = ["encodec_48khz_6kbps", "encodec_48khz_12kbps"];
-const bundleFiles = ["bundle.json", "encode_frame.onnx", "decode_frame.onnx", "lm_logits.onnx"];
+const bundleFiles = ["bundle.json", "encode_frame.onnx", "decode_frame.onnx", "lm_logits.onnx", "lm_weights.bin"];
 
 await rm(out, { recursive: true, force: true });
 await mkdir(path.join(siteRoot, "browser-smoke"), { recursive: true });
