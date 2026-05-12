@@ -55,9 +55,10 @@ pub fn read_tagged_header<T: DeserializeOwned>(
 
 pub fn read_exactly(reader: &mut impl Read, size: usize) -> Result<Vec<u8>> {
     let mut remaining = size;
-    let mut out = Vec::with_capacity(size);
+    let mut out = Vec::new();
+    const MAX_READ_CHUNK: usize = 64 * 1024;
     while remaining > 0 {
-        let mut buf = vec![0_u8; remaining];
+        let mut buf = vec![0_u8; remaining.min(MAX_READ_CHUNK)];
         let count = reader
             .read(&mut buf)
             .with_context(|| format!("failed to read {remaining} bytes from stream"))?;
