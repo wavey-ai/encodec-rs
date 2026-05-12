@@ -124,6 +124,23 @@ four-second fixtures:
 | silence | 219 | pass | 219 | pass |
 | noise | 1,373 | pass | 1,377 | pass |
 
+Full-song cross-architecture matrix, run on May 12, 2026, using the
+`Lori Asha - Westside` premix track normalized to `48 kHz` stereo WAV, the
+`48 kHz 12 kbps` bundle, and LM-assisted `acv=5` `.ecdc`:
+
+| Encoder | `.ecdc` bytes | Mac WASM decode | Mac Rust decode | Ada Linux WASM decode | Ada Linux Rust decode |
+|---|---:|---|---|---|---|
+| Mac WASM | 254,263 | pass, 208.509s | pass, 208.509s | pass, 208.509s | pass, 208.509s |
+| Mac Rust | 254,228 | pass, 208.509s | pass, 208.509s | pass, 208.509s | pass, 208.509s |
+| Ada Linux WASM | 254,263 | pass, 208.509s | pass, 208.509s | pass, 208.509s | pass, 208.509s |
+| Ada Linux Rust | 254,223 | pass, 208.509s | pass, 208.509s | pass, 208.509s | pass, 208.509s |
+
+This validates the portable LM bitstream across browser/WASM and native Rust on
+Apple Silicon macOS and x86_64 Linux. WASM decode output was bit-identical
+between Mac and Ada. Native ONNX Runtime decode can differ by small PCM-level
+amounts after the neural `decode_frame.onnx` stage, but all 16 full-song
+cross-runtime decodes completed and produced full-length audio.
+
 The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
 Large ONNX files are split into static parts during deployment so they stay
 under Cloudflare Pages' per-file asset limit; the browser reassembles those
