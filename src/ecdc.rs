@@ -12,7 +12,8 @@ use crate::binary::{
 use crate::format::{segment_frame_length, segment_starts, validate_metadata};
 pub use crate::format::{
     EcdcMetadata, SourceAudioMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
-    DEFAULT_MIN_RANGE, DETERMINISTIC_LM_BITSTREAM_VERSION, RAW_BITSTREAM_VERSION,
+    DEFAULT_MIN_RANGE, LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION, PORTABLE_LM_BITSTREAM_VERSION,
+    RAW_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::onnx::{OnnxFrameCodec, OnnxLmCodec};
@@ -382,7 +383,7 @@ fn decode_ecdc_impl(
             RAW_BITSTREAM_VERSION => {
                 decode_raw_frame_payload(codec, &mut reader, &bundle_meta, this_len, frame_length)?
             }
-            DETERMINISTIC_LM_BITSTREAM_VERSION => {
+            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION | PORTABLE_LM_BITSTREAM_VERSION => {
                 let Some(lm_codec) = lm_codec.as_deref_mut() else {
                     bail!("payload requires LM decoding, but no LM bundle was provided");
                 };
@@ -521,7 +522,7 @@ fn encode_lm_chunk_payload(
         let pdf = probability_columns_from_logits(
             &logits,
             lm_tau,
-            meta.lm_logit_step(),
+            meta.portable_lm_logit_step(),
             fp_scale,
             &mut scratch,
         )?;
@@ -599,6 +600,11 @@ fn decode_lm_chunk_payload(
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
+    let lm_logit_step = if metadata.bitstream_version >= PORTABLE_LM_BITSTREAM_VERSION {
+        lm_codec.metadata().portable_lm_logit_step()
+    } else {
+        lm_codec.metadata().lm_logit_step()
+    };
 
     for t in 0..frame_length {
         let (logits, next_offset, next_states) =
@@ -606,7 +612,7 @@ fn decode_lm_chunk_payload(
         let pdf = probability_columns_from_logits(
             &logits,
             lm_tau,
-            lm_codec.metadata().lm_logit_step(),
+            lm_logit_step,
             metadata.fp_scale,
             &mut scratch,
         )?;

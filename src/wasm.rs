@@ -313,7 +313,7 @@ fn probability_columns_from_logits(
     let mut probs = vec![0.0_f64; card];
     let uniform = 1.0 / card as f64;
     let near_pdf_threshold = 0.25 / DEFAULT_FP_SCALE as f64;
-    let logit_step = meta.lm_logit_step();
+    let logit_step = meta.portable_lm_logit_step();
 
     for codebook in 0..codebooks {
         let mut max_value = f64::NEG_INFINITY;

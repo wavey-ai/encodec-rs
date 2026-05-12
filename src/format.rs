@@ -9,7 +9,9 @@ use crate::metadata::OnnxFrameBundleMetadata;
 pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
 pub const DEFAULT_MIN_RANGE: i64 = 2;
 pub const RAW_BITSTREAM_VERSION: u8 = 0;
-pub const DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = 4;
+pub const LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = 4;
+pub const PORTABLE_LM_BITSTREAM_VERSION: u8 = 5;
+pub const DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = PORTABLE_LM_BITSTREAM_VERSION;
 pub const ARITHMETIC_TOTAL_RANGE_BITS: u32 = 24;
 
 #[derive(Debug, Clone, Default)]
@@ -60,7 +62,7 @@ impl EcdcMetadata {
             fp_scale: DEFAULT_FP_SCALE,
             min_range: DEFAULT_MIN_RANGE,
             bitstream_version: if use_lm {
-                DETERMINISTIC_LM_BITSTREAM_VERSION
+                PORTABLE_LM_BITSTREAM_VERSION
             } else {
                 RAW_BITSTREAM_VERSION
             },
@@ -103,9 +105,12 @@ pub fn validate_metadata(
                 bail!("raw acv=0 payload unexpectedly advertises lm=true");
             }
         }
-        DETERMINISTIC_LM_BITSTREAM_VERSION => {
+        LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION | PORTABLE_LM_BITSTREAM_VERSION => {
             if !metadata.use_lm {
-                bail!("deterministic acv=4 payload unexpectedly advertises lm=false");
+                bail!(
+                    "deterministic acv={} payload unexpectedly advertises lm=false",
+                    metadata.bitstream_version
+                );
             }
         }
         other => bail!("unsupported ECDC bitstream version {other}"),

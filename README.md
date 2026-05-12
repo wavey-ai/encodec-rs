@@ -20,7 +20,7 @@ Rust.
 
 ## Browser Support
 
-The browser path supports raw `acv=0` and LM-assisted `acv=4` `.ecdc`
+The browser path supports raw `acv=0` and LM-assisted `acv=5` `.ecdc`
 encode/decode:
 
 - encode a full audio file in the browser with `encode_frame.onnx`
@@ -63,7 +63,7 @@ http://127.0.0.1:8787/browser-smoke/
 ```
 
 Click `Encode file` to encode the full JFK clip in the browser. The `Coding`
-selector switches between raw `acv=0` and LM `acv=4`. The `Mode` selector
+selector switches between raw `acv=0` and LM `acv=5`. The `Mode` selector
 switches between:
 
 - `Incremental`: writes the `.ecdc` header, runs `encode_frame.onnx` one
@@ -93,23 +93,25 @@ The page reports total encode and decode time after each run. Those totals
 include ONNX session creation when the selected bundle/runtime has not already
 been cached in the page.
 
-The JFK smoke sample currently reports `8,468` bytes for raw `acv=0`.
-LM `acv=4` reduces that to `5,008` bytes on WebGPU and `5,005` bytes on
-WASM CPU, saving about `40.9%` versus raw mode. Small byte-size differences
-between WebGPU and WASM CPU can happen because ONNX Runtime providers do not
-guarantee bit-identical floating-point model outputs.
+`acv=5` is the portable LM bitstream. It uses a coarser deterministic logit
+quantization floor before arithmetic coding so browser ONNX Runtime Web and
+native ONNX Runtime produce the same entropy-decoding model across providers
+and CPU architectures. Native decode still accepts legacy `acv=4`, but new LM
+encodes write `acv=5`.
 
-Local browser smoke matrix on this M1 Air, using Chrome headless:
+Local cross-runtime matrix on this M1 Air, using the checked-in
+`testdata/westside_4s_48khz_stereo.wav` fixture and the `48 kHz 12 kbps`
+bundle:
 
-| Path | Decode + play | WebGPU size | WebGPU encode | WebGPU decode | WASM CPU size | WASM CPU encode | WASM CPU decode | Result |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-| raw `acv=0`, incremental | yes | 8,468 bytes | 1,609.2 ms | 1,467.4 ms | 8,468 bytes | 3,411.6 ms | 3,205.2 ms | pass |
-| LM `acv=4`, incremental | yes | 5,008 bytes | 16,258.9 ms | 16,575.7 ms | 5,005 bytes | 7,883.3 ms | 7,475.0 ms | pass |
-| LM `acv=4`, batch | no | 5,008 bytes | 17,557.8 ms | skipped | 5,005 bytes | 7,892.6 ms | skipped | pass |
+| Encoder | Coding | ECDC version | ECDC bytes | Rust decode | WASM decode |
+|---|---|---:|---:|---|---|
+| Rust ONNX | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
+| Rust ONNX | LM | `acv=5` | 4,989 | pass, 192,000 samples | pass, 192,000 samples |
+| ONNX Runtime Web/WASM | raw | `acv=0` | 6,165 | pass, 192,000 samples | pass, 192,000 samples |
+| ONNX Runtime Web/WASM | LM | `acv=5` | 4,994 | pass, 192,000 samples | pass, 192,000 samples |
 
-These runs used the `48 kHz 6 kbps` bundle and the 11 second JFK sample. LM
-mode saved `3,460` bytes on the WebGPU run and `3,463` bytes on the WASM CPU
-run.
+On this fixture, portable LM saves about `19%` versus raw mode while remaining
+decodable across native Rust and browser/WASM runtimes.
 
 The Cloudflare deployment is staged under `/code/encodec-rs/browser-smoke/`.
 Large ONNX files are split into static parts during deployment so they stay

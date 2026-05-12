@@ -9,11 +9,15 @@ import {
   initSync,
   initPanicHook,
   lmEcdcChunk,
+  lmEcdcDecodeChunks,
   lmEcdcHeader,
+  LmChunkDecoder,
   LmChunkEncoder,
+  rawEcdcDecodeFrames,
   rawEcdcFramePayload,
   rawEcdcHeader,
   rawEcdcMetadata,
+  rawEcdcOverlapAdd,
 } from "../pkg/encodec_rs.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -32,6 +36,13 @@ async function run(options) {
   configureOrt();
   initEncodecWasm();
 
+  if (options.command === "decode") {
+    return decodeFixture(options);
+  }
+  return encodeFixture(options);
+}
+
+async function encodeFixture(options) {
   const bundleJson = readFileSync(path.join(options.bundleDir, "bundle.json"), "utf8");
   const meta = JSON.parse(bundleJson);
   if (options.coding === "lm" && !meta.lm_model) {
@@ -120,10 +131,95 @@ async function run(options) {
   };
 }
 
+async function decodeFixture(options) {
+  const bundleJson = readFileSync(path.join(options.bundleDir, "bundle.json"), "utf8");
+  const meta = JSON.parse(bundleJson);
+  const ecdc = readFileSync(options.inputEcdc);
+  const metadata = rawEcdcMetadata(ecdc);
+  const acv = metadata.acv ?? metadata.bitstream_version ?? 0;
+  const audioLength = metadata.al ?? metadata.audio_length;
+  if (!Number.isInteger(audioLength) || audioLength < 0) {
+    throw new Error(`invalid ECDC audio length: ${String(audioLength)}`);
+  }
+
+  const started = performance.now();
+  const parseStarted = performance.now();
+  let frames;
+  let lmSessionMs = 0;
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+  if (acv === 0) {
+    frames = rawEcdcDecodeFrames(bundleJson, ecdc).frames;
+  } else if (metadata.lm === true || metadata.use_lm === true) {
+    const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
+    const lmSessionStarted = performance.now();
+    const lmSession = await createSession(path.join(options.bundleDir, meta.lm_model));
+    lmSessionMs = performance.now() - lmSessionStarted;
+    frames = [];
+    for (let index = 0; index < parsed.chunks.length; index += 1) {
+      const decoded = await decodeLmFrame(lmSession, bundleJson, meta, parsed.chunks[index]);
+      frames.push(decoded.frame);
+      lmOnnxMs += decoded.lmOnnxMs;
+      arithmeticMs += decoded.arithmeticMs;
+    }
+  } else {
+    throw new Error(`unsupported ECDC coding: acv=${acv}`);
+  }
+  const parseMs = performance.now() - parseStarted;
+
+  const decoderInputs = buildDecoderInputs(frames, meta);
+  const decodeSessionStarted = performance.now();
+  const decodeSession = await createSession(path.join(options.bundleDir, meta.decode_model));
+  const decodeSessionMs = performance.now() - decodeSessionStarted;
+  const decodeStarted = performance.now();
+  const outputs = await decodeSession.run({
+    [decodeSession.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
+      frames.length,
+      meta.num_codebooks,
+      meta.frame_length,
+    ]),
+    [decodeSession.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [frames.length, 1]),
+  });
+  const decodeOnnxMs = performance.now() - decodeStarted;
+  const decodedTensor = findDecodeOutput(outputs);
+  const overlapStarted = performance.now();
+  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedTensor.data);
+  const overlapMs = performance.now() - overlapStarted;
+  mkdirSync(path.dirname(options.outputWav), { recursive: true });
+  writeWav(options.outputWav, decodedAudio, meta.channels, meta.sample_rate);
+
+  return {
+    inputEcdc: path.relative(repoRoot, options.inputEcdc),
+    outputWav: path.relative(repoRoot, options.outputWav),
+    bundleDir: path.relative(repoRoot, options.bundleDir),
+    runtime: "onnxruntime-web wasm",
+    ecdcMetadata: metadata,
+    parsedFrames: frames.length,
+    decodedSamples: audioLength,
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    timings: {
+      parseMs: roundMs(parseMs),
+      lmSessionMs: roundMs(lmSessionMs),
+      lmOnnxMs: roundMs(lmOnnxMs),
+      arithmeticMs: roundMs(arithmeticMs),
+      decodeSessionMs: roundMs(decodeSessionMs),
+      decodeOnnxMs: roundMs(decodeOnnxMs),
+      overlapMs: roundMs(overlapMs),
+      totalDecodeMs: roundMs(performance.now() - started),
+    },
+    decoderOutputs: summarizeOutputs(outputs),
+  };
+}
+
 function parseArgs(args) {
+  const command = args[0] === "decode" || args[0] === "encode" ? args.shift() : "encode";
   const out = {
+    command,
     inputWav: path.join(repoRoot, "testdata/westside_4s_48khz_stereo.wav"),
+    inputEcdc: path.join(repoRoot, "target/wasm-smoke/westside_4s_48khz_stereo.lm.ecdc"),
     outputEcdc: path.join(repoRoot, "target/wasm-smoke/westside_4s_48khz_stereo.lm.ecdc"),
+    outputWav: path.join(repoRoot, "target/wasm-smoke/westside_4s_wasm_decoded.wav"),
     bundleDir: path.join(repoRoot, "onnx-bundles/encodec_48khz_12kbps"),
     coding: "lm",
   };
@@ -135,18 +231,27 @@ function parseArgs(args) {
     } else if (arg === "--coding") {
       out.coding = args[++index];
     } else if (arg === "--output") {
-      out.outputEcdc = path.resolve(args[++index]);
+      const output = path.resolve(args[++index]);
+      out.outputEcdc = output;
+      out.outputWav = output;
     } else if (arg === "--help" || arg === "-h") {
       printUsageAndExit();
     } else {
       positional.push(arg);
     }
   }
-  if (positional[0]) {
+  if (out.command === "decode") {
+    if (positional[0]) {
+      out.inputEcdc = path.resolve(positional[0]);
+    }
+    if (positional[1]) {
+      out.outputWav = path.resolve(positional[1]);
+    }
+  } else if (positional[0]) {
     out.inputWav = path.resolve(positional[0]);
-  }
-  if (positional[1]) {
-    out.outputEcdc = path.resolve(positional[1]);
+    if (positional[1]) {
+      out.outputEcdc = path.resolve(positional[1]);
+    }
   }
   if (!["lm", "raw"].includes(out.coding)) {
     throw new Error(`--coding must be "lm" or "raw", got ${out.coding}`);
@@ -157,7 +262,9 @@ function parseArgs(args) {
 function printUsageAndExit() {
   console.log(
     [
-      "Usage: node scripts/wasm-encode-fixture.mjs [input.wav] [output.ecdc]",
+      "Usage:",
+      "  node scripts/wasm-encode-fixture.mjs encode [input.wav] [output.ecdc]",
+      "  node scripts/wasm-encode-fixture.mjs decode [input.ecdc] [output.wav]",
       "",
       "Options:",
       "  --bundle <dir>    ONNX bundle directory",
@@ -308,6 +415,43 @@ async function encodeLmFrame(lmSession, bundleJson, frame, meta) {
   };
 }
 
+async function decodeLmFrame(lmSession, bundleJson, meta, chunk) {
+  const decoder = new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
+  let states = initialLmStates(meta);
+  let offset = 0;
+  let inputValues = new BigInt64Array(meta.num_codebooks);
+  const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
+  let lmOnnxMs = 0;
+  let arithmeticMs = 0;
+
+  for (let step = 0; step < chunk.frameLength; step += 1) {
+    const lmStarted = performance.now();
+    const lm = await runLmStep(lmSession, meta, inputValues, offset, states);
+    lmOnnxMs += performance.now() - lmStarted;
+    const arithmeticStarted = performance.now();
+    const symbols = decoder.pull(lm.logits.data);
+    arithmeticMs += performance.now() - arithmeticStarted;
+    for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+      codes[codebook * meta.frame_length + step] = symbols[codebook];
+    }
+    inputValues = lmInputFromCodes(symbols);
+    states = lm.nextStates;
+    offset = lm.nextOffset;
+  }
+
+  return {
+    frame: {
+      offset: chunk.offset,
+      samples: chunk.samples,
+      frameLength: chunk.frameLength,
+      scale: decoder.scale(),
+      codes,
+    },
+    lmOnnxMs,
+    arithmeticMs,
+  };
+}
+
 async function runLmStep(session, meta, inputValues, offset, states) {
   const feeds = {
     indices: new ort.Tensor("int64", new BigInt64Array(inputValues), [1, meta.num_codebooks, 1]),
@@ -345,6 +489,16 @@ function findEncodeOutputs(outputs) {
     throw new Error(`unexpected encoder outputs: ${JSON.stringify(summarizeOutputs(outputs))}`);
   }
   return { codesTensor, scaleTensor };
+}
+
+function findDecodeOutput(outputs) {
+  const tensor = Object.values(outputs).find(
+    (candidate) => candidate.type === "float32" && candidate.dims.length === 3,
+  );
+  if (!tensor) {
+    throw new Error(`unexpected decoder outputs: ${JSON.stringify(summarizeOutputs(outputs))}`);
+  }
+  return tensor;
 }
 
 function findLmLogitsOutput(outputs, meta) {
@@ -385,6 +539,24 @@ function buildRawFrame(codes, scales, segment, meta, segmentIndex) {
     scale: Number(scales[0] ?? 1),
     codes: frameCodes,
   };
+}
+
+function buildDecoderInputs(frames, meta) {
+  const valuesPerSegment = meta.num_codebooks * meta.frame_length;
+  const codes = new BigInt64Array(frames.length * valuesPerSegment);
+  const scales = new Float32Array(frames.length);
+  for (let batchIndex = 0; batchIndex < frames.length; batchIndex += 1) {
+    const frame = frames[batchIndex];
+    if (frame.codes.length !== valuesPerSegment) {
+      throw new Error(`frame ${batchIndex} has ${frame.codes.length} codes, expected ${valuesPerSegment}`);
+    }
+    const base = batchIndex * valuesPerSegment;
+    for (let index = 0; index < valuesPerSegment; index += 1) {
+      codes[base + index] = BigInt(frame.codes[index]);
+    }
+    scales[batchIndex] = Number(frame.scale ?? 1);
+  }
+  return { codes, scales };
 }
 
 function frameStepCodes(frame, meta, step) {
@@ -429,6 +601,35 @@ function readAscii(view, offset, length) {
     out += String.fromCharCode(view.getUint8(offset + index));
   }
   return out;
+}
+
+function writeWav(outputPath, planar, channels, sampleRate) {
+  const frames = Math.floor(planar.length / channels);
+  const bytesPerSample = 2;
+  const dataBytes = frames * channels * bytesPerSample;
+  const out = Buffer.alloc(44 + dataBytes);
+  out.write("RIFF", 0, "ascii");
+  out.writeUInt32LE(36 + dataBytes, 4);
+  out.write("WAVE", 8, "ascii");
+  out.write("fmt ", 12, "ascii");
+  out.writeUInt32LE(16, 16);
+  out.writeUInt16LE(1, 20);
+  out.writeUInt16LE(channels, 22);
+  out.writeUInt32LE(sampleRate, 24);
+  out.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
+  out.writeUInt16LE(channels * bytesPerSample, 32);
+  out.writeUInt16LE(16, 34);
+  out.write("data", 36, "ascii");
+  out.writeUInt32LE(dataBytes, 40);
+  let cursor = 44;
+  for (let frame = 0; frame < frames; frame += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const value = Math.max(-0.99, Math.min(0.99, planar[channel * frames + frame]));
+      out.writeInt16LE(Math.round(value * 32767), cursor);
+      cursor += bytesPerSample;
+    }
+  }
+  writeFileSync(outputPath, out);
 }
 
 function concatUint8Chunks(chunks) {
