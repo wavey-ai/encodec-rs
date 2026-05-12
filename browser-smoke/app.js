@@ -466,10 +466,13 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
 async function decodeAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime, lmRuntime = null) {
   const metadata = rawEcdcMetadata(ecdc);
   const acv = metadata.acv ?? metadata.bitstream_version ?? 0;
-  if (metadata.lm === true || metadata.use_lm === true || acv === 1 || acv === 4 || acv === 5) {
+  if (acv === 1) {
     return decodeLmAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime, lmRuntime);
   }
-  return decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime);
+  if (acv === 0) {
+    return decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime);
+  }
+  throw new Error(`unsupported ECDC acv=${acv}`);
 }
 
 async function decodeRawAndPlay(bundleName, bundleRoot, bundleJson, meta, ecdc, audioLength, runtime) {

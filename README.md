@@ -97,9 +97,7 @@ been cached in the page.
 New LM encodes use the same deterministic Rust LM implementation in native and
 wasm, loaded from `lm_weights.bin`, before the integer arithmetic coder. ONNX
 Runtime is still used for `encode_frame.onnx` and `decode_frame.onnx`, but it is
-no longer on the entropy-decoding critical path. Native and browser decode also
-accept transitional `acv=4` and `acv=5` LM files written before the public
-version reset.
+no longer on the entropy-decoding critical path.
 
 Local cross-runtime matrix on this M1 Air, using the checked-in
 `testdata/westside_4s_48khz_stereo.wav` fixture and the `48 kHz 12 kbps`

@@ -155,7 +155,7 @@ async function decodeFixture(options) {
   let arithmeticMs = 0;
   if (acv === 0) {
     frames = rawEcdcDecodeFrames(bundleJson, ecdc).frames;
-  } else if (metadata.lm === true || metadata.use_lm === true) {
+  } else if (acv === 1) {
     const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
     const lmSessionStarted = performance.now();
     const lmRuntime = await getLmRuntime(options.bundleDir, meta);

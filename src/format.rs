@@ -10,8 +10,6 @@ pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
 pub const DEFAULT_MIN_RANGE: i64 = 2;
 pub const RAW_BITSTREAM_VERSION: u8 = 0;
 pub const PORTABLE_LM_BITSTREAM_VERSION: u8 = 1;
-pub const LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = 4;
-pub const LEGACY_PORTABLE_LM_BITSTREAM_VERSION: u8 = 5;
 pub const DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = PORTABLE_LM_BITSTREAM_VERSION;
 pub const ARITHMETIC_TOTAL_RANGE_BITS: u32 = 24;
 
@@ -107,7 +105,7 @@ pub fn validate_metadata(
                 bail!("raw acv=0 payload unexpectedly advertises lm=true");
             }
         }
-        version if is_lm_bitstream_version(version) => {
+        PORTABLE_LM_BITSTREAM_VERSION => {
             if !metadata.use_lm {
                 bail!(
                     "deterministic acv={} payload unexpectedly advertises lm=false",
@@ -118,22 +116,6 @@ pub fn validate_metadata(
         other => bail!("unsupported ECDC bitstream version {other}"),
     }
     Ok(())
-}
-
-pub fn is_lm_bitstream_version(bitstream_version: u8) -> bool {
-    matches!(
-        bitstream_version,
-        PORTABLE_LM_BITSTREAM_VERSION
-            | LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
-            | LEGACY_PORTABLE_LM_BITSTREAM_VERSION
-    )
-}
-
-pub fn uses_portable_lm_logit_step(bitstream_version: u8) -> bool {
-    matches!(
-        bitstream_version,
-        PORTABLE_LM_BITSTREAM_VERSION | LEGACY_PORTABLE_LM_BITSTREAM_VERSION
-    )
 }
 
 pub fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
@@ -163,7 +145,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_serde_roundtrip_ignores_legacy_source_fields() {
+    fn metadata_serde_roundtrip_preserves_unknown_source_fields() {
         let metadata = EcdcMetadata {
             model_name: "encodec_48khz".into(),
             audio_length: 48000,
@@ -177,9 +159,9 @@ mod tests {
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
-        let legacy_json =
+        let source_json =
             json.trim_end_matches('}').to_owned() + ",\"osr\":44100,\"och\":2,\"ofr\":44100}";
-        let decoded: EcdcMetadata = serde_json::from_str(&legacy_json).unwrap();
+        let decoded: EcdcMetadata = serde_json::from_str(&source_json).unwrap();
         assert!(decoded.chunk_crc_enabled());
         assert_eq!(
             decoded.extra.get("osr").and_then(Value::as_u64),
@@ -193,23 +175,45 @@ mod tests {
     }
 
     #[test]
-    fn lm_version_helpers_keep_legacy_decode_paths() {
-        assert!(!is_lm_bitstream_version(RAW_BITSTREAM_VERSION));
-        assert!(is_lm_bitstream_version(PORTABLE_LM_BITSTREAM_VERSION));
-        assert!(is_lm_bitstream_version(
-            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
-        ));
-        assert!(is_lm_bitstream_version(
-            LEGACY_PORTABLE_LM_BITSTREAM_VERSION
-        ));
+    fn metadata_versions_are_raw_zero_and_lm_one() {
+        let bundle = OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz".into(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 48_000,
+            segment_stride: 47_040,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 150,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".into(),
+            decode_model: "decode_frame.onnx".into(),
+            lm_model: Some("lm_logits.onnx".into()),
+            lm_weight_model: Some("lm_weights.bin".into()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_portable_logit_step: Some(2.1),
+            lm_cardinality: Some(1024),
+            lm_dtype: Some("float32".into()),
+            opset_version: 17,
+        };
 
-        assert!(uses_portable_lm_logit_step(PORTABLE_LM_BITSTREAM_VERSION));
-        assert!(uses_portable_lm_logit_step(
-            LEGACY_PORTABLE_LM_BITSTREAM_VERSION
-        ));
-        assert!(!uses_portable_lm_logit_step(
-            LEGACY_DETERMINISTIC_LM_BITSTREAM_VERSION
-        ));
+        let raw = EcdcMetadata::from_bundle(&bundle, 48_000, None, false, None, false);
+        assert_eq!(raw.bitstream_version, RAW_BITSTREAM_VERSION);
+        validate_metadata(&bundle, &raw).unwrap();
+
+        let lm = EcdcMetadata::from_bundle(&bundle, 48_000, None, true, Some(1.0), false);
+        assert_eq!(lm.bitstream_version, PORTABLE_LM_BITSTREAM_VERSION);
+        validate_metadata(&bundle, &lm).unwrap();
+
+        let mut unsupported = lm.clone();
+        unsupported.bitstream_version = 5;
+        assert!(validate_metadata(&bundle, &unsupported).is_err());
     }
 
     #[test]
