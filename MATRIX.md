@@ -6,7 +6,7 @@ Input audio: `target/lori-asha-wasm-native/wav/02 - Lori Asha - Westside.48k-ste
 
 Scope: current q8 LM entropy path only. This run is not intended to preserve AVC/backward-compatible payload behavior.
 
-All generated WAVs from the latest local and Ada/Linux runs have been pulled back to this machine.
+All generated WAVs from the latest local Linux runs have been pulled back to this machine.
 
 ## Latest Run Folders
 
