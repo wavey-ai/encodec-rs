@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use encodec_rs::ecdc::{decode_ecdc, encode_audio_to_ecdc_stream_with_options};
+use encodec_rs::ecdc::{decode_ecdc, encode_audio_to_ecdc_stream_with_options, LmCodec};
 use encodec_rs::format::segment_starts;
 use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
@@ -63,11 +63,11 @@ fn bitneedle_fixture_roundtrips_through_onnx_code() -> Result<()> {
 
     encode_audio_to_ecdc_stream_with_options(
         &mut codec,
-        Some(&mut lm_codec),
+        &mut lm_codec as &mut dyn LmCodec,
         &audio,
         None,
         batch_size,
-        false,
+        true,
         |bytes| {
             out.write_all(bytes)?;
             emitted_bytes += bytes.len();
@@ -105,7 +105,11 @@ fn bitneedle_fixture_roundtrips_through_onnx_code() -> Result<()> {
     let mut decode_lm =
         OnnxLmCodec::from_dir(&bundle_dir, execution_target_from_env(&bundle_dir)?)?;
     let decode_started = Instant::now();
-    let decoded = decode_ecdc(&mut decode_codec, Some(&mut decode_lm), &payload)?;
+    let decoded = decode_ecdc(
+        &mut decode_codec,
+        &mut decode_lm as &mut dyn LmCodec,
+        &payload,
+    )?;
     write_wav_f32(&output_wav, &decoded.audio, meta.sample_rate)?;
     println!(
         "fixture: decode complete samples={} wav={} elapsed={:.1}s",

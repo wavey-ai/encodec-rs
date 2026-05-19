@@ -3,14 +3,16 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use gpu_worker_ort::{
-    build_session_from_target, default_intra_threads, inputs, ort_error, GraphOptimizationLevel,
-    LogLevel, OrtTensor, Session, SessionConfig,
+    build_session_from_target, default_intra_threads, ort_error, GraphOptimizationLevel, LogLevel,
+    OrtTensor, Session, SessionConfig,
 };
 pub use gpu_worker_ort::{CoreMlComputeUnits, ExecutionTarget};
-use ndarray::{Array0, Array2, Array3, Array4, Ix0, Ix2, Ix3, Ix4};
+use ndarray::{Array2, Array3, Array4, Ix2, Ix3};
 
-use crate::deterministic_lm::{DeterministicLm, DeterministicLmState, DeterministicLmWeights};
+use crate::ecdc::{FrameCodec, LmCodec, QUANTIZED_LM_BITSTREAM_VERSION};
 pub use crate::metadata::OnnxFrameBundleMetadata;
+use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
+use crate::stable_hash::stable_hash_hex;
 
 fn ort_session_config() -> SessionConfig {
     let intra_threads = std::env::var("ENCODEC_RS_ORT_THREADS")
@@ -183,6 +185,20 @@ impl OnnxFrameCodec {
     }
 }
 
+impl FrameCodec for OnnxFrameCodec {
+    fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        OnnxFrameCodec::metadata(self)
+    }
+
+    fn encode_frame(&mut self, audio: &Array3<f32>) -> Result<(Array3<i64>, Array2<f32>)> {
+        OnnxFrameCodec::encode_frame(self, audio)
+    }
+
+    fn decode_frame(&mut self, codes: &Array3<i64>, scale: &Array2<f32>) -> Result<Array3<f32>> {
+        OnnxFrameCodec::decode_frame(self, codes, scale)
+    }
+}
+
 pub struct OnnxLmCodec {
     bundle_dir: PathBuf,
     metadata: OnnxFrameBundleMetadata,
@@ -190,10 +206,10 @@ pub struct OnnxLmCodec {
 }
 
 enum OnnxLmBackend {
-    Ort(Session),
-    Deterministic {
-        lm: DeterministicLm,
-        state: Option<DeterministicLmState>,
+    Quantized {
+        lm: QuantizedLm,
+        state: Option<QuantizedLmState>,
+        hash: String,
     },
 }
 
@@ -217,26 +233,22 @@ impl OnnxLmCodec {
         metadata.lm_num_layers()?;
         metadata.lm_past_context()?;
 
-        let backend = if let Some(weight_model) = metadata.lm_weight_model.clone() {
-            let use_ort = std::env::var("ENCODEC_RS_LM_BACKEND")
-                .map(|value| value.eq_ignore_ascii_case("ort"))
-                .unwrap_or(false);
-            if use_ort {
-                OnnxLmBackend::Ort(load_lm_session(&bundle_dir, &metadata, target)?)
-            } else {
-                let weights_path = bundle_dir.join(weight_model);
-                let weights = fs::read(&weights_path)
-                    .with_context(|| format!("failed to read {}", weights_path.display()))?;
-                let weights = DeterministicLmWeights::from_bytes(&weights)
-                    .with_context(|| format!("failed to parse {}", weights_path.display()))?;
-                weights.validate_for_codebooks(metadata.num_codebooks)?;
-                OnnxLmBackend::Deterministic {
-                    lm: DeterministicLm::new(weights),
-                    state: None,
-                }
-            }
-        } else {
-            OnnxLmBackend::Ort(load_lm_session(&bundle_dir, &metadata, target)?)
+        let _ = target;
+        let weight_model = metadata
+            .lm_quant_weight_model
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("bundle does not include lm_quant_weight_model"))?;
+        let weights_path = bundle_dir.join(weight_model);
+        let weight_bytes = fs::read(&weights_path)
+            .with_context(|| format!("failed to read {}", weights_path.display()))?;
+        let hash = stable_hash_hex(&weight_bytes);
+        let weights = QuantizedLmWeights::from_bytes(&weight_bytes)
+            .with_context(|| format!("failed to parse {}", weights_path.display()))?;
+        weights.validate_for_codebooks(metadata.num_codebooks)?;
+        let backend = OnnxLmBackend::Quantized {
+            lm: QuantizedLm::new(weights),
+            state: None,
+            hash,
         };
 
         Ok(Self {
@@ -291,102 +303,55 @@ impl OnnxLmCodec {
             );
         }
 
-        let offset_tensor = Array0::from_elem((), offset);
-        if let OnnxLmBackend::Deterministic { lm, state } = &mut self.backend {
-            if shape[0] != 1 || shape[2] != 1 {
-                bail!("deterministic LM only supports shape [1, codebooks, 1]");
-            }
-            if offset == 0 || state.is_none() {
-                *state = Some(lm.initial_state());
-            }
-            let state = state.as_mut().expect("state initialized");
-            let mut input_symbols = Vec::with_capacity(shape[1]);
-            for codebook in 0..shape[1] {
-                let value = indices[[0, codebook, 0]];
-                if value < 0 {
-                    bail!("LM input symbol must be non-negative, got {value}");
-                }
-                input_symbols.push(value as usize);
-            }
-            let logits = lm.forward_step(state, &input_symbols)?;
-            let card = self.metadata.lm_cardinality();
-            let codebooks = self.metadata.num_codebooks;
-            let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits).expect("shape");
-            return Ok((logits, offset + 1, self.initial_states(shape[0])?));
+        let OnnxLmBackend::Quantized { lm, state, .. } = &mut self.backend;
+        if shape[0] != 1 || shape[2] != 1 {
+            bail!("q8 LM only supports shape [1, codebooks, 1]");
         }
-
-        let OnnxLmBackend::Ort(session) = &mut self.backend else {
-            unreachable!("deterministic LM returned above");
-        };
-        let mut inputs = inputs![
-            "indices" => OrtTensor::from_array(indices.to_owned()).map_err(ort_error)?,
-            "offset" => OrtTensor::from_array(offset_tensor).map_err(ort_error)?,
-        ];
-        for (index, state) in states.iter().enumerate() {
-            inputs.push((
-                format!("state_{index}").into(),
-                OrtTensor::from_array(state.to_owned())
-                    .map_err(ort_error)?
-                    .into(),
-            ));
+        if offset == 0 || state.is_none() {
+            *state = Some(lm.initial_state());
         }
-
-        let outputs = session.run(inputs).map_err(ort_error)?;
-        let logits = outputs["logits"]
-            .try_extract_array::<f32>()
-            .map_err(ort_error)?
-            .to_owned()
-            .into_dimensionality::<Ix4>()
-            .map_err(ort_error)?;
-        let next_offset = outputs["offset_out"]
-            .try_extract_array::<i64>()
-            .map_err(ort_error)?
-            .to_owned()
-            .into_dimensionality::<Ix0>()
-            .map_err(ort_error)?
-            .into_scalar();
-        let next_states = (0..states.len())
-            .map(|index| {
-                outputs[format!("next_state_{index}")]
-                    .try_extract_array::<f32>()
-                    .map_err(ort_error)?
-                    .to_owned()
-                    .into_dimensionality::<Ix3>()
-                    .map_err(ort_error)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok((logits, next_offset, next_states))
+        let state = state.as_mut().expect("state initialized");
+        let mut input_symbols = Vec::with_capacity(shape[1]);
+        for codebook in 0..shape[1] {
+            let value = indices[[0, codebook, 0]];
+            if value < 0 {
+                bail!("LM input symbol must be non-negative, got {value}");
+            }
+            input_symbols.push(value as usize);
+        }
+        let logits = lm.forward_step(state, &input_symbols)?;
+        let card = self.metadata.lm_cardinality();
+        let codebooks = self.metadata.num_codebooks;
+        let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits).expect("shape");
+        Ok((logits, offset + 1, self.initial_states(shape[0])?))
     }
 }
 
-fn load_lm_session(
-    bundle_dir: &Path,
-    metadata: &OnnxFrameBundleMetadata,
-    target: ExecutionTarget,
-) -> Result<Session> {
-    let lm_model = metadata
-        .lm_model
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("bundle does not include an LM ONNX model"))?;
-    let lm_path = bundle_dir.join(lm_model);
-    if !lm_path.exists() {
-        bail!("bundle is missing LM model file {}", lm_path.display());
+impl LmCodec for OnnxLmCodec {
+    fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        OnnxLmCodec::metadata(self)
     }
 
-    let session_cfg = ort_session_config();
-    match target {
-        ExecutionTarget::CoreMl {
-            compute_units,
-            model_cache_dir,
-            low_precision_accumulation_on_gpu,
-        } => {
-            let lm_target = ExecutionTarget::CoreMl {
-                compute_units,
-                model_cache_dir: model_cache_dir.as_ref().map(|path| path.join("lm_logits")),
-                low_precision_accumulation_on_gpu,
-            };
-            build_session_from_target(&lm_path, &lm_target, &session_cfg, true)
+    fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
+    }
+
+    fn bitstream_lm_hash(&self) -> Option<&str> {
+        match &self.backend {
+            OnnxLmBackend::Quantized { hash, .. } => Some(hash),
         }
-        other => build_session_from_target(&lm_path, &other, &session_cfg, true),
+    }
+
+    fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>> {
+        OnnxLmCodec::initial_states(self, batch)
+    }
+
+    fn forward_logits(
+        &mut self,
+        indices: &Array3<i64>,
+        offset: i64,
+        states: &[Array3<f32>],
+    ) -> Result<(Array4<f32>, i64, Vec<Array3<f32>>)> {
+        OnnxLmCodec::forward_logits(self, indices, offset, states)
     }
 }

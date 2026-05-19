@@ -6,34 +6,52 @@ use ndarray::{Array2, Array3, Array4};
 
 use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
-    read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header, BitPacker,
-    BitUnpacker,
+    read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
 use crate::format::{segment_frame_length, segment_starts, validate_metadata};
 pub use crate::format::{
     EcdcMetadata, SourceAudioMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
-    DEFAULT_MIN_RANGE, PORTABLE_LM_BITSTREAM_VERSION, RAW_BITSTREAM_VERSION,
+    DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
-use crate::onnx::{OnnxFrameCodec, OnnxLmCodec};
+
+pub trait FrameCodec {
+    fn metadata(&self) -> &OnnxFrameBundleMetadata;
+
+    fn encode_frame(&mut self, audio: &Array3<f32>) -> Result<(Array3<i64>, Array2<f32>)>;
+
+    fn decode_frame(&mut self, codes: &Array3<i64>, scale: &Array2<f32>) -> Result<Array3<f32>>;
+}
+
+pub trait LmCodec {
+    fn metadata(&self) -> &OnnxFrameBundleMetadata;
+
+    fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
+    }
+
+    fn bitstream_lm_hash(&self) -> Option<&str> {
+        None
+    }
+
+    fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>>;
+
+    fn forward_logits(
+        &mut self,
+        indices: &Array3<i64>,
+        offset: i64,
+        states: &[Array3<f32>],
+    ) -> Result<(Array4<f32>, i64, Vec<Array3<f32>>)>;
+}
 
 impl EcdcMetadata {
     pub fn from_codec(
-        codec: &OnnxFrameCodec,
+        codec: &dyn FrameCodec,
         audio_length: usize,
         source: Option<&SourceAudioMetadata>,
-        use_lm: bool,
-        lm_tau: Option<f32>,
-        chunk_crc: bool,
+        lm_hash: Option<String>,
     ) -> Self {
-        Self::from_bundle(
-            codec.metadata(),
-            audio_length,
-            source,
-            use_lm,
-            lm_tau,
-            chunk_crc,
-        )
+        Self::from_bundle(codec.metadata(), audio_length, source, lm_hash)
     }
 }
 
@@ -59,8 +77,8 @@ impl ProbabilityScratch {
 }
 
 pub fn encode_audio_to_ecdc(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
 ) -> Result<Vec<u8>> {
@@ -71,15 +89,15 @@ pub fn encode_audio_to_ecdc(
             audio,
             source,
             frame_encode_batch_size(),
-            false,
+            true,
             emit,
         )
     })
 }
 
 pub fn encode_audio_to_ecdc_with_batch_size(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
@@ -91,20 +109,23 @@ pub fn encode_audio_to_ecdc_with_batch_size(
             audio,
             source,
             frame_batch_size.max(1),
-            false,
+            true,
             emit,
         )
     })
 }
 
 pub fn encode_audio_to_ecdc_with_options(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
 ) -> Result<Vec<u8>> {
+    if !chunk_crc {
+        bail!("q8 ECDC always writes CRC-wrapped chunks");
+    }
     collect_ecdc_bytes(|emit| {
         encode_audio_to_ecdc_impl(
             codec,
@@ -119,8 +140,8 @@ pub fn encode_audio_to_ecdc_with_options(
 }
 
 pub fn encode_audio_to_ecdc_stream_with_options<F>(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
@@ -130,6 +151,9 @@ pub fn encode_audio_to_ecdc_stream_with_options<F>(
 where
     F: FnMut(&[u8]) -> Result<()>,
 {
+    if !chunk_crc {
+        bail!("q8 ECDC always writes CRC-wrapped chunks");
+    }
     encode_audio_to_ecdc_impl(
         codec,
         lm_codec,
@@ -142,74 +166,36 @@ where
 }
 
 pub fn encode_ecdc_header_with_options(
-    codec: &OnnxFrameCodec,
+    codec: &dyn FrameCodec,
     audio_length: usize,
     source: Option<&SourceAudioMetadata>,
-    use_lm: bool,
-    chunk_crc: bool,
+    lm_hash: Option<String>,
 ) -> Result<Vec<u8>> {
-    let metadata = EcdcMetadata::from_bundle(
-        codec.metadata(),
-        audio_length,
-        source,
-        use_lm,
-        use_lm.then_some(1.0_f32),
-        chunk_crc,
-    );
+    let metadata = EcdcMetadata::from_bundle(codec.metadata(), audio_length, source, lm_hash);
     let mut header = Vec::new();
     write_ecdc_header(&mut header, &metadata)?;
     Ok(header)
 }
 
 pub fn encode_ecdc_segment_batch_with_options<F>(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     batch: &Array3<f32>,
     frame_lengths: &[usize],
-    chunk_crc: bool,
     mut on_bytes: F,
 ) -> Result<()>
 where
     F: FnMut(&[u8]) -> Result<()>,
 {
-    encode_ecdc_segment_batch_impl(
-        codec,
-        lm_codec,
-        batch,
-        frame_lengths,
-        chunk_crc,
-        &mut on_bytes,
-    )
-}
-
-pub fn encode_audio_to_raw_ecdc(
-    codec: &mut OnnxFrameCodec,
-    audio: &Array3<f32>,
-    source: Option<&SourceAudioMetadata>,
-) -> Result<Vec<u8>> {
-    collect_ecdc_bytes(|emit| {
-        encode_audio_to_ecdc_impl(
-            codec,
-            None,
-            audio,
-            source,
-            frame_encode_batch_size(),
-            false,
-            emit,
-        )
-    })
+    encode_ecdc_segment_batch_impl(codec, lm_codec, batch, frame_lengths, true, &mut on_bytes)
 }
 
 pub fn decode_ecdc(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     payload: &[u8],
 ) -> Result<DecodedEcdcAudio> {
     decode_ecdc_impl(codec, lm_codec, payload)
-}
-
-pub fn decode_raw_ecdc(codec: &mut OnnxFrameCodec, payload: &[u8]) -> Result<DecodedEcdcAudio> {
-    decode_ecdc_impl(codec, None, payload)
 }
 
 fn collect_ecdc_bytes<F>(encode: F) -> Result<Vec<u8>>
@@ -226,8 +212,8 @@ where
 }
 
 fn encode_audio_to_ecdc_impl(
-    codec: &mut OnnxFrameCodec,
-    mut lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
@@ -252,8 +238,18 @@ fn encode_audio_to_ecdc_impl(
         );
     }
 
-    let use_lm = lm_codec.is_some();
-    let header = encode_ecdc_header_with_options(codec, shape[2], source, use_lm, chunk_crc)?;
+    if lm_codec.bitstream_version() != QUANTIZED_LM_BITSTREAM_VERSION {
+        bail!(
+            "only q8 LM acv={} is supported, runtime provides acv={}",
+            QUANTIZED_LM_BITSTREAM_VERSION,
+            lm_codec.bitstream_version()
+        );
+    }
+    let lm_hash = lm_codec
+        .bitstream_lm_hash()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("q8 LM runtime does not expose an LM hash"))?;
+    let header = encode_ecdc_header_with_options(codec, shape[2], source, Some(lm_hash))?;
     emit(&header)?;
 
     for (batch_index, (frame_lengths, batch)) in
@@ -261,14 +257,7 @@ fn encode_audio_to_ecdc_impl(
             .into_iter()
             .enumerate()
     {
-        encode_ecdc_segment_batch_impl(
-            codec,
-            lm_codec.as_deref_mut(),
-            &batch,
-            &frame_lengths,
-            chunk_crc,
-            emit,
-        )?;
+        encode_ecdc_segment_batch_impl(codec, lm_codec, &batch, &frame_lengths, chunk_crc, emit)?;
         if profile_enabled {
             eprintln!(
                 "encode_segment_batch batch={} segments={}",
@@ -282,8 +271,8 @@ fn encode_audio_to_ecdc_impl(
 }
 
 fn encode_ecdc_segment_batch_impl(
-    codec: &mut OnnxFrameCodec,
-    mut lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     batch: &Array3<f32>,
     frame_lengths: &[usize],
     chunk_crc: bool,
@@ -331,28 +320,17 @@ fn encode_ecdc_segment_batch_impl(
             );
         }
         let mut encoded_chunk = Vec::new();
-        if let Some(lm_codec) = lm_codec.as_deref_mut() {
-            let payload = encode_lm_chunk_payload(
-                lm_codec,
-                &codes_full,
-                &scales,
-                segment_index,
-                frame_length,
-                DEFAULT_FP_SCALE,
-                DEFAULT_MIN_RANGE,
-                1.0,
-            )?;
-            write_chunk(&mut encoded_chunk, &payload, chunk_crc)?;
-        } else {
-            write_raw_frame_payload(
-                &mut encoded_chunk,
-                &codes_full,
-                &scales,
-                segment_index,
-                frame_length,
-                &model_meta,
-            )?;
-        }
+        let payload = encode_lm_chunk_payload(
+            lm_codec,
+            &codes_full,
+            &scales,
+            segment_index,
+            frame_length,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+        )?;
+        write_chunk(&mut encoded_chunk, &payload, chunk_crc)?;
         emit(&encoded_chunk)?;
     }
 
@@ -360,8 +338,8 @@ fn encode_ecdc_segment_batch_impl(
 }
 
 fn decode_ecdc_impl(
-    codec: &mut OnnxFrameCodec,
-    mut lm_codec: Option<&mut OnnxLmCodec>,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     payload: &[u8],
 ) -> Result<DecodedEcdcAudio> {
     let mut reader = Cursor::new(payload);
@@ -378,27 +356,37 @@ fn decode_ecdc_impl(
             bundle_meta.segment_samples,
             bundle_meta.frame_length,
         );
-        let frame = match metadata.bitstream_version {
-            RAW_BITSTREAM_VERSION => {
-                decode_raw_frame_payload(codec, &mut reader, &bundle_meta, this_len, frame_length)?
-            }
-            PORTABLE_LM_BITSTREAM_VERSION => {
-                let Some(lm_codec) = lm_codec.as_deref_mut() else {
-                    bail!("payload requires LM decoding, but no LM bundle was provided");
-                };
-                let chunk = read_chunk_payload(&mut reader, metadata.chunk_crc_enabled())?;
-                decode_lm_chunk_payload(
-                    codec,
-                    lm_codec,
-                    &bundle_meta,
-                    &metadata,
-                    &chunk,
-                    this_len,
-                    frame_length,
-                )?
-            }
-            other => bail!("unsupported ECDC bitstream version {other}"),
+        let lm_version = lm_codec.bitstream_version();
+        if lm_version != metadata.bitstream_version {
+            bail!(
+                "payload requires LM bitstream acv={}, but bundle/runtime provides acv={}",
+                metadata.bitstream_version,
+                lm_version,
+            );
+        }
+        let Some(expected_hash) = metadata.lm_hash.as_deref() else {
+            bail!("q8 LM payload is missing required LM hash");
         };
+        let Some(actual_hash) = lm_codec.bitstream_lm_hash() else {
+            bail!("q8 LM runtime does not expose an LM hash");
+        };
+        if actual_hash != expected_hash {
+            bail!(
+                "payload requires q8 LM hash {}, but bundle/runtime provides {}",
+                expected_hash,
+                actual_hash,
+            );
+        }
+        let chunk = read_chunk_payload(&mut reader, true)?;
+        let frame = decode_lm_chunk_payload(
+            codec,
+            lm_codec,
+            &bundle_meta,
+            &metadata,
+            &chunk,
+            this_len,
+            frame_length,
+        )?;
         frames.push(frame);
     }
 
@@ -423,67 +411,8 @@ fn decode_ecdc_impl(
     })
 }
 
-fn write_raw_frame_payload(
-    out: &mut Vec<u8>,
-    codes: &Array3<i64>,
-    scales: &Array2<f32>,
-    batch_index: usize,
-    frame_length: usize,
-    meta: &OnnxFrameBundleMetadata,
-) -> Result<()> {
-    if meta.normalize {
-        out.extend_from_slice(&scales[[batch_index, 0]].to_be_bytes());
-    }
-    let mut packer = BitPacker::new(meta.bits_per_codebook());
-    for t in 0..frame_length {
-        for codebook in 0..meta.num_codebooks {
-            let value = codes[[batch_index, codebook, t]];
-            if value < 0 || value > u16::MAX as i64 {
-                bail!("code value {value} is out of range for raw ECDC bitpacking");
-            }
-            packer.push(value as u16);
-        }
-    }
-    out.extend_from_slice(&packer.finish());
-    Ok(())
-}
-
-fn decode_raw_frame_payload(
-    codec: &mut OnnxFrameCodec,
-    reader: &mut Cursor<&[u8]>,
-    meta: &OnnxFrameBundleMetadata,
-    this_len: usize,
-    frame_length: usize,
-) -> Result<Array3<f32>> {
-    let scale = if meta.normalize {
-        let bytes = read_exactly(reader, 4)?;
-        Array2::from_shape_vec(
-            (1, 1),
-            vec![f32::from_be_bytes(bytes.try_into().expect("slice length"))],
-        )
-        .expect("shape")
-    } else {
-        Array2::from_shape_vec((1, 1), vec![1.0_f32]).expect("shape")
-    };
-
-    let bit_count = frame_length * meta.num_codebooks * meta.bits_per_codebook() as usize;
-    let byte_len = bit_count.div_ceil(8);
-    let packed = read_exactly(reader, byte_len)?;
-    let mut unpacker = BitUnpacker::new(meta.bits_per_codebook(), packed);
-    let mut codes = Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
-    for t in 0..frame_length {
-        for codebook in 0..meta.num_codebooks {
-            let value = unpacker.pull().ok_or_else(|| {
-                anyhow::anyhow!("raw ECDC stream ended before expected code values")
-            })?;
-            codes[[0, codebook, t]] = value as i64;
-        }
-    }
-    decode_codes(codec, &codes, &scale, this_len)
-}
-
 fn encode_lm_chunk_payload(
-    lm_codec: &mut OnnxLmCodec,
+    lm_codec: &mut dyn LmCodec,
     codes: &Array3<i64>,
     scales: &Array2<f32>,
     batch_index: usize,
@@ -521,7 +450,7 @@ fn encode_lm_chunk_payload(
         let pdf = probability_columns_from_logits(
             &logits,
             lm_tau,
-            meta.portable_lm_logit_step(),
+            meta.lm_entropy_logit_step(),
             fp_scale,
             &mut scratch,
         )?;
@@ -571,14 +500,16 @@ fn encode_lm_chunk_payload(
 }
 
 fn decode_lm_chunk_payload(
-    codec: &mut OnnxFrameCodec,
-    lm_codec: &mut OnnxLmCodec,
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
     model_meta: &OnnxFrameBundleMetadata,
     metadata: &EcdcMetadata,
     payload: &[u8],
     this_len: usize,
     frame_length: usize,
 ) -> Result<Array3<f32>> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
+    let started = profile_enabled.then(Instant::now);
     let mut cursor = Cursor::new(payload);
     let scale = if model_meta.normalize {
         let bytes = read_exactly(&mut cursor, 4)?;
@@ -599,11 +530,20 @@ fn decode_lm_chunk_payload(
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
-    let lm_logit_step = lm_codec.metadata().portable_lm_logit_step();
+    let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
+    let mut lm_elapsed = 0.0_f64;
+    let mut pdf_elapsed = 0.0_f64;
+    let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
+        let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
             lm_codec.forward_logits(&input, offset, &states)?;
+        if let Some(lm_started) = lm_started {
+            lm_elapsed += lm_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let pdf_started = profile_enabled.then(Instant::now);
         let pdf = probability_columns_from_logits(
             &logits,
             lm_tau,
@@ -611,6 +551,11 @@ fn decode_lm_chunk_payload(
             metadata.fp_scale,
             &mut scratch,
         )?;
+        if let Some(pdf_started) = pdf_started {
+            pdf_elapsed += pdf_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
+        let arithmetic_started = profile_enabled.then(Instant::now);
         let symbols = decoder.pull_symbols(
             pdf,
             lm_codec.metadata().lm_cardinality(),
@@ -618,6 +563,10 @@ fn decode_lm_chunk_payload(
             metadata.fp_scale,
             metadata.min_range,
         )?;
+        if let Some(arithmetic_started) = arithmetic_started {
+            arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
+        }
+
         for codebook in 0..model_meta.num_codebooks {
             let value = symbols[codebook] as i64;
             codes[[0, codebook, t]] = value;
@@ -627,22 +576,51 @@ fn decode_lm_chunk_payload(
         offset = next_offset;
     }
 
-    decode_codes(codec, &codes, &scale, this_len)
+    let decoded = decode_codes(codec, &codes, &scale, this_len)?;
+    if let Some(started) = started {
+        eprintln!(
+            "decode_lm_chunk_payload frame_length={} lm_ms={:.3} pdf_ms={:.3} arithmetic_ms={:.3} total_ms={:.3}",
+            frame_length,
+            lm_elapsed,
+            pdf_elapsed,
+            arithmetic_elapsed,
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+    Ok(decoded)
 }
 
 fn decode_codes(
-    codec: &mut OnnxFrameCodec,
+    codec: &mut dyn FrameCodec,
     codes: &Array3<i64>,
     scale: &Array2<f32>,
     this_len: usize,
 ) -> Result<Array3<f32>> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
+    let frame_started = profile_enabled.then(Instant::now);
     let decoded = codec.decode_frame(codes, scale)?;
+    if let Some(frame_started) = frame_started {
+        eprintln!(
+            "decode_codes batch={} frame_decode_ms={:.3}",
+            codes.shape()[0],
+            frame_started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+
+    let trim_started = profile_enabled.then(Instant::now);
     let channels = decoded.shape()[1];
     let mut trimmed = Array3::<f32>::zeros((1, channels, this_len));
     for channel in 0..channels {
         for index in 0..this_len {
             trimmed[[0, channel, index]] = decoded[[0, channel, index]];
         }
+    }
+    if let Some(trim_started) = trim_started {
+        eprintln!(
+            "decode_codes batch={} trim_ms={:.3}",
+            codes.shape()[0],
+            trim_started.elapsed().as_secs_f64() * 1000.0,
+        );
     }
     Ok(trimmed)
 }
@@ -750,6 +728,17 @@ fn probability_columns_from_logits<'a>(
     }
 
     Ok(&pdf[..card * columns])
+}
+
+pub fn deterministic_pdf_from_logits(
+    logits: &Array4<f32>,
+    lm_tau: f64,
+    logit_step: f64,
+    fp_scale: i64,
+) -> Result<Vec<f64>> {
+    let mut scratch = ProbabilityScratch::default();
+    probability_columns_from_logits(logits, lm_tau, logit_step, fp_scale, &mut scratch)?;
+    Ok(scratch.pdf)
 }
 
 fn quantize_logit(value: f64, step: f64) -> f64 {

@@ -3,108 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>encodec-rs browser encode smoke</title>
+    <title>encodec-rs q8 WebGPU matrix</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <main>
       <section class="panel">
         <header class="page-header">
-          <h1>encodec-rs browser smoke</h1>
-          <a class="repo-link" href="https://github.com/wavey-ai/encodec-rs" rel="noreferrer" target="_blank">
-            GitHub repo
-          </a>
+          <h1>encodec-rs q8 WebGPU matrix</h1>
+          <a class="repo-link" href="./webgpu-matrix.html">Runner</a>
         </header>
-
-        <div class="toolbar">
-          <label>
-            Bundle
-            <select id="bundle">
-              <option value="encodec_48khz_6kbps">48 kHz 6 kbps</option>
-              <option value="encodec_48khz_12kbps">48 kHz 12 kbps</option>
-            </select>
-          </label>
-          <label>
-            Sample
-            <input id="sample" type="text" value="mel-spec JFK speech" disabled />
-          </label>
-          <label>
-            Runtime
-            <select id="runtime">
-              <option value="wasm">WASM CPU</option>
-              <option value="webgpu">WebGPU</option>
-            </select>
-          </label>
-          <label>
-            Mode
-            <select id="encode-mode">
-              <option value="incremental">Incremental</option>
-              <option value="batch">Batch</option>
-            </select>
-          </label>
-          <label>
-            Coding
-            <select id="coding">
-              <option value="raw">Raw acv=0</option>
-              <option value="lm">LM acv=1</option>
-            </select>
-          </label>
-          <label class="check">
-            <input id="decode-playback" type="checkbox" checked />
-            Decode + play
-          </label>
-          <button id="run">Encode file</button>
-        </div>
-
-        <div class="status" id="status">Idle</div>
-
-        <dl class="metrics">
-          <div>
-            <dt>Model</dt>
-            <dd id="model">-</dd>
-          </div>
-          <div>
-            <dt>Input</dt>
-            <dd id="input">-</dd>
-          </div>
-          <div>
-            <dt>Codes</dt>
-            <dd id="codes">-</dd>
-          </div>
-          <div>
-            <dt>Scale</dt>
-            <dd id="scale">-</dd>
-          </div>
-          <div>
-            <dt>ECDC</dt>
-            <dd id="ecdc">-</dd>
-          </div>
-          <div>
-            <dt>ECDC Bytes</dt>
-            <dd id="ecdc-bytes">-</dd>
-          </div>
-          <div>
-            <dt>Runtime</dt>
-            <dd id="runtime-used">-</dd>
-          </div>
-          <div>
-            <dt>Encode Time</dt>
-            <dd id="encode-time">-</dd>
-          </div>
-          <div>
-            <dt>Decode Time</dt>
-            <dd id="decode-time">-</dd>
-          </div>
-          <div>
-            <dt>Elapsed</dt>
-            <dd id="elapsed">-</dd>
-          </div>
-        </dl>
-
-        <pre id="log"></pre>
+        <p class="status">
+          This checkout supports the current q8 LM `.ecdc` bitstream only
+          (`acv=2`). Use `scripts/webgpu-matrix.mjs` to run browser WebGPU
+          encode/decode rows and write artifacts under `target/webgpu-matrix/`.
+        </p>
+        <pre id="log">node scripts/webgpu-matrix.mjs</pre>
       </section>
     </main>
-
-    <script type="module" src="./app.js?v=jfk-lm-coding-v2"></script>
   </body>
 </html>

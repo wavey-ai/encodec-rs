@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-pub const PORTABLE_LM_LOGIT_STEP: f64 = 2.1;
+pub const Q8_LM_LOGIT_STEP: f64 = 2.1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct OnnxFrameBundleMetadata {
@@ -22,9 +22,7 @@ pub struct OnnxFrameBundleMetadata {
     pub encode_model: String,
     pub decode_model: String,
     #[serde(default)]
-    pub lm_model: Option<String>,
-    #[serde(default)]
-    pub lm_weight_model: Option<String>,
+    pub lm_quant_weight_model: Option<String>,
     #[serde(default)]
     pub lm_dim: Option<usize>,
     #[serde(default)]
@@ -34,11 +32,9 @@ pub struct OnnxFrameBundleMetadata {
     #[serde(default)]
     pub lm_logit_step: Option<f32>,
     #[serde(default)]
-    pub lm_portable_logit_step: Option<f32>,
+    pub lm_entropy_logit_step: Option<f32>,
     #[serde(default)]
     pub lm_cardinality: Option<usize>,
-    #[serde(default)]
-    pub lm_dtype: Option<String>,
     pub opset_version: usize,
 }
 
@@ -58,10 +54,10 @@ impl OnnxFrameBundleMetadata {
         self.lm_logit_step.unwrap_or(1.0 / 64.0) as f64
     }
 
-    pub fn portable_lm_logit_step(&self) -> f64 {
+    pub fn lm_entropy_logit_step(&self) -> f64 {
         self.lm_logit_step().max(
-            self.lm_portable_logit_step
-                .unwrap_or(PORTABLE_LM_LOGIT_STEP as f32) as f64,
+            self.lm_entropy_logit_step
+                .unwrap_or(Q8_LM_LOGIT_STEP as f32) as f64,
         )
     }
 

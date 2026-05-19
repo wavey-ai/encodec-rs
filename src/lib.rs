@@ -1,10 +1,8 @@
-#[cfg(any(feature = "onnx", feature = "wasm"))]
+#[cfg(feature = "ecdc")]
 pub mod arithmetic;
 #[cfg(feature = "ecdc")]
 pub mod binary;
 #[cfg(feature = "ecdc")]
-pub mod deterministic_lm;
-#[cfg(feature = "onnx")]
 pub mod ecdc;
 #[cfg(feature = "ecdc")]
 pub mod format;
@@ -13,6 +11,10 @@ pub mod metadata;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 #[cfg(feature = "ecdc")]
-pub mod raw;
+pub mod portable_lm;
+#[cfg(feature = "ecdc")]
+pub mod quantized_lm;
+#[cfg(feature = "ecdc")]
+pub mod stable_hash;
 #[cfg(feature = "wasm")]
 pub mod wasm;

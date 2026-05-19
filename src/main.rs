@@ -1,14 +1,24 @@
 #[cfg(feature = "onnx")]
 use std::fs;
+#[cfg(feature = "onnx")]
 use std::path::PathBuf;
 #[cfg(feature = "onnx")]
 use std::time::Instant;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(feature = "onnx")]
-use encodec_rs::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options};
+use clap::{Args, ValueEnum};
+use clap::{Parser, Subcommand};
+#[cfg(feature = "onnx")]
+use encodec_rs::arithmetic::deterministic_cdf_multi;
+#[cfg(feature = "onnx")]
+use encodec_rs::ecdc::{
+    decode_ecdc, deterministic_pdf_from_logits, encode_audio_to_ecdc_with_options, LmCodec,
+    ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
+};
 #[cfg(feature = "onnx")]
 use encodec_rs::onnx::{CoreMlComputeUnits, ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
+#[cfg(feature = "onnx")]
+use encodec_rs::stable_hash::stable_hash_hex;
 #[cfg(feature = "onnx")]
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 #[cfg(feature = "onnx")]
@@ -83,6 +93,14 @@ enum Commands {
         runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
+    OnnxLmProbe {
+        bundle_dir: PathBuf,
+        #[arg(long, default_value_t = 150)]
+        steps: usize,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
+    },
+    #[cfg(feature = "onnx")]
     OnnxRoundtripWav {
         bundle_dir: PathBuf,
         input_wav: PathBuf,
@@ -99,10 +117,6 @@ enum Commands {
         output_ecdc: PathBuf,
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
-        #[arg(long)]
-        chunk_crc: bool,
-        #[arg(long)]
-        no_lm: bool,
         #[command(flatten)]
         runtime: OnnxRuntimeArgs,
     },
@@ -119,19 +133,19 @@ enum Commands {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    #[cfg(not(feature = "onnx"))]
+    {
+        let _ = cli;
+        return Err("encodec-rs CLI requires the `onnx` feature".into());
+    }
+
+    #[cfg(feature = "onnx")]
     match cli.command {
-        #[cfg(not(feature = "onnx"))]
-        Commands::Unavailable => {
-            return Err("encodec-rs CLI requires the `onnx` feature".into());
-        }
-        #[cfg(feature = "onnx")]
         Commands::OnnxEncode {
             bundle_dir,
             input_wav,
             output_ecdc,
             batch_size,
-            chunk_crc,
-            no_lm,
             runtime,
         } => {
             let target = execution_target(&bundle_dir, &runtime)?;
@@ -147,21 +161,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let mut lm_codec = if no_lm {
-                None
-            } else {
-                Some(OnnxLmCodec::from_dir(
-                    bundle_dir.clone(),
-                    execution_target(&bundle_dir, &runtime)?,
-                )?)
-            };
+            let mut lm_codec = OnnxLmCodec::from_dir(
+                bundle_dir.clone(),
+                execution_target(&bundle_dir, &runtime)?,
+            )?;
             let payload = encode_audio_to_ecdc_with_options(
                 &mut codec,
-                lm_codec.as_mut(),
+                &mut lm_codec as &mut dyn LmCodec,
                 &audio,
                 None,
                 batch_size.max(1),
-                chunk_crc,
+                true,
             )?;
             fs::write(&output_ecdc, &payload)?;
             let payload_bytes = fs::metadata(&output_ecdc)?.len();
@@ -176,8 +186,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "bandwidth_kbps": meta.bandwidth_kbps,
                     "sample_rate": meta.sample_rate,
                     "batch_size": batch_size.max(1),
-                    "chunk_crc": chunk_crc,
-                    "language_model": !no_lm,
+                    "chunk_crc": true,
+                    "language_model": "q8",
                 }))?
             );
         }
@@ -190,11 +200,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let target = execution_target(&bundle_dir, &runtime)?;
             let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
-            let mut lm_codec =
-                OnnxLmCodec::from_dir(bundle_dir.clone(), execution_target(&bundle_dir, &runtime)?)
-                    .ok();
+            let mut lm_codec = OnnxLmCodec::from_dir(
+                bundle_dir.clone(),
+                execution_target(&bundle_dir, &runtime)?,
+            )?;
             let payload = fs::read(&input_ecdc)?;
-            let decoded = decode_ecdc(&mut codec, lm_codec.as_mut(), &payload)?;
+            let decoded = decode_ecdc(&mut codec, &mut lm_codec as &mut dyn LmCodec, &payload)?;
             write_wav_f32(&output_wav, &decoded.audio, codec.metadata().sample_rate)?;
             println!(
                 "{}",
@@ -204,6 +215,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "output_wav": output_wav,
                     "decoded_samples": decoded.audio.shape()[2],
                     "sample_rate": codec.metadata().sample_rate,
+                }))?
+            );
+        }
+        #[cfg(feature = "onnx")]
+        Commands::OnnxLmProbe {
+            bundle_dir,
+            steps,
+            runtime,
+        } => {
+            let target = execution_target(&bundle_dir, &runtime)?;
+            let mut lm_codec = OnnxLmCodec::from_dir(bundle_dir.clone(), target)?;
+            let meta = lm_codec.metadata().clone();
+            let steps = steps.min(meta.frame_length);
+            let mut states = lm_codec.initial_states(1)?;
+            let mut offset = 0_i64;
+            let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
+            let mut digest_bytes = Vec::new();
+            let card = meta.lm_cardinality();
+
+            for step in 0..steps {
+                let (logits, next_offset, next_states) =
+                    lm_codec.forward_logits(&input, offset, &states)?;
+                let pdf = deterministic_pdf_from_logits(
+                    &logits,
+                    1.0,
+                    meta.lm_entropy_logit_step(),
+                    DEFAULT_FP_SCALE,
+                )?;
+                let cdf = deterministic_cdf_multi(
+                    &pdf,
+                    card,
+                    meta.num_codebooks,
+                    ARITHMETIC_TOTAL_RANGE_BITS,
+                    DEFAULT_FP_SCALE,
+                    DEFAULT_MIN_RANGE,
+                )?;
+                for value in cdf {
+                    digest_bytes.extend_from_slice(&value.to_be_bytes());
+                }
+
+                for codebook in 0..meta.num_codebooks {
+                    let symbol = ((step * 17) + (codebook * 31)) % card;
+                    input[[0, codebook, 0]] = symbol as i64 + 1;
+                    digest_bytes.extend_from_slice(&(symbol as u32).to_be_bytes());
+                }
+                states = next_states;
+                offset = next_offset;
+            }
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "bundle_dir": bundle_dir,
+                    "arch": std::env::consts::ARCH,
+                    "os": std::env::consts::OS,
+                    "model_name": meta.model_name,
+                    "bandwidth_kbps": meta.bandwidth_kbps,
+                    "num_codebooks": meta.num_codebooks,
+                    "cardinality": card,
+                    "steps": steps,
+                    "bitstream_version": lm_codec.bitstream_version(),
+                    "lm_hash": lm_codec.bitstream_lm_hash(),
+                    "cdf_sequence_hash": stable_hash_hex(&digest_bytes),
                 }))?
             );
         }
@@ -316,6 +390,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    #[cfg(feature = "onnx")]
     Ok(())
 }
 

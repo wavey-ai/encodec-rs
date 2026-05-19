@@ -14,12 +14,10 @@
   "encode_model": "encode_frame.onnx",
   "decode_model": "decode_frame.onnx",
   "opset_version": 18,
-  "lm_model": "lm_logits.onnx",
   "lm_dim": 200,
   "lm_num_layers": 5,
   "lm_past_context": 525,
   "lm_logit_step": 0.015625,
   "lm_cardinality": 1024,
-  "lm_dtype": "float32",
-  "lm_weight_model": "lm_weights.bin"
+  "lm_quant_weight_model": "lm_weights_q8.bin"
 }

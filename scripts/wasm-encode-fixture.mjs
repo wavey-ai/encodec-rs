@@ -6,20 +6,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import * as ort from "../browser-smoke/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs";
 import {
-  DeterministicLmChunkDecoder,
-  DeterministicLmChunkEncoder,
+  ecdcMetadata,
+  ecdcOverlapAdd,
   initSync,
   initPanicHook,
   lmEcdcChunk,
   lmEcdcDecodeChunks,
-  lmEcdcHeader,
-  LmChunkDecoder,
-  LmChunkEncoder,
-  rawEcdcDecodeFrames,
-  rawEcdcFramePayload,
-  rawEcdcHeader,
-  rawEcdcMetadata,
-  rawEcdcOverlapAdd,
+  lmEcdcHeaderForWeights,
+  QuantizedLmChunkDecoder,
+  QuantizedLmChunkEncoder,
+  stableHashHex,
 } from "../pkg/encodec_rs.js";
 
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -47,8 +43,11 @@ async function run(options) {
 async function encodeFixture(options) {
   const bundleJson = readFileSync(path.join(options.bundleDir, "bundle.json"), "utf8");
   const meta = JSON.parse(bundleJson);
-  if (options.coding === "lm" && !meta.lm_model && !meta.lm_weight_model) {
-    throw new Error("LM coding requested, but bundle has no LM runtime");
+  if (options.coding !== "lm") {
+    throw new Error("matrix WASM fixture only supports q8 LM coding");
+  }
+  if (!meta.lm_quant_weight_model) {
+    throw new Error("LM coding requested, but bundle has no q8 LM runtime");
   }
 
   const wavBytes = readFileSync(options.inputWav);
@@ -65,12 +64,11 @@ async function encodeFixture(options) {
   const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
   const sessionsStarted = performance.now();
   const encodeSession = await createSession(path.join(options.bundleDir, meta.encode_model));
-  const lmRuntime = options.coding === "lm" ? await getLmRuntime(options.bundleDir, meta) : null;
+  const lmRuntime = options.coding === "lm" ? await getLmRuntime(options.bundleDir, meta, options) : null;
   const sessionMs = performance.now() - sessionsStarted;
 
   const encodedStarted = performance.now();
-  const chunks =
-    options.coding === "lm" ? [lmEcdcHeader(bundleJson, wav.frames)] : [rawEcdcHeader(bundleJson, wav.frames)];
+  const chunks = [lmEcdcHeaderForWeights(bundleJson, wav.frames, lmRuntime.bitstreamVersion, lmRuntime.weights)];
   const frames = [];
   let frameOnnxMs = 0;
   let lmOnnxMs = 0;
@@ -92,22 +90,18 @@ async function encodeFixture(options) {
     const frame = buildRawFrame(codesTensor.data, scaleTensor.data, segment, meta, index);
     frames.push(frame);
 
-    if (options.coding === "lm") {
-      const lmFrame = await encodeLmFrame(lmRuntime, bundleJson, frame, meta);
-      lmOnnxMs += lmFrame.lmOnnxMs;
-      lmDeterministicMs += lmFrame.lmDeterministicMs;
-      arithmeticMs += lmFrame.arithmeticMs;
-      chunks.push(lmEcdcChunk(lmFrame.payload));
-    } else {
-      chunks.push(rawEcdcFramePayload(bundleJson, frame.codes, frame.scale, frame.frameLength));
-    }
+    const lmFrame = await encodeLmFrame(lmRuntime, bundleJson, frame, meta);
+    lmOnnxMs += lmFrame.lmOnnxMs;
+    lmDeterministicMs += lmFrame.lmDeterministicMs;
+    arithmeticMs += lmFrame.arithmeticMs;
+    chunks.push(lmEcdcChunk(lmFrame.payload));
   }
 
   const ecdc = concatUint8Chunks(chunks);
   mkdirSync(path.dirname(options.outputEcdc), { recursive: true });
   writeFileSync(options.outputEcdc, ecdc);
   const totalEncodeMs = performance.now() - encodedStarted;
-  const metadata = rawEcdcMetadata(ecdc);
+  const metadata = ecdcMetadata(ecdc);
 
   return {
     inputWav: path.relative(repoRoot, options.inputWav),
@@ -115,6 +109,7 @@ async function encodeFixture(options) {
     bundleDir: path.relative(repoRoot, options.bundleDir),
     coding: options.coding,
     runtime: "onnxruntime-web wasm",
+    lmRuntime: summarizeLmRuntime(lmRuntime),
     modelName: meta.model_name,
     bandwidthKbps: meta.bandwidth_kbps,
     audioSamples: wav.frames,
@@ -139,7 +134,7 @@ async function decodeFixture(options) {
   const bundleJson = readFileSync(path.join(options.bundleDir, "bundle.json"), "utf8");
   const meta = JSON.parse(bundleJson);
   const ecdc = readFileSync(options.inputEcdc);
-  const metadata = rawEcdcMetadata(ecdc);
+  const metadata = ecdcMetadata(ecdc);
   const acv = metadata.acv ?? metadata.bitstream_version ?? 0;
   const audioLength = metadata.al ?? metadata.audio_length;
   if (!Number.isInteger(audioLength) || audioLength < 0) {
@@ -153,12 +148,12 @@ async function decodeFixture(options) {
   let lmOnnxMs = 0;
   let lmDeterministicMs = 0;
   let arithmeticMs = 0;
-  if (acv === 0) {
-    frames = rawEcdcDecodeFrames(bundleJson, ecdc).frames;
-  } else if (acv === 1) {
+  let lmRuntime = null;
+  if (acv === 2) {
     const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
     const lmSessionStarted = performance.now();
-    const lmRuntime = await getLmRuntime(options.bundleDir, meta);
+    lmRuntime = await getLmRuntime(options.bundleDir, meta, options, acv);
+    assertLmRuntimeMatchesMetadata(metadata, lmRuntime);
     lmSessionMs = performance.now() - lmSessionStarted;
     frames = [];
     for (let index = 0; index < parsed.chunks.length; index += 1) {
@@ -178,7 +173,7 @@ async function decodeFixture(options) {
   const decodeSessionMs = performance.now() - decodeSessionStarted;
   const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta);
   const overlapStarted = performance.now();
-  const decodedAudio = rawEcdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
+  const decodedAudio = ecdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   mkdirSync(path.dirname(options.outputWav), { recursive: true });
   writeWav(options.outputWav, decodedAudio, meta.channels, meta.sample_rate);
@@ -188,6 +183,7 @@ async function decodeFixture(options) {
     outputWav: path.relative(repoRoot, options.outputWav),
     bundleDir: path.relative(repoRoot, options.bundleDir),
     runtime: "onnxruntime-web wasm",
+    lmRuntime: summarizeLmRuntime(lmRuntime),
     ecdcMetadata: metadata,
     parsedFrames: frames.length,
     decodedSamples: audioLength,
@@ -258,6 +254,7 @@ function parseArgs(args) {
     outputWav: path.join(repoRoot, "target/wasm-smoke/westside_4s_wasm_decoded.wav"),
     bundleDir: path.join(repoRoot, "onnx-bundles/encodec_48khz_12kbps"),
     coding: "lm",
+    lmBackend: "q8",
   };
   const positional = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -270,6 +267,8 @@ function parseArgs(args) {
       const output = path.resolve(args[++index]);
       out.outputEcdc = output;
       out.outputWav = output;
+    } else if (arg === "--lm-backend") {
+      out.lmBackend = args[++index].toLowerCase();
     } else if (arg === "--help" || arg === "-h") {
       printUsageAndExit();
     } else {
@@ -289,8 +288,8 @@ function parseArgs(args) {
       out.outputEcdc = path.resolve(positional[1]);
     }
   }
-  if (!["lm", "raw"].includes(out.coding)) {
-    throw new Error(`--coding must be "lm" or "raw", got ${out.coding}`);
+  if (out.coding !== "lm") {
+    throw new Error(`--coding must be "lm", got ${out.coding}`);
   }
   return out;
 }
@@ -304,7 +303,8 @@ function printUsageAndExit() {
       "",
       "Options:",
       "  --bundle <dir>    ONNX bundle directory",
-      "  --coding <lm|raw> ECDC coding mode, defaults to lm",
+      "  --coding <lm>    ECDC coding mode, fixed to q8 LM",
+      "  --lm-backend <q8> LM backend for matrix runs, fixed to q8",
       "  --output <path>   Output ECDC path",
     ].join("\n"),
   );
@@ -324,19 +324,24 @@ function initEncodecWasm() {
   initPanicHook();
 }
 
-async function getLmRuntime(bundleDir, meta) {
-  if (meta.lm_weight_model) {
-    return {
-      kind: "deterministic",
-      weights: new Uint8Array(readFileSync(path.join(bundleDir, meta.lm_weight_model))),
-    };
+async function getLmRuntime(bundleDir, meta, options = {}, requiredAcv = null) {
+  const requested = (options.lmBackend || "q8").toLowerCase();
+  if (requested !== "q8") {
+    throw new Error(`matrix WASM fixture only supports --lm-backend q8, got ${requested}`);
   }
-  if (!meta.lm_model) {
-    throw new Error("LM coding requires lm_weights.bin or lm_logits.onnx");
+  if (requiredAcv != null && requiredAcv !== 2) {
+    throw new Error(`matrix WASM fixture only supports q8 acv=2 payloads, got acv=${requiredAcv}`);
   }
+  if (!meta.lm_quant_weight_model) {
+    throw new Error("q8 LM requested, but bundle has no lm_quant_weight_model");
+  }
+  const weights = new Uint8Array(readFileSync(path.join(bundleDir, meta.lm_quant_weight_model)));
   return {
-    kind: "ort",
-    session: await createSession(path.join(bundleDir, meta.lm_model)),
+    kind: "q8",
+    weights,
+    hash: stableHashHex(weights),
+    bitstreamVersion: 2,
+    label: "Rust wasm q8 LM",
   };
 }
 
@@ -440,35 +445,20 @@ function buildSingleSegment(audio, audioLength, segments, index, meta) {
 }
 
 async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
-  const deterministic = lmRuntime.kind === "deterministic";
-  const encoder = deterministic
-    ? new DeterministicLmChunkEncoder(bundleJson, lmRuntime.weights, frame.scale)
-    : new LmChunkEncoder(bundleJson, frame.scale);
+  if (lmRuntime.kind !== "q8") {
+    throw new Error(`matrix WASM fixture only supports q8 LM, got ${lmRuntime.kind}`);
+  }
+  const encoder = new QuantizedLmChunkEncoder(bundleJson, lmRuntime.weights, frame.scale);
   try {
-    let states = initialLmStates(meta);
-    let offset = 0;
-    let inputValues = new BigInt64Array(meta.num_codebooks);
     let lmOnnxMs = 0;
     let lmDeterministicMs = 0;
     let arithmeticMs = 0;
 
     for (let step = 0; step < frame.frameLength; step += 1) {
       const stepCodes = frameStepCodes(frame, meta, step);
-      if (deterministic) {
-        const lmStarted = performance.now();
-        encoder.push(stepCodes);
-        lmDeterministicMs += performance.now() - lmStarted;
-      } else {
-        const lmStarted = performance.now();
-        const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
-        lmOnnxMs += performance.now() - lmStarted;
-        const arithmeticStarted = performance.now();
-        encoder.push(lm.logits.data, stepCodes);
-        arithmeticMs += performance.now() - arithmeticStarted;
-        inputValues = lmInputFromCodes(stepCodes);
-        states = lm.nextStates;
-        offset = lm.nextOffset;
-      }
+      const lmStarted = performance.now();
+      encoder.push(stepCodes);
+      lmDeterministicMs += performance.now() - lmStarted;
     }
 
     return {
@@ -483,36 +473,20 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
 }
 
 async function decodeLmFrame(lmRuntime, bundleJson, meta, chunk) {
-  const deterministic = lmRuntime.kind === "deterministic";
-  const decoder = deterministic
-    ? new DeterministicLmChunkDecoder(bundleJson, lmRuntime.weights, Uint8Array.from(chunk.payload))
-    : new LmChunkDecoder(bundleJson, Uint8Array.from(chunk.payload));
+  if (lmRuntime.kind !== "q8") {
+    throw new Error(`matrix WASM fixture only supports q8 LM, got ${lmRuntime.kind}`);
+  }
+  const decoder = new QuantizedLmChunkDecoder(bundleJson, lmRuntime.weights, Uint8Array.from(chunk.payload));
   try {
-    let states = initialLmStates(meta);
-    let offset = 0;
-    let inputValues = new BigInt64Array(meta.num_codebooks);
     const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
     let lmOnnxMs = 0;
     let lmDeterministicMs = 0;
     let arithmeticMs = 0;
 
     for (let step = 0; step < chunk.frameLength; step += 1) {
-      let symbols;
-      if (deterministic) {
-        const lmStarted = performance.now();
-        symbols = decoder.pull();
-        lmDeterministicMs += performance.now() - lmStarted;
-      } else {
-        const lmStarted = performance.now();
-        const lm = await runLmStep(lmRuntime.session, meta, inputValues, offset, states);
-        lmOnnxMs += performance.now() - lmStarted;
-        const arithmeticStarted = performance.now();
-        symbols = decoder.pull(lm.logits.data);
-        arithmeticMs += performance.now() - arithmeticStarted;
-        inputValues = lmInputFromCodes(symbols);
-        states = lm.nextStates;
-        offset = lm.nextOffset;
-      }
+      const lmStarted = performance.now();
+      const symbols = decoder.pull();
+      lmDeterministicMs += performance.now() - lmStarted;
       for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
         codes[codebook * meta.frame_length + step] = symbols[codebook];
       }
@@ -724,6 +698,35 @@ function concatUint8Chunks(chunks) {
     offset += chunk.byteLength;
   }
   return out;
+}
+
+function assertLmRuntimeMatchesMetadata(metadata, lmRuntime) {
+  if (!lmRuntime) {
+    throw new Error("LM payload requires a q8 LM runtime");
+  }
+  const acv = metadata.acv ?? metadata.bitstream_version ?? 0;
+  if (acv !== lmRuntime.bitstreamVersion) {
+    throw new Error(`payload requires acv=${acv}, but WASM runtime provides acv=${lmRuntime.bitstreamVersion}`);
+  }
+  const expectedHash = metadata.lmh ?? metadata.lm_hash;
+  if (!expectedHash) {
+    throw new Error("q8 LM payload is missing required lmh");
+  }
+  if (expectedHash !== lmRuntime.hash) {
+    throw new Error(`payload requires LM hash ${expectedHash}, but WASM runtime provides ${lmRuntime.hash}`);
+  }
+}
+
+function summarizeLmRuntime(lmRuntime) {
+  if (!lmRuntime) {
+    return null;
+  }
+  return {
+    kind: lmRuntime.kind,
+    label: lmRuntime.label,
+    bitstreamVersion: lmRuntime.bitstreamVersion,
+    hash: lmRuntime.hash,
+  };
 }
 
 function summarizeOutputs(outputs) {

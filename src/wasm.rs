@@ -7,16 +7,14 @@ use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
-use crate::deterministic_lm::{DeterministicLm, DeterministicLmState, DeterministicLmWeights};
 use crate::format::{
     segment_frame_length, segment_starts, validate_metadata, EcdcMetadata,
     ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
+    QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
-use crate::raw::{
-    decode_raw_frames, encode_raw_ecdc, encode_raw_frame_payload, encode_raw_header,
-    overlap_add_decoded_frames, raw_segment_count, RawEcdcFrame,
-};
+use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
+use crate::stable_hash::stable_hash_hex;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,56 +43,20 @@ pub fn bundle_metadata(bundle_json: &str) -> Result<JsValue, JsValue> {
     to_js_value(&meta)
 }
 
-#[wasm_bindgen(js_name = rawEcdcHeader)]
-pub fn raw_ecdc_header(bundle_json: &str, audio_length: usize) -> Result<Vec<u8>, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    encode_raw_header(&meta, audio_length).map_err(to_js_error)
+#[wasm_bindgen(js_name = stableHashHex)]
+pub fn stable_hash_hex_js(bytes: &[u8]) -> String {
+    stable_hash_hex(bytes)
 }
 
-#[wasm_bindgen(js_name = rawEcdcFramePayload)]
-pub fn raw_ecdc_frame_payload(
-    bundle_json: &str,
-    codes: &[u16],
-    scale: f32,
-    frame_length: usize,
-) -> Result<Vec<u8>, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    encode_raw_frame_payload(&meta, codes, scale, frame_length).map_err(to_js_error)
-}
-
-#[wasm_bindgen(js_name = rawEcdcEncode)]
-pub fn raw_ecdc_encode(
-    bundle_json: &str,
-    audio_length: usize,
-    frames: JsValue,
-) -> Result<Vec<u8>, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    let frames: Vec<RawEcdcFrame> = serde_wasm_bindgen::from_value(frames).map_err(to_js_error)?;
-    encode_raw_ecdc(&meta, audio_length, &frames).map_err(to_js_error)
-}
-
-#[wasm_bindgen(js_name = rawEcdcMetadata)]
-pub fn raw_ecdc_metadata(payload: &[u8]) -> Result<JsValue, JsValue> {
+#[wasm_bindgen(js_name = ecdcMetadata)]
+pub fn ecdc_metadata(payload: &[u8]) -> Result<JsValue, JsValue> {
     let metadata: EcdcMetadata =
         read_ecdc_header(&mut Cursor::new(payload)).map_err(to_js_error)?;
     to_js_value(&metadata)
 }
 
-#[wasm_bindgen(js_name = rawEcdcDecodeFrames)]
-pub fn raw_ecdc_decode_frames(bundle_json: &str, payload: &[u8]) -> Result<JsValue, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    let frames = decode_raw_frames(&meta, payload).map_err(to_js_error)?;
-    to_js_value(&frames)
-}
-
-#[wasm_bindgen(js_name = rawEcdcSegmentCount)]
-pub fn raw_ecdc_segment_count(bundle_json: &str, audio_length: usize) -> Result<usize, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    Ok(raw_segment_count(&meta, audio_length))
-}
-
-#[wasm_bindgen(js_name = rawEcdcOverlapAdd)]
-pub fn raw_ecdc_overlap_add(
+#[wasm_bindgen(js_name = ecdcOverlapAdd)]
+pub fn ecdc_overlap_add(
     bundle_json: &str,
     audio_length: usize,
     decoded_frames: &[f32],
@@ -103,10 +65,22 @@ pub fn raw_ecdc_overlap_add(
     overlap_add_decoded_frames(&meta, audio_length, decoded_frames).map_err(to_js_error)
 }
 
-#[wasm_bindgen(js_name = lmEcdcHeader)]
-pub fn lm_ecdc_header(bundle_json: &str, audio_length: usize) -> Result<Vec<u8>, JsValue> {
+#[wasm_bindgen(js_name = lmEcdcHeaderForWeights)]
+pub fn lm_ecdc_header_for_weights(
+    bundle_json: &str,
+    audio_length: usize,
+    bitstream_version: u8,
+    weights: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    if bitstream_version != QUANTIZED_LM_BITSTREAM_VERSION {
+        return Err(to_js_error(format!(
+            "only q8 acv={} is supported, got acv={bitstream_version}",
+            QUANTIZED_LM_BITSTREAM_VERSION
+        )));
+    }
     let meta = parse_bundle(bundle_json)?;
-    let metadata = EcdcMetadata::from_bundle(&meta, audio_length, None, true, Some(1.0), false);
+    let metadata =
+        EcdcMetadata::from_bundle(&meta, audio_length, None, Some(stable_hash_hex(weights)));
     let mut out = Vec::new();
     write_ecdc_header(&mut out, &metadata).map_err(to_js_error)?;
     Ok(out)
@@ -115,7 +89,7 @@ pub fn lm_ecdc_header(bundle_json: &str, audio_length: usize) -> Result<Vec<u8>,
 #[wasm_bindgen(js_name = lmEcdcChunk)]
 pub fn lm_ecdc_chunk(payload: &[u8]) -> Result<Vec<u8>, JsValue> {
     let mut out = Vec::new();
-    write_chunk(&mut out, payload, false).map_err(to_js_error)?;
+    write_chunk(&mut out, payload, true).map_err(to_js_error)?;
     Ok(out)
 }
 
@@ -133,8 +107,7 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
     for offset in segment_starts(metadata.audio_length, meta.segment_stride.max(1)) {
         let samples = (metadata.audio_length - offset).min(meta.segment_samples);
         let frame_length = segment_frame_length(samples, meta.segment_samples, meta.frame_length);
-        let payload =
-            read_chunk_payload(&mut reader, metadata.chunk_crc_enabled()).map_err(to_js_error)?;
+        let payload = read_chunk_payload(&mut reader, true).map_err(to_js_error)?;
         chunks.push(LmEcdcChunk {
             offset,
             samples,
@@ -152,132 +125,30 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
 }
 
 #[wasm_bindgen]
-pub struct LmChunkEncoder {
+pub struct QuantizedLmChunkEncoder {
     meta: OnnxFrameBundleMetadata,
-    encoder: ArithmeticEncoder,
-    prefix: Vec<u8>,
-}
-
-#[wasm_bindgen]
-impl LmChunkEncoder {
-    #[wasm_bindgen(constructor)]
-    pub fn new(bundle_json: &str, scale: f32) -> Result<LmChunkEncoder, JsValue> {
-        let meta = parse_bundle(bundle_json)?;
-        validate_lm_metadata(&meta).map_err(to_js_error)?;
-        let mut prefix = Vec::new();
-        if meta.normalize {
-            prefix.extend_from_slice(&scale.to_be_bytes());
-        }
-        Ok(Self {
-            meta,
-            encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
-            prefix,
-        })
-    }
-
-    pub fn push(&mut self, logits: &[f32], codes: &[u16]) -> Result<(), JsValue> {
-        let symbols = symbols_from_codes(codes, &self.meta).map_err(to_js_error)?;
-        let pdf = probability_columns_from_logits(logits, &self.meta, 1.0).map_err(to_js_error)?;
-        self.encoder
-            .push_pdf_symbols(
-                &pdf,
-                self.meta.lm_cardinality(),
-                self.meta.num_codebooks,
-                &symbols,
-                DEFAULT_FP_SCALE,
-                DEFAULT_MIN_RANGE,
-            )
-            .map_err(to_js_error)
-    }
-
-    pub fn finish(&mut self) -> Vec<u8> {
-        let mut out = std::mem::take(&mut self.prefix);
-        out.extend_from_slice(&self.encoder.finish());
-        out
-    }
-}
-
-#[wasm_bindgen]
-pub struct LmChunkDecoder {
-    meta: OnnxFrameBundleMetadata,
-    decoder: ArithmeticDecoder,
-    scale: f32,
-}
-
-#[wasm_bindgen]
-impl LmChunkDecoder {
-    #[wasm_bindgen(constructor)]
-    pub fn new(bundle_json: &str, payload: &[u8]) -> Result<LmChunkDecoder, JsValue> {
-        let meta = parse_bundle(bundle_json)?;
-        validate_lm_metadata(&meta).map_err(to_js_error)?;
-        let mut cursor = Cursor::new(payload);
-        let scale = if meta.normalize {
-            let bytes = read_exactly(&mut cursor, 4).map_err(to_js_error)?;
-            f32::from_be_bytes(bytes.try_into().expect("slice length"))
-        } else {
-            1.0
-        };
-        let remaining = payload.len().saturating_sub(cursor.position() as usize);
-        let encoded = read_exactly(&mut cursor, remaining).map_err(to_js_error)?;
-        Ok(Self {
-            meta,
-            decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
-                .map_err(to_js_error)?,
-            scale,
-        })
-    }
-
-    pub fn scale(&self) -> f32 {
-        self.scale
-    }
-
-    pub fn pull(&mut self, logits: &[f32]) -> Result<Vec<u16>, JsValue> {
-        let pdf = probability_columns_from_logits(logits, &self.meta, 1.0).map_err(to_js_error)?;
-        let symbols = self
-            .decoder
-            .pull_symbols(
-                &pdf,
-                self.meta.lm_cardinality(),
-                self.meta.num_codebooks,
-                DEFAULT_FP_SCALE,
-                DEFAULT_MIN_RANGE,
-            )
-            .map_err(to_js_error)?;
-        symbols
-            .into_iter()
-            .map(|symbol| {
-                u16::try_from(symbol)
-                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))
-            })
-            .collect()
-    }
-}
-
-#[wasm_bindgen]
-pub struct DeterministicLmChunkEncoder {
-    meta: OnnxFrameBundleMetadata,
-    lm: DeterministicLm,
-    state: DeterministicLmState,
+    lm: QuantizedLm,
+    state: QuantizedLmState,
     input_symbols: Vec<usize>,
     encoder: ArithmeticEncoder,
     prefix: Vec<u8>,
 }
 
 #[wasm_bindgen]
-impl DeterministicLmChunkEncoder {
+impl QuantizedLmChunkEncoder {
     #[wasm_bindgen(constructor)]
     pub fn new(
         bundle_json: &str,
         weights: &[u8],
         scale: f32,
-    ) -> Result<DeterministicLmChunkEncoder, JsValue> {
+    ) -> Result<QuantizedLmChunkEncoder, JsValue> {
         let meta = parse_bundle(bundle_json)?;
         validate_lm_metadata(&meta).map_err(to_js_error)?;
-        let weights = DeterministicLmWeights::from_bytes(weights).map_err(to_js_error)?;
+        let weights = QuantizedLmWeights::from_bytes(weights).map_err(to_js_error)?;
         weights
             .validate_for_codebooks(meta.num_codebooks)
             .map_err(to_js_error)?;
-        let lm = DeterministicLm::new(weights);
+        let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
         let mut prefix = Vec::new();
         if meta.normalize {
@@ -291,6 +162,10 @@ impl DeterministicLmChunkEncoder {
             encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
             prefix,
         })
+    }
+
+    pub fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
     }
 
     pub fn push(&mut self, codes: &[u16]) -> Result<(), JsValue> {
@@ -324,30 +199,30 @@ impl DeterministicLmChunkEncoder {
 }
 
 #[wasm_bindgen]
-pub struct DeterministicLmChunkDecoder {
+pub struct QuantizedLmChunkDecoder {
     meta: OnnxFrameBundleMetadata,
-    lm: DeterministicLm,
-    state: DeterministicLmState,
+    lm: QuantizedLm,
+    state: QuantizedLmState,
     input_symbols: Vec<usize>,
     decoder: ArithmeticDecoder,
     scale: f32,
 }
 
 #[wasm_bindgen]
-impl DeterministicLmChunkDecoder {
+impl QuantizedLmChunkDecoder {
     #[wasm_bindgen(constructor)]
     pub fn new(
         bundle_json: &str,
         weights: &[u8],
         payload: &[u8],
-    ) -> Result<DeterministicLmChunkDecoder, JsValue> {
+    ) -> Result<QuantizedLmChunkDecoder, JsValue> {
         let meta = parse_bundle(bundle_json)?;
         validate_lm_metadata(&meta).map_err(to_js_error)?;
-        let weights = DeterministicLmWeights::from_bytes(weights).map_err(to_js_error)?;
+        let weights = QuantizedLmWeights::from_bytes(weights).map_err(to_js_error)?;
         weights
             .validate_for_codebooks(meta.num_codebooks)
             .map_err(to_js_error)?;
-        let lm = DeterministicLm::new(weights);
+        let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
         let mut cursor = Cursor::new(payload);
         let scale = if meta.normalize {
@@ -367,6 +242,10 @@ impl DeterministicLmChunkDecoder {
                 .map_err(to_js_error)?,
             scale,
         })
+    }
+
+    pub fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
     }
 
     pub fn scale(&self) -> f32 {
@@ -463,7 +342,7 @@ fn probability_columns_from_logits(
     let mut probs = vec![0.0_f64; card];
     let uniform = 1.0 / card as f64;
     let near_pdf_threshold = 0.25 / DEFAULT_FP_SCALE as f64;
-    let logit_step = meta.portable_lm_logit_step();
+    let logit_step = meta.lm_entropy_logit_step();
 
     for codebook in 0..codebooks {
         let mut max_value = f64::NEG_INFINITY;
@@ -510,6 +389,68 @@ fn quantize_logit(value: f64, step: f64) -> f64 {
     let eps = 2_f64.powi(-40);
     let y = value / step;
     (y + 0.5 - eps).floor() * step
+}
+
+fn overlap_add_decoded_frames(
+    meta: &OnnxFrameBundleMetadata,
+    audio_length: usize,
+    decoded_frames: &[f32],
+) -> anyhow::Result<Vec<f32>> {
+    let frame_count = segment_starts(audio_length, meta.segment_stride.max(1)).len();
+    let expected = frame_count * meta.channels * meta.segment_samples;
+    if decoded_frames.len() != expected {
+        anyhow::bail!(
+            "decoded frame sample count {} does not match expected {} for {} frames",
+            decoded_frames.len(),
+            expected,
+            frame_count
+        );
+    }
+    if frame_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let stride = meta.segment_stride.max(1);
+    let total_size = stride * (frame_count - 1) + meta.segment_samples;
+    let mut output = vec![0.0_f32; meta.channels * total_size];
+    let mut sum_weight = vec![0.0_f32; total_size];
+    let weight = triangle_weight(meta.segment_samples);
+
+    for frame in 0..frame_count {
+        let offset = frame * stride;
+        for sample in 0..meta.segment_samples {
+            let w = weight[sample];
+            sum_weight[offset + sample] += w;
+            for channel in 0..meta.channels {
+                let source_index =
+                    (frame * meta.channels + channel) * meta.segment_samples + sample;
+                let target_index = channel * total_size + offset + sample;
+                output[target_index] += decoded_frames[source_index] * w;
+            }
+        }
+    }
+
+    let mut trimmed = vec![0.0_f32; meta.channels * audio_length];
+    for sample in 0..audio_length {
+        let denom = sum_weight[sample];
+        if denom <= 0.0 {
+            continue;
+        }
+        for channel in 0..meta.channels {
+            trimmed[channel * audio_length + sample] =
+                output[channel * total_size + sample] / denom;
+        }
+    }
+    Ok(trimmed)
+}
+
+fn triangle_weight(frame_length: usize) -> Vec<f32> {
+    (0..frame_length)
+        .map(|index| {
+            let t = (index + 1) as f32 / (frame_length + 1) as f32;
+            0.5 - (t - 0.5).abs()
+        })
+        .collect()
 }
 
 fn to_js_value<T: Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {

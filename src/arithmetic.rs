@@ -18,7 +18,7 @@ fn counts_from_pdf_flat(pdf: &[f64], fp_scale: i64) -> Vec<i64> {
     out
 }
 
-fn deterministic_cdf_multi_impl(
+pub fn deterministic_cdf_multi(
     pdf: &[f64],
     n_bins: usize,
     n_cols: usize,
@@ -227,7 +227,7 @@ impl ArithmeticEncoder {
                 n_cols
             );
         }
-        let cdf = deterministic_cdf_multi_impl(
+        let cdf = deterministic_cdf_multi(
             pdf,
             n_bins,
             n_cols,
@@ -333,7 +333,7 @@ impl ArithmeticDecoder {
         fp_scale: i64,
         min_range: i64,
     ) -> Result<Vec<usize>> {
-        let cdf = deterministic_cdf_multi_impl(
+        let cdf = deterministic_cdf_multi(
             pdf,
             n_bins,
             n_cols,

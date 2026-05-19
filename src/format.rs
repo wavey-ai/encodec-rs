@@ -8,9 +8,7 @@ use crate::metadata::OnnxFrameBundleMetadata;
 
 pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
 pub const DEFAULT_MIN_RANGE: i64 = 2;
-pub const RAW_BITSTREAM_VERSION: u8 = 0;
-pub const PORTABLE_LM_BITSTREAM_VERSION: u8 = 1;
-pub const DETERMINISTIC_LM_BITSTREAM_VERSION: u8 = PORTABLE_LM_BITSTREAM_VERSION;
+pub const QUANTIZED_LM_BITSTREAM_VERSION: u8 = 2;
 pub const ARITHMETIC_TOTAL_RANGE_BITS: u32 = 24;
 
 #[derive(Debug, Clone, Default)]
@@ -38,8 +36,8 @@ pub struct EcdcMetadata {
     pub bitstream_version: u8,
     #[serde(rename = "tau", skip_serializing_if = "Option::is_none")]
     pub lm_tau: Option<f32>,
-    #[serde(rename = "cc", skip_serializing_if = "Option::is_none")]
-    pub chunk_crc: Option<bool>,
+    #[serde(rename = "lmh", skip_serializing_if = "Option::is_none")]
+    pub lm_hash: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -49,34 +47,20 @@ impl EcdcMetadata {
         bundle: &OnnxFrameBundleMetadata,
         audio_length: usize,
         _source: Option<&SourceAudioMetadata>,
-        use_lm: bool,
-        lm_tau: Option<f32>,
-        chunk_crc: bool,
+        lm_hash: Option<String>,
     ) -> Self {
         Self {
             model_name: bundle.model_name.clone(),
             audio_length,
             num_codebooks: bundle.num_codebooks,
-            use_lm,
+            use_lm: true,
             fp_scale: DEFAULT_FP_SCALE,
             min_range: DEFAULT_MIN_RANGE,
-            bitstream_version: if use_lm {
-                PORTABLE_LM_BITSTREAM_VERSION
-            } else {
-                RAW_BITSTREAM_VERSION
-            },
-            lm_tau,
-            chunk_crc: if use_lm && !chunk_crc {
-                Some(false)
-            } else {
-                None
-            },
+            bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
+            lm_tau: Some(1.0),
+            lm_hash,
             extra: BTreeMap::new(),
         }
-    }
-
-    pub fn chunk_crc_enabled(&self) -> bool {
-        self.chunk_crc.unwrap_or(true)
     }
 }
 
@@ -98,22 +82,15 @@ pub fn validate_metadata(
             bundle_meta.num_codebooks
         );
     }
-    let bitstream_version = metadata.bitstream_version;
-    match bitstream_version {
-        RAW_BITSTREAM_VERSION => {
-            if metadata.use_lm {
-                bail!("raw acv=0 payload unexpectedly advertises lm=true");
-            }
-        }
-        PORTABLE_LM_BITSTREAM_VERSION => {
-            if !metadata.use_lm {
-                bail!(
-                    "deterministic acv={} payload unexpectedly advertises lm=false",
-                    bitstream_version
-                );
-            }
-        }
-        other => bail!("unsupported ECDC bitstream version {other}"),
+    if metadata.bitstream_version != QUANTIZED_LM_BITSTREAM_VERSION {
+        bail!(
+            "unsupported ECDC bitstream version {}; only q8 acv={} is supported",
+            metadata.bitstream_version,
+            QUANTIZED_LM_BITSTREAM_VERSION
+        );
+    }
+    if !metadata.use_lm {
+        bail!("q8 ECDC payload unexpectedly advertises lm=false");
     }
     Ok(())
 }
@@ -153,16 +130,15 @@ mod tests {
             use_lm: false,
             fp_scale: DEFAULT_FP_SCALE,
             min_range: DEFAULT_MIN_RANGE,
-            bitstream_version: 0,
+            bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
             lm_tau: None,
-            chunk_crc: None,
+            lm_hash: None,
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
         let source_json =
             json.trim_end_matches('}').to_owned() + ",\"osr\":44100,\"och\":2,\"ofr\":44100}";
         let decoded: EcdcMetadata = serde_json::from_str(&source_json).unwrap();
-        assert!(decoded.chunk_crc_enabled());
         assert_eq!(
             decoded.extra.get("osr").and_then(Value::as_u64),
             Some(44_100)
@@ -175,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_versions_are_raw_zero_and_lm_one() {
+    fn metadata_version_is_q8_only() {
         let bundle = OnnxFrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz".into(),
@@ -191,28 +167,22 @@ mod tests {
             codebook_cardinality: Some(1024),
             encode_model: "encode_frame.onnx".into(),
             decode_model: "decode_frame.onnx".into(),
-            lm_model: Some("lm_logits.onnx".into()),
-            lm_weight_model: Some("lm_weights.bin".into()),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".into()),
             lm_dim: Some(128),
             lm_num_layers: Some(1),
             lm_past_context: Some(0),
             lm_logit_step: Some(1.0 / 64.0),
-            lm_portable_logit_step: Some(2.1),
+            lm_entropy_logit_step: Some(2.1),
             lm_cardinality: Some(1024),
-            lm_dtype: Some("float32".into()),
             opset_version: 17,
         };
 
-        let raw = EcdcMetadata::from_bundle(&bundle, 48_000, None, false, None, false);
-        assert_eq!(raw.bitstream_version, RAW_BITSTREAM_VERSION);
-        validate_metadata(&bundle, &raw).unwrap();
-
-        let lm = EcdcMetadata::from_bundle(&bundle, 48_000, None, true, Some(1.0), false);
-        assert_eq!(lm.bitstream_version, PORTABLE_LM_BITSTREAM_VERSION);
+        let lm = EcdcMetadata::from_bundle(&bundle, 48_000, None, Some("hash".into()));
+        assert_eq!(lm.bitstream_version, QUANTIZED_LM_BITSTREAM_VERSION);
         validate_metadata(&bundle, &lm).unwrap();
 
         let mut unsupported = lm.clone();
-        unsupported.bitstream_version = 5;
+        unsupported.bitstream_version = 1;
         assert!(validate_metadata(&bundle, &unsupported).is_err());
     }
 
