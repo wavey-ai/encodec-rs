@@ -153,10 +153,17 @@ impl LmCodec for PortableLmCodec {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
-    fn checked_in_lm_weights_run_without_onnx() -> Result<()> {
-        let mut codec = PortableLmCodec::from_dir("onnx-bundles/encodec_48khz_6kbps")?;
+    fn downloaded_lm_weights_run_without_onnx() -> Result<()> {
+        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_6kbps");
+        if !bundle_dir.exists() {
+            eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
+            return Ok(());
+        }
+
+        let mut codec = PortableLmCodec::from_dir(bundle_dir)?;
         let meta = codec.metadata().clone();
         let states = codec.initial_states(1)?;
         let indices = Array3::<i64>::zeros((1, meta.num_codebooks, 1));

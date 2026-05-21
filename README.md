@@ -80,22 +80,32 @@ The exported wasm helpers used by the q8 matrix path are:
 
 ## Native Scope
 
-The current checked-in bundles target the `48 kHz` stereo model family:
+Model bundles are hosted on Hugging Face:
+
+- [`wavey-ai/encodec-rs-onnx-bundles`](https://huggingface.co/wavey-ai/encodec-rs-onnx-bundles)
+
+Download them into the checkout before running ONNX/browser model paths:
+
+```bash
+scripts/download-onnx-bundles.sh
+```
+
+The hosted bundles target the `48 kHz` stereo model family:
 
 - `onnx-bundles/encodec_48khz_6kbps`
 - `onnx-bundles/encodec_48khz_12kbps`
 
-Both checked-in bundles include:
+Both bundles include:
 
 - `encode_frame.onnx`
 - `decode_frame.onnx`
 - `lm_weights_q8.bin`
 - `bundle.json`
 
-So LM-assisted `.ecdc` compression works out of the box.
+So LM-assisted `.ecdc` compression works after the bundle download step.
 
-Native and browser LM entropy coding use the checked-in q8 Rust/wasm LM
-backend. Older raw and f32/ONNX-LM bitstreams are intentionally not supported.
+Native and browser LM entropy coding use the q8 Rust/wasm LM backend. Older raw
+and f32/ONNX-LM bitstreams are intentionally not supported.
 
 ## Runtime Notes
 
@@ -124,7 +134,7 @@ frame runtime:
 - `portable_lm::PortableLmCodec`: loads `bundle.json` + `lm_weights_q8.bin`
   without ONNX Runtime
 
-The checked-in ONNX runtime implements those traits through `OnnxFrameCodec`
+The ONNX runtime implements those traits through `OnnxFrameCodec`
 and `OnnxLmCodec`, so existing CLI/browser parity remains the validation
 harness. For iOS/macOS product code, the intended final shape is a Swift/MLX
 frame backend, with Core ML or ONNX Runtime used only as transitional parity
@@ -133,7 +143,7 @@ checks.
 ### MLX Frame Archive Export
 
 The Apple app loads MLX Swift `.safetensors` archives instead of ONNX files for
-the frame encoder/decoder. Convert the checked-in bundles with:
+the frame encoder/decoder. After downloading the bundles, convert them with:
 
 ```bash
 target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
@@ -271,7 +281,7 @@ encodec-rs onnx-encode \
 
 - `onnx-encode` currently expects WAV input
 - input sample rate must match the bundle sample rate
-- the checked-in bundles are for `48 kHz` stereo audio
+- the hosted bundles are for `48 kHz` stereo audio
 - CLI resampling is not implemented yet
 
 If your source is not already `48 kHz` stereo WAV, normalize it first.
@@ -356,7 +366,7 @@ current ONNX CPU path.
 
 ### MLX Archive Comparison
 
-On the same checked-in frame models, the MLX archive export keeps only the
+On the same frame models, the MLX archive export keeps only the
 initializers needed by the Swift/MLX runtime and the manifest needed to rebuild
 the graph:
 
@@ -390,7 +400,7 @@ What is done:
 
 - pure Rust runtime path
 - pure Rust `.ecdc`
-- checked-in LM-capable `6 kbps` and `12 kbps` bundles
+- hosted LM-capable `6 kbps` and `12 kbps` bundles
 - CPU / CUDA / CoreML / TensorRT execution targets
 
 What is still missing:

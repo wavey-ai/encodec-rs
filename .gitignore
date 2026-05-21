@@ -3,5 +3,7 @@ build/
 .wrangler/
 pkg/
 browser-smoke/node_modules/
+SHA256SUMS
+onnx-bundles/
 onnx-bundles/**/.coreml-cache/
 onnx-bundles/**/.trt-cache/
