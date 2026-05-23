@@ -13,8 +13,10 @@ cd "$ROOT"
 rustup target add "$RUST_WASM_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-  version="$(python - <<'PY'
+  version="$(
+    python - <<'PY'
 from pathlib import Path
+
 text = Path("Cargo.lock").read_text()
 lines = text.splitlines()
 for i, line in enumerate(lines):
@@ -26,7 +28,7 @@ for i, line in enumerate(lines):
                 raise SystemExit
 raise SystemExit("wasm-bindgen version not found in Cargo.lock")
 PY
-)"
+  )"
   cargo +"$RUST_TOOLCHAIN" install wasm-bindgen-cli --version "$version"
 fi
 
@@ -39,8 +41,10 @@ cargo +"$RUST_TOOLCHAIN" build \
   --target "$RUST_WASM_TARGET" \
   --release
 
-crate_name="$(python - <<'PY'
+crate_name="$(
+  python - <<'PY'
 from pathlib import Path
+
 text = Path("Cargo.toml").read_text()
 in_package = False
 for raw in text.splitlines():
@@ -72,6 +76,36 @@ wasm-bindgen "$wasm_path" \
 
 cp -R "$ROOT/pkg/." "$OUT/pkg/"
 
+copy_model_asset() {
+  local src_dir="$1"
+  local dst_dir="$2"
+  local model_name="$3"
+
+  if [[ -f "${src_dir}/${model_name}" ]]; then
+    cp "${src_dir}/${model_name}" "${dst_dir}/${model_name}"
+  elif [[ -f "${src_dir}/${model_name}.parts.json" ]]; then
+    cp "${src_dir}/${model_name}.parts.json" "${dst_dir}/${model_name}.parts.json"
+    while IFS= read -r part; do
+      [[ -n "$part" ]] || continue
+      mkdir -p "${dst_dir}/$(dirname "$part")"
+      cp "${src_dir}/${part}" "${dst_dir}/${part}"
+    done < <(
+      python - "${src_dir}/${model_name}.parts.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest = json.loads(Path(sys.argv[1]).read_text())
+for part in manifest.get("parts", []):
+    print(part)
+PY
+    )
+  else
+    echo "missing ${src_dir}/${model_name} or ${src_dir}/${model_name}.parts.json" >&2
+    exit 1
+  fi
+}
+
 for bundle in $BUNDLES; do
   src="${ROOT}/onnx-bundles/${bundle}"
   dst="${OUT}/bundles/${bundle}"
@@ -90,6 +124,19 @@ for bundle in $BUNDLES; do
   cp "${src}/bundle.json" "$dst/bundle.json"
   cp "${src}/lm_weights_q8.bin" "$dst/lm_weights_q8.bin"
 
+  encode_model="$(
+    python - "${src}/bundle.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+bundle = json.loads(Path(sys.argv[1]).read_text())
+print(bundle.get("encode_model", "encode_frame.onnx"))
+PY
+  )"
+
+  copy_model_asset "$src" "$dst" "$encode_model"
+
   python - "$dst" <<'PY'
 import json
 import struct
@@ -107,6 +154,7 @@ manifest = {
     "name": bundle_dir.name,
     "bundleJson": "bundle.json",
     "lmWeights": "lm_weights_q8.bin",
+    "encodeModel": bundle.get("encode_model", "encode_frame.onnx"),
     "modelName": bundle.get("model_name"),
     "bandwidthKbps": bundle.get("bandwidth_kbps"),
     "sampleRate": bundle.get("sample_rate"),
