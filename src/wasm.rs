@@ -1,8 +1,7 @@
-use std::io::Cursor;
-
+use crate::ecdc_presets::{bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name};
 use serde::Serialize;
+use std::io::Cursor;
 use wasm_bindgen::prelude::*;
-
 use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
@@ -30,6 +29,28 @@ struct LmEcdcChunk {
 struct LmEcdcChunks {
     metadata: EcdcMetadata,
     chunks: Vec<LmEcdcChunk>,
+}
+
+#[wasm_bindgen(js_name = fixedEcdcBundleName)]
+pub fn fixed_ecdc_bundle_name_js(
+    bandwidth_kbps: JsValue,
+    chunk_ms: JsValue,
+) -> Result<String, JsValue> {
+    let bandwidth_kbps = optional_f64(&bandwidth_kbps)?;
+    let chunk_ms = optional_f64(&chunk_ms)?;
+    let bandwidth = bandwidth_preset_from_kbps(bandwidth_kbps).map_err(to_js_error)?;
+    let chunk = chunk_preset_from_ms(chunk_ms).map_err(to_js_error)?;
+    Ok(fixed_bundle_name(bandwidth, chunk).to_owned())
+}
+
+fn optional_f64(value: &JsValue) -> Result<Option<f64>, JsValue> {
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    value
+        .as_f64()
+        .map(Some)
+        .ok_or_else(|| to_js_error("expected a number, null, or undefined"))
 }
 
 #[wasm_bindgen(js_name = initPanicHook)]

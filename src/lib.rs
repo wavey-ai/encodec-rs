@@ -18,3 +18,5 @@ pub mod quantized_lm;
 pub mod stable_hash;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+#[cfg(feature = "ecdc")]
+pub mod ecdc_presets;
