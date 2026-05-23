@@ -1,3 +1,23 @@
+#[cfg(feature = "ecdc")]
+pub mod arithmetic;
+#[cfg(feature = "ecdc")]
+pub mod binary;
+#[cfg(feature = "ecdc")]
+pub mod ecdc;
+#[cfg(feature = "ecdc")]
+pub mod format;
+#[cfg(feature = "ecdc")]
+pub mod metadata;
+#[cfg(feature = "onnx")]
+pub mod onnx;
+#[cfg(feature = "ecdc")]
+pub mod portable_lm;
+#[cfg(feature = "ecdc")]
+pub mod quantized_lm;
+#[cfg(feature = "ecdc")]
+pub mod stable_hash;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 #[cfg(feature = "onnx")]
 use std::fs;
 #[cfg(feature = "onnx")]
@@ -117,6 +137,8 @@ enum Commands {
         output_ecdc: PathBuf,
         #[arg(long, default_value_t = 8)]
         batch_size: usize,
+        #[arg(long)]
+        chunk_ms: Option<f64>,
         #[command(flatten)]
         runtime: OnnxRuntimeArgs,
     },
@@ -146,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input_wav,
             output_ecdc,
             batch_size,
+            chunk_ms,
             runtime,
         } => {
             let target = execution_target(&bundle_dir, &runtime)?;
@@ -172,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None,
                 batch_size.max(1),
                 true,
+                chunk_ms,
             )?;
             fs::write(&output_ecdc, &payload)?;
             let payload_bytes = fs::metadata(&output_ecdc)?.len();
@@ -187,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "sample_rate": meta.sample_rate,
                     "batch_size": batch_size.max(1),
                     "chunk_crc": true,
+                    "chunk_ms": chunk_ms,
                     "language_model": "q8",
                 }))?
             );
@@ -533,10 +558,10 @@ fn encode_audio_segments(
         let (batch_codes, batch_scales) = codec.encode_frame(&batch)?;
         for batch_index in 0..chunk.len() {
             let mut segment_codes =
-                Array3::<i64>::zeros((1, meta.num_codebooks, meta.frame_length));
+                Array3::<i64>::zeros((1, meta.num_codebooks, batch_codes.shape()[2]));
             let mut segment_scale = Array2::<f32>::zeros((1, 1));
             for codebook in 0..meta.num_codebooks {
-                for t in 0..meta.frame_length {
+                for t in 0..batch_codes.shape()[2] {
                     segment_codes[[0, codebook, t]] = batch_codes[[batch_index, codebook, t]];
                 }
             }
@@ -559,14 +584,18 @@ fn decode_audio_segments(
     let meta = codec.metadata().clone();
     let mut frames = Vec::with_capacity(codes.len());
     for (code_chunk, scale_chunk) in codes.chunks(batch_size).zip(scales.chunks(batch_size)) {
+        let frame_length = code_chunk.first().map(|codes| codes.shape()[2]).unwrap_or(0);
         let mut batch_codes =
-            Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, meta.frame_length));
+            Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, frame_length));
         let mut batch_scales = Array2::<f32>::zeros((code_chunk.len(), 1));
         for (batch_index, (segment_codes, segment_scale)) in
             code_chunk.iter().zip(scale_chunk.iter()).enumerate()
         {
+            if segment_codes.shape()[2] != frame_length {
+                return Err("all code frames in a decode batch must have the same frame length".into());
+            }
             for codebook in 0..meta.num_codebooks {
-                for t in 0..meta.frame_length {
+                for t in 0..frame_length {
                     batch_codes[[batch_index, codebook, t]] = segment_codes[[0, codebook, t]];
                 }
             }
@@ -574,9 +603,9 @@ fn decode_audio_segments(
         }
         let batch_frames = codec.decode_frame(&batch_codes, &batch_scales)?;
         for batch_index in 0..code_chunk.len() {
-            let mut frame = Array3::<f32>::zeros((1, meta.channels, meta.segment_samples));
+            let mut frame = Array3::<f32>::zeros((1, meta.channels, batch_frames.shape()[2]));
             for channel in 0..meta.channels {
-                for t in 0..meta.segment_samples {
+                for t in 0..batch_frames.shape()[2] {
                     frame[[0, channel, t]] = batch_frames[[batch_index, channel, t]];
                 }
             }

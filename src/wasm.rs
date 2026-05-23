@@ -8,9 +8,9 @@ use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
 use crate::format::{
-    segment_frame_length, segment_starts, validate_metadata, EcdcMetadata,
-    ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
-    QUANTIZED_LM_BITSTREAM_VERSION,
+    ecdc_chunk_layout_from_metadata, segment_frame_length, segment_starts, validate_metadata,
+    EcdcChunkLayout, EcdcMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
+    DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
@@ -62,7 +62,24 @@ pub fn ecdc_overlap_add(
     decoded_frames: &[f32],
 ) -> Result<Vec<f32>, JsValue> {
     let meta = parse_bundle(bundle_json)?;
-    overlap_add_decoded_frames(&meta, audio_length, decoded_frames).map_err(to_js_error)
+    let layout = EcdcChunkLayout {
+        samples: meta.segment_samples,
+        stride: meta.segment_stride.max(1),
+    };
+    overlap_add_decoded_frames(&meta, audio_length, decoded_frames, layout).map_err(to_js_error)
+}
+
+#[wasm_bindgen(js_name = ecdcOverlapAddForMetadata)]
+pub fn ecdc_overlap_add_for_metadata(
+    bundle_json: &str,
+    metadata_json: &str,
+    decoded_frames: &[f32],
+) -> Result<Vec<f32>, JsValue> {
+    let meta = parse_bundle(bundle_json)?;
+    let metadata: EcdcMetadata = serde_json::from_str(metadata_json).map_err(to_js_error)?;
+    let layout = ecdc_chunk_layout_from_metadata(&meta, &metadata).map_err(to_js_error)?;
+    overlap_add_decoded_frames(&meta, metadata.audio_length, decoded_frames, layout)
+        .map_err(to_js_error)
 }
 
 #[wasm_bindgen(js_name = lmEcdcHeaderForWeights)]
@@ -103,9 +120,10 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
         return Err(to_js_error("ECDC payload does not use LM coding"));
     }
 
+    let layout = ecdc_chunk_layout_from_metadata(&meta, &metadata).map_err(to_js_error)?;
     let mut chunks = Vec::new();
-    for offset in segment_starts(metadata.audio_length, meta.segment_stride.max(1)) {
-        let samples = (metadata.audio_length - offset).min(meta.segment_samples);
+    for offset in segment_starts(metadata.audio_length, layout.stride) {
+        let samples = (metadata.audio_length - offset).min(layout.samples);
         let frame_length = segment_frame_length(samples, meta.segment_samples, meta.frame_length);
         let payload = read_chunk_payload(&mut reader, true).map_err(to_js_error)?;
         chunks.push(LmEcdcChunk {
@@ -395,9 +413,10 @@ fn overlap_add_decoded_frames(
     meta: &OnnxFrameBundleMetadata,
     audio_length: usize,
     decoded_frames: &[f32],
+    layout: EcdcChunkLayout,
 ) -> anyhow::Result<Vec<f32>> {
-    let frame_count = segment_starts(audio_length, meta.segment_stride.max(1)).len();
-    let expected = frame_count * meta.channels * meta.segment_samples;
+    let frame_count = segment_starts(audio_length, layout.stride).len();
+    let expected = frame_count * meta.channels * layout.samples;
     if decoded_frames.len() != expected {
         anyhow::bail!(
             "decoded frame sample count {} does not match expected {} for {} frames",
@@ -410,20 +429,18 @@ fn overlap_add_decoded_frames(
         return Ok(Vec::new());
     }
 
-    let stride = meta.segment_stride.max(1);
-    let total_size = stride * (frame_count - 1) + meta.segment_samples;
+    let total_size = layout.stride * (frame_count - 1) + layout.samples;
     let mut output = vec![0.0_f32; meta.channels * total_size];
     let mut sum_weight = vec![0.0_f32; total_size];
-    let weight = triangle_weight(meta.segment_samples);
+    let weight = triangle_weight(layout.samples);
 
     for frame in 0..frame_count {
-        let offset = frame * stride;
-        for sample in 0..meta.segment_samples {
+        let offset = frame * layout.stride;
+        for sample in 0..layout.samples {
             let w = weight[sample];
             sum_weight[offset + sample] += w;
             for channel in 0..meta.channels {
-                let source_index =
-                    (frame * meta.channels + channel) * meta.segment_samples + sample;
+                let source_index = (frame * meta.channels + channel) * layout.samples + sample;
                 let target_index = channel * total_size + offset + sample;
                 output[target_index] += decoded_frames[source_index] * w;
             }

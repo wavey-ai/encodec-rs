@@ -8,7 +8,10 @@ use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
-use crate::format::{segment_frame_length, segment_starts, validate_metadata};
+use crate::format::{
+    ecdc_chunk_layout_from_metadata, ecdc_chunk_layout_from_ms, segment_frame_length,
+    segment_starts, validate_metadata, EcdcChunkLayout,
+};
 pub use crate::format::{
     EcdcMetadata, SourceAudioMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
     DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
@@ -90,6 +93,7 @@ pub fn encode_audio_to_ecdc(
             source,
             frame_encode_batch_size(),
             true,
+            None,
             emit,
         )
     })
@@ -110,6 +114,7 @@ pub fn encode_audio_to_ecdc_with_batch_size(
             source,
             frame_batch_size.max(1),
             true,
+            None,
             emit,
         )
     })
@@ -122,6 +127,7 @@ pub fn encode_audio_to_ecdc_with_options(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
+    chunk_ms: Option<f64>,
 ) -> Result<Vec<u8>> {
     if !chunk_crc {
         bail!("q8 ECDC always writes CRC-wrapped chunks");
@@ -134,6 +140,7 @@ pub fn encode_audio_to_ecdc_with_options(
             source,
             frame_batch_size.max(1),
             chunk_crc,
+            chunk_ms,
             emit,
         )
     })
@@ -146,6 +153,7 @@ pub fn encode_audio_to_ecdc_stream_with_options<F>(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
+    chunk_ms: Option<f64>,
     mut on_bytes: F,
 ) -> Result<()>
 where
@@ -161,6 +169,7 @@ where
         source,
         frame_batch_size.max(1),
         chunk_crc,
+        chunk_ms,
         &mut on_bytes,
     )
 }
@@ -170,8 +179,13 @@ pub fn encode_ecdc_header_with_options(
     audio_length: usize,
     source: Option<&SourceAudioMetadata>,
     lm_hash: Option<String>,
+    chunk_layout: Option<EcdcChunkLayout>,
 ) -> Result<Vec<u8>> {
-    let metadata = EcdcMetadata::from_bundle(codec.metadata(), audio_length, source, lm_hash);
+    let mut metadata = EcdcMetadata::from_bundle(codec.metadata(), audio_length, source, lm_hash);
+    if let Some(chunk_layout) = chunk_layout {
+        metadata.chunk_samples = Some(chunk_layout.samples);
+        metadata.chunk_stride = Some(chunk_layout.stride);
+    }
     let mut header = Vec::new();
     write_ecdc_header(&mut header, &metadata)?;
     Ok(header)
@@ -218,6 +232,7 @@ fn encode_audio_to_ecdc_impl(
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
+    chunk_ms: Option<f64>,
     emit: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
@@ -245,15 +260,23 @@ fn encode_audio_to_ecdc_impl(
             lm_codec.bitstream_version()
         );
     }
+
+    let chunk_layout = ecdc_chunk_layout_from_ms(&model_meta, chunk_ms)?;
     let lm_hash = lm_codec
         .bitstream_lm_hash()
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("q8 LM runtime does not expose an LM hash"))?;
-    let header = encode_ecdc_header_with_options(codec, shape[2], source, Some(lm_hash))?;
+    let header = encode_ecdc_header_with_options(
+        codec,
+        shape[2],
+        source,
+        Some(lm_hash),
+        chunk_ms.map(|_| chunk_layout),
+    )?;
     emit(&header)?;
 
     for (batch_index, (frame_lengths, batch)) in
-        encode_segment_batches_with_size(audio, &model_meta, frame_batch_size)
+        encode_segment_batches_with_size(audio, &model_meta, frame_batch_size, chunk_layout)
             .into_iter()
             .enumerate()
     {
@@ -284,13 +307,15 @@ fn encode_ecdc_segment_batch_impl(
     if batch_shape.len() != 3 {
         bail!("segment batch must have shape [batch, channels, samples]");
     }
-    if batch_shape[1] != model_meta.channels || batch_shape[2] != model_meta.segment_samples {
+    if batch_shape[1] != model_meta.channels {
         bail!(
-            "segment batch shape mismatch, expected [batch, {}, {}], got {:?}",
+            "segment batch channel mismatch, expected {}, got {:?}",
             model_meta.channels,
-            model_meta.segment_samples,
             batch_shape
         );
+    }
+    if batch_shape[2] == 0 {
+        bail!("segment batch sample length must be non-zero");
     }
     if batch_shape[0] != frame_lengths.len() {
         bail!(
@@ -311,12 +336,25 @@ fn encode_ecdc_segment_batch_impl(
         );
     }
 
+    let code_shape = codes_full.shape();
+    if code_shape.len() != 3
+        || code_shape[0] != batch_shape[0]
+        || code_shape[1] != model_meta.num_codebooks
+    {
+        bail!(
+            "encoded code shape mismatch, expected [batch, {}, frames], got {:?}",
+            model_meta.num_codebooks,
+            code_shape
+        );
+    }
+    let encoded_frame_length = code_shape[2];
+
     for (segment_index, frame_length) in frame_lengths.iter().copied().enumerate() {
-        if frame_length == 0 || frame_length > model_meta.frame_length {
+        if frame_length == 0 || frame_length > encoded_frame_length {
             bail!(
-                "segment frame length {} is out of range for frame_length {}",
+                "segment frame length {} is out of range for encoded frame length {}",
                 frame_length,
-                model_meta.frame_length
+                encoded_frame_length
             );
         }
         let mut encoded_chunk = Vec::new();
@@ -346,11 +384,12 @@ fn decode_ecdc_impl(
     let metadata: EcdcMetadata = read_ecdc_header(&mut reader)?;
     let bundle_meta = codec.metadata().clone();
     validate_metadata(&bundle_meta, &metadata)?;
+    let chunk_layout = ecdc_chunk_layout_from_metadata(&bundle_meta, &metadata)?;
 
     let mut frames = Vec::new();
-    let starts = segment_starts(metadata.audio_length, bundle_meta.segment_stride.max(1));
+    let starts = segment_starts(metadata.audio_length, chunk_layout.stride);
     for offset in starts {
-        let this_len = (metadata.audio_length - offset).min(bundle_meta.segment_samples);
+        let this_len = (metadata.audio_length - offset).min(chunk_layout.samples);
         let frame_length = segment_frame_length(
             this_len,
             bundle_meta.segment_samples,
@@ -396,7 +435,7 @@ fn decode_ecdc_impl(
             .next()
             .unwrap_or_else(|| Array3::<f32>::zeros((1, bundle_meta.channels, 0)))
     } else {
-        linear_overlap_add(&frames, bundle_meta.segment_stride)
+        linear_overlap_add(&frames, chunk_layout.stride)
     };
     let mut trimmed = Array3::<f32>::zeros((1, bundle_meta.channels, metadata.audio_length));
     for channel in 0..bundle_meta.channels {
@@ -524,7 +563,7 @@ fn decode_lm_chunk_payload(
     let remaining = payload.len().saturating_sub(cursor.position() as usize);
     let encoded = read_exactly(&mut cursor, remaining)?;
     let mut decoder = ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)?;
-    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, model_meta.frame_length));
+    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, frame_length));
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
@@ -607,6 +646,15 @@ fn decode_codes(
         );
     }
 
+    let decoded_shape = decoded.shape();
+    if decoded_shape.len() != 3 || decoded_shape[0] != 1 || decoded_shape[2] < this_len {
+        bail!(
+            "decoded audio shape {:?} cannot satisfy requested length {}",
+            decoded_shape,
+            this_len
+        );
+    }
+
     let trim_started = profile_enabled.then(Instant::now);
     let channels = decoded.shape()[1];
     let mut trimmed = Array3::<f32>::zeros((1, channels, this_len));
@@ -629,16 +677,17 @@ fn encode_segment_batches_with_size(
     audio: &Array3<f32>,
     meta: &OnnxFrameBundleMetadata,
     batch_size: usize,
+    chunk_layout: EcdcChunkLayout,
 ) -> Vec<(Vec<usize>, Array3<f32>)> {
     let total_samples = audio.shape()[2];
-    let starts = segment_starts(total_samples, meta.segment_stride.max(1));
+    let starts = segment_starts(total_samples, chunk_layout.stride);
     let batch_size = batch_size.max(1);
     let mut batches = Vec::new();
     for offsets in starts.chunks(batch_size) {
         let mut frame_lengths = Vec::with_capacity(offsets.len());
-        let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, meta.segment_samples));
+        let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, chunk_layout.samples));
         for (batch_index, offset) in offsets.iter().copied().enumerate() {
-            let copy_len = (total_samples - offset).min(meta.segment_samples);
+            let copy_len = (total_samples - offset).min(chunk_layout.samples);
             let frame_length =
                 segment_frame_length(copy_len, meta.segment_samples, meta.frame_length);
             frame_lengths.push(frame_length);

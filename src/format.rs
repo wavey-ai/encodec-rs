@@ -18,6 +18,12 @@ pub struct SourceAudioMetadata {
     pub total_frames: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EcdcChunkLayout {
+    pub samples: usize,
+    pub stride: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EcdcMetadata {
     #[serde(rename = "m")]
@@ -38,6 +44,10 @@ pub struct EcdcMetadata {
     pub lm_tau: Option<f32>,
     #[serde(rename = "lmh", skip_serializing_if = "Option::is_none")]
     pub lm_hash: Option<String>,
+    #[serde(rename = "cs", skip_serializing_if = "Option::is_none")]
+    pub chunk_samples: Option<usize>,
+    #[serde(rename = "cst", skip_serializing_if = "Option::is_none")]
+    pub chunk_stride: Option<usize>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -59,6 +69,8 @@ impl EcdcMetadata {
             bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
             lm_tau: Some(1.0),
             lm_hash,
+            chunk_samples: None,
+            chunk_stride: None,
             extra: BTreeMap::new(),
         }
     }
@@ -93,6 +105,57 @@ pub fn validate_metadata(
         bail!("q8 ECDC payload unexpectedly advertises lm=false");
     }
     Ok(())
+}
+
+pub fn ecdc_chunk_layout_from_ms(
+    bundle_meta: &OnnxFrameBundleMetadata,
+    chunk_ms: Option<f64>,
+) -> Result<EcdcChunkLayout> {
+    match chunk_ms {
+        None => Ok(EcdcChunkLayout {
+            samples: bundle_meta.segment_samples,
+            stride: bundle_meta.segment_stride.max(1),
+        }),
+        Some(ms) => {
+            if !ms.is_finite() || ms <= 0.0 {
+                bail!("chunk_ms must be a positive finite value");
+            }
+
+            let samples_f64 = ms * bundle_meta.sample_rate as f64 / 1000.0;
+            if !samples_f64.is_finite() || samples_f64 < 1.0 || samples_f64 > usize::MAX as f64 {
+                bail!("chunk_ms {ms} cannot be represented as a valid PCM sample count");
+            }
+
+            let samples = samples_f64.round() as usize;
+            if samples == 0 {
+                bail!("chunk_ms {ms} rounds to zero PCM samples");
+            }
+
+            Ok(EcdcChunkLayout {
+                samples,
+                stride: samples,
+            })
+        }
+    }
+}
+
+pub fn ecdc_chunk_layout_from_metadata(
+    bundle_meta: &OnnxFrameBundleMetadata,
+    metadata: &EcdcMetadata,
+) -> Result<EcdcChunkLayout> {
+    let samples = metadata.chunk_samples.unwrap_or(bundle_meta.segment_samples);
+    let stride = metadata
+        .chunk_stride
+        .unwrap_or(bundle_meta.segment_stride.max(1));
+
+    if samples == 0 {
+        bail!("ECDC metadata has invalid chunk sample count 0");
+    }
+    if stride == 0 {
+        bail!("ECDC metadata has invalid chunk stride 0");
+    }
+
+    Ok(EcdcChunkLayout { samples, stride })
 }
 
 pub fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
@@ -133,6 +196,8 @@ mod tests {
             bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
             lm_tau: None,
             lm_hash: None,
+            chunk_samples: None,
+            chunk_stride: None,
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
@@ -191,5 +256,41 @@ mod tests {
         assert_eq!(segment_frame_length(48_000, 48_000, 75), 75);
         assert_eq!(segment_frame_length(24_000, 48_000, 75), 38);
         assert_eq!(segment_frame_length(1, 48_000, 75), 1);
+    }
+
+    #[test]
+    fn chunk_ms_uses_sample_rate_and_rounds_to_samples() {
+        let bundle = OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz".into(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 48_000,
+            segment_stride: 47_040,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 150,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".into(),
+            decode_model: "decode_frame.onnx".into(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".into()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(2.1),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        };
+
+        let default_layout = ecdc_chunk_layout_from_ms(&bundle, None).unwrap();
+        assert_eq!(default_layout.samples, 48_000);
+        assert_eq!(default_layout.stride, 47_040);
+
+        let custom_layout = ecdc_chunk_layout_from_ms(&bundle, Some(250.0)).unwrap();
+        assert_eq!(custom_layout.samples, 12_000);
+        assert_eq!(custom_layout.stride, 12_000);
     }
 }

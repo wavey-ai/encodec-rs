@@ -18,24 +18,20 @@ path = "src/main.rs"
 [features]
 default = []
 ecdc = [
-    "dep:anyhow",
-    "dep:crc32fast",
-    "dep:libm",
-    "dep:ndarray",
-    "dep:serde",
-    "dep:serde_json",
-    "dep:sha2",
+  "dep:anyhow",
+  "dep:crc32fast",
+  "dep:libm",
+  "dep:ndarray",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:sha2",
 ]
-onnx = [
-    "ecdc",
-    "dep:gpu-worker-ort",
-    "dep:hound",
-]
+onnx = ["ecdc", "dep:gpu-worker-ort", "dep:hound"]
 wasm = [
-    "ecdc",
-    "dep:console_error_panic_hook",
-    "dep:serde-wasm-bindgen",
-    "dep:wasm-bindgen",
+  "ecdc",
+  "dep:console_error_panic_hook",
+  "dep:serde-wasm-bindgen",
+  "dep:wasm-bindgen",
 ]
 
 [dependencies]

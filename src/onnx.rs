@@ -114,13 +114,15 @@ impl OnnxFrameCodec {
         if shape.len() != 3 {
             bail!("audio must have shape [batch, channels, samples]");
         }
-        if shape[1] != self.metadata.channels || shape[2] != self.metadata.segment_samples {
+        if shape[1] != self.metadata.channels {
             bail!(
-                "audio shape mismatch, expected [batch, {}, {}], got {:?}",
+                "audio channel mismatch, expected {}, got {:?}",
                 self.metadata.channels,
-                self.metadata.segment_samples,
                 shape
             );
+        }
+        if shape[2] == 0 {
+            bail!("audio sample length must be non-zero");
         }
 
         let tensor = OrtTensor::from_array(audio.to_owned()).map_err(ort_error)?;
@@ -152,15 +154,15 @@ impl OnnxFrameCodec {
         if code_shape.len() != 3 {
             bail!("codes must have shape [batch, num_codebooks, frame_length]");
         }
-        if code_shape[1] != self.metadata.num_codebooks
-            || code_shape[2] != self.metadata.frame_length
-        {
+        if code_shape[1] != self.metadata.num_codebooks {
             bail!(
-                "codes shape mismatch, expected [batch, {}, {}], got {:?}",
+                "codes codebook mismatch, expected {}, got {:?}",
                 self.metadata.num_codebooks,
-                self.metadata.frame_length,
                 code_shape
             );
+        }
+        if code_shape[2] == 0 {
+            bail!("code frame length must be non-zero");
         }
         let scale_shape = scale.shape();
         if scale_shape.len() != 2 || scale_shape[0] != code_shape[0] || scale_shape[1] != 1 {
@@ -270,10 +272,6 @@ impl OnnxLmCodec {
         let dim = self.metadata.lm_dim()?;
         let layers = self.metadata.lm_num_layers()?;
         Ok((0..layers)
-            // The reference Python path starts teacher-forced LM evaluation with
-            // `states=None`, which becomes a single zero timestep per layer.
-            // Feeding a full `past_context` block of zeros changes attention and
-            // destroys compression efficiency.
             .map(|_| Array3::<f32>::zeros((batch, 1, dim)))
             .collect())
     }

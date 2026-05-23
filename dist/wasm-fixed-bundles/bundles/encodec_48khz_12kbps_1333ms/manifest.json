@@ -1,0 +1,22 @@
+{
+  "name": "encodec_48khz_12kbps_1333ms",
+  "bundleJson": "bundle.json",
+  "lmWeights": "lm_weights_q8.bin",
+  "modelName": "encodec_48khz",
+  "bandwidthKbps": 12.0,
+  "sampleRate": 48000,
+  "channels": 2,
+  "segmentSamples": 63998,
+  "segmentStride": 63998,
+  "frameLength": 200,
+  "numCodebooks": 8,
+  "lm": {
+    "dim": 200,
+    "layers": 5,
+    "heads": 8,
+    "codebooks": 8,
+    "cardinality": 1024,
+    "frame_length": 300,
+    "past_context": 525
+  }
+}
