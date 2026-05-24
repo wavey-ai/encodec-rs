@@ -5,6 +5,8 @@ pub mod binary;
 #[cfg(feature = "ecdc")]
 pub mod ecdc;
 #[cfg(feature = "ecdc")]
+pub mod ecdc_presets;
+#[cfg(feature = "ecdc")]
 pub mod format;
 #[cfg(feature = "ecdc")]
 pub mod metadata;
@@ -18,5 +20,3 @@ pub mod quantized_lm;
 pub mod stable_hash;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-#[cfg(feature = "ecdc")]
-pub mod ecdc_presets;

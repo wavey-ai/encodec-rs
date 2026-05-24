@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ort from "../browser-smoke/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs";
 import {
   ecdcMetadata,
-  ecdcOverlapAdd,
+  ecdcOverlapAddForMetadata,
   initSync,
   initPanicHook,
   lmEcdcChunk,
@@ -173,7 +173,7 @@ async function decodeFixture(options) {
   const decodeSessionMs = performance.now() - decodeSessionStarted;
   const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta);
   const overlapStarted = performance.now();
-  const decodedAudio = ecdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
+  const decodedAudio = ecdcOverlapAddForMetadata(bundleJson, JSON.stringify(metadata), decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   mkdirSync(path.dirname(options.outputWav), { recursive: true });
   writeWav(options.outputWav, decodedAudio, meta.channels, meta.sample_rate);

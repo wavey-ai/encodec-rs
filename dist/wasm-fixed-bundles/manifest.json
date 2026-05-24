@@ -10,8 +10,8 @@
       "bandwidthKbps": 6.0,
       "sampleRate": 48000,
       "channels": 2,
-      "segmentSamples": 63998,
-      "segmentStride": 63998,
+      "segmentSamples": 64000,
+      "segmentStride": 63520,
       "frameLength": 200,
       "numCodebooks": 4,
       "lm": {
@@ -34,7 +34,7 @@
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 86400,
-      "segmentStride": 86400,
+      "segmentStride": 85920,
       "frameLength": 270,
       "numCodebooks": 4,
       "lm": {
@@ -56,8 +56,8 @@
       "bandwidthKbps": 12.0,
       "sampleRate": 48000,
       "channels": 2,
-      "segmentSamples": 63998,
-      "segmentStride": 63998,
+      "segmentSamples": 64000,
+      "segmentStride": 63520,
       "frameLength": 200,
       "numCodebooks": 8,
       "lm": {
@@ -80,7 +80,7 @@
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 86400,
-      "segmentStride": 86400,
+      "segmentStride": 85920,
       "frameLength": 270,
       "numCodebooks": 8,
       "lm": {

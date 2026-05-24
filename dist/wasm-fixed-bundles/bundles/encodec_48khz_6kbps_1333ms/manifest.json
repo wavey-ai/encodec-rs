@@ -7,8 +7,8 @@
   "bandwidthKbps": 6.0,
   "sampleRate": 48000,
   "channels": 2,
-  "segmentSamples": 63998,
-  "segmentStride": 63998,
+  "segmentSamples": 64000,
+  "segmentStride": 63520,
   "frameLength": 200,
   "numCodebooks": 4,
   "lm": {

@@ -129,7 +129,12 @@ fn ecdc_fixed_bundle_chunk_matrix_verbose() -> Result<()> {
         ran += 1;
 
         println!();
-        println!("case {} {} bundle={}", case.bandwidth, case.label, bundle_dir.display());
+        println!(
+            "case {} {} bundle={}",
+            case.bandwidth,
+            case.label,
+            bundle_dir.display()
+        );
         println!("{}", "=".repeat(140));
 
         let target = execution_target(&bundle_dir)?;
@@ -317,14 +322,7 @@ fn inspect_ecdc_chunks(
 
     println!(
         "{:>6} {:>12} {:>12} {:>12} {:>8} {:>14} {:>14} {:>14}",
-        "chunk",
-        "offset",
-        "samples",
-        "ms",
-        "frames",
-        "chunk_bytes",
-        "payload_bytes",
-        "cum_chunk"
+        "chunk", "offset", "samples", "ms", "frames", "chunk_bytes", "payload_bytes", "cum_chunk"
     );
 
     let starts = segment_starts(metadata.audio_length, chunk_stride);
@@ -334,8 +332,12 @@ fn inspect_ecdc_chunks(
 
     for (index, offset) in starts.iter().copied().enumerate() {
         let before = reader.position() as usize;
-        let payload = read_chunk_payload(&mut reader, true)
-            .with_context(|| format!("failed to read chunk {} for case {} {}", index, bandwidth, label))?;
+        let payload = read_chunk_payload(&mut reader, true).with_context(|| {
+            format!(
+                "failed to read chunk {} for case {} {}",
+                index, bandwidth, label
+            )
+        })?;
         let after = reader.position() as usize;
 
         let samples = (metadata.audio_length - offset).min(chunk_samples);

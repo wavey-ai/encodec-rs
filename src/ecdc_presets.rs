@@ -48,23 +48,12 @@ pub fn chunk_preset_from_ms(value: Option<f64>) -> Result<EcdcChunkPreset> {
     }
 }
 
-pub fn fixed_bundle_name(
-    bandwidth: EcdcBandwidthPreset,
-    chunk: EcdcChunkPreset,
-) -> &'static str {
+pub fn fixed_bundle_name(bandwidth: EcdcBandwidthPreset, chunk: EcdcChunkPreset) -> &'static str {
     match (bandwidth, chunk) {
-        (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1333) => {
-            "encodec_48khz_6kbps_1333ms"
-        }
-        (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1800) => {
-            "encodec_48khz_6kbps_1800ms"
-        }
-        (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1333) => {
-            "encodec_48khz_12kbps_1333ms"
-        }
-        (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1800) => {
-            "encodec_48khz_12kbps_1800ms"
-        }
+        (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1333) => "encodec_48khz_6kbps_1333ms",
+        (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1800) => "encodec_48khz_6kbps_1800ms",
+        (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1333) => "encodec_48khz_12kbps_1333ms",
+        (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1800) => "encodec_48khz_12kbps_1800ms",
     }
 }
 
@@ -75,5 +64,7 @@ pub fn fixed_bundle_dir(
 ) -> Result<PathBuf> {
     let bandwidth = bandwidth_preset_from_kbps(bandwidth_kbps)?;
     let chunk = chunk_preset_from_ms(chunk_ms)?;
-    Ok(bundle_root.as_ref().join(fixed_bundle_name(bandwidth, chunk)))
+    Ok(bundle_root
+        .as_ref()
+        .join(fixed_bundle_name(bandwidth, chunk)))
 }

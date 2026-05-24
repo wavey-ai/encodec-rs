@@ -8,7 +8,7 @@
   "sampleRate": 48000,
   "channels": 2,
   "segmentSamples": 86400,
-  "segmentStride": 86400,
+  "segmentStride": 85920,
   "frameLength": 270,
   "numCodebooks": 8,
   "lm": {

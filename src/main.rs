@@ -584,7 +584,10 @@ fn decode_audio_segments(
     let meta = codec.metadata().clone();
     let mut frames = Vec::with_capacity(codes.len());
     for (code_chunk, scale_chunk) in codes.chunks(batch_size).zip(scales.chunks(batch_size)) {
-        let frame_length = code_chunk.first().map(|codes| codes.shape()[2]).unwrap_or(0);
+        let frame_length = code_chunk
+            .first()
+            .map(|codes| codes.shape()[2])
+            .unwrap_or(0);
         let mut batch_codes =
             Array3::<i64>::zeros((code_chunk.len(), meta.num_codebooks, frame_length));
         let mut batch_scales = Array2::<f32>::zeros((code_chunk.len(), 1));
@@ -592,7 +595,9 @@ fn decode_audio_segments(
             code_chunk.iter().zip(scale_chunk.iter()).enumerate()
         {
             if segment_codes.shape()[2] != frame_length {
-                return Err("all code frames in a decode batch must have the same frame length".into());
+                return Err(
+                    "all code frames in a decode batch must have the same frame length".into(),
+                );
             }
             for codebook in 0..meta.num_codebooks {
                 for t in 0..frame_length {

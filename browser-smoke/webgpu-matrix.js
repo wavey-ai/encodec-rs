@@ -7,7 +7,7 @@ import init, {
   QuantizedLmChunkDecoder,
   QuantizedLmChunkEncoder,
   ecdcMetadata,
-  ecdcOverlapAdd,
+  ecdcOverlapAddForMetadata,
   stableHashHex,
 } from "../pkg/encodec_rs.js";
 
@@ -27,7 +27,8 @@ window.webgpuMatrix = {
 };
 
 async function ready() {
-  if (!navigator.gpu) {
+  const providers = matrixExecutionProviders();
+  if (providers.includes("webgpu") && !navigator.gpu) {
     throw new Error(`navigator.gpu is unavailable in ${navigator.userAgent}`);
   }
   await initWasm();
@@ -35,6 +36,7 @@ async function ready() {
     userAgent: navigator.userAgent,
     secureContext: window.isSecureContext,
     hasWebGpu: Boolean(navigator.gpu),
+    executionProviders: providers,
     ortWebVersion: ort.env?.versions?.web ?? null,
   };
 }
@@ -61,6 +63,9 @@ async function encode(options) {
   let lmMs = 0;
 
   for (let index = 0; index < segments.count; index += 1) {
+    if (index === 0 || (index + 1) % 10 === 0 || index + 1 === segments.count) {
+      console.log(`encode ${bundleName} segment ${index + 1}/${segments.count}`);
+    }
     const segment = buildSingleSegment(wav.audio, wav.frames, segments, index, meta);
     const frameStarted = performance.now();
     const outputs = await encodeSession.run({
@@ -124,6 +129,9 @@ async function decode(options) {
   const frames = [];
   let lmMs = 0;
   for (const chunk of parsed.chunks) {
+    if (frames.length === 0 || (frames.length + 1) % 10 === 0 || frames.length + 1 === parsed.chunks.length) {
+      console.log(`entropy decode ${bundleName} chunk ${frames.length + 1}/${parsed.chunks.length}`);
+    }
     const started = performance.now();
     frames.push(decodeQ8LmFrame(bundleJson, weights, meta, chunk));
     lmMs += performance.now() - started;
@@ -132,7 +140,7 @@ async function decode(options) {
   const decodeSession = await getSession(`${bundleName}:decode`, new URL(meta.decode_model, bundleRoot).href);
   const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta);
   const audioLength = metadata.al ?? metadata.audio_length;
-  const decodedAudio = ecdcOverlapAdd(bundleJson, audioLength, decodedFrames.audio);
+  const decodedAudio = ecdcOverlapAddForMetadata(bundleJson, JSON.stringify(metadata), decodedFrames.audio);
   const wav = writeWavBytes(decodedAudio, meta.channels, meta.sample_rate);
   downloadBytes(downloadName, wav, "audio/wav");
   return {
@@ -166,7 +174,7 @@ async function getSession(key, modelUrl) {
   }
   const model = new Uint8Array(await fetchArrayBuffer(modelUrl));
   const session = await ort.InferenceSession.create(model, {
-    executionProviders: ["webgpu", "wasm"],
+    executionProviders: matrixExecutionProviders(),
     graphOptimizationLevel: "all",
   });
   sessionCache.set(key, session);
@@ -226,7 +234,20 @@ async function decodeFrameBatch(session, frames, meta, batchSize = 32) {
     });
     decodeOnnxMs += performance.now() - decodeStarted;
     const decodedTensor = findDecodeOutput(outputs);
-    audio.set(decodedTensor.data, start * samplesPerDecodedFrame);
+    const expectedLength = batch.length * samplesPerDecodedFrame;
+    if (decodedTensor.data.length < expectedLength) {
+      throw new Error(
+        `decoded batch ${start}-${end} returned ${decodedTensor.data.length} samples, expected ${expectedLength}`,
+      );
+    }
+    const targetOffset = start * samplesPerDecodedFrame;
+    if (targetOffset + expectedLength > audio.length) {
+      throw new Error(
+        `decoded batch ${start}-${end} overflows ${audio.length} samples at offset ${targetOffset}`,
+      );
+    }
+    audio.set(decodedTensor.data.subarray(0, expectedLength), targetOffset);
+    console.log(`frame decode batch ${end}/${frames.length}`);
   }
   return {
     audio,
@@ -273,6 +294,13 @@ function decodeWav(bytes) {
       let sample;
       if (fmt.subFormatTag === 1 && fmt.bitsPerSample === 16) {
         sample = view.getInt16(cursor, true) / 32768;
+      } else if (fmt.subFormatTag === 1 && fmt.bitsPerSample === 24) {
+        const raw =
+          view.getUint8(cursor) |
+          (view.getUint8(cursor + 1) << 8) |
+          (view.getUint8(cursor + 2) << 16);
+        const signed = raw & 0x800000 ? raw | 0xff000000 : raw;
+        sample = signed / 8388608;
       } else if (fmt.subFormatTag === 3 && fmt.bitsPerSample === 32) {
         sample = view.getFloat32(cursor, true);
       } else {
@@ -466,6 +494,14 @@ function readAscii(view, offset, length) {
     out += String.fromCharCode(view.getUint8(offset + index));
   }
   return out;
+}
+
+function matrixExecutionProviders() {
+  const providers = globalThis.WEBGPU_MATRIX_EXECUTION_PROVIDERS;
+  if (Array.isArray(providers) && providers.length) {
+    return providers.map((provider) => String(provider)).filter(Boolean);
+  }
+  return ["webgpu", "wasm"];
 }
 
 function writeAscii(out, offset, text) {
