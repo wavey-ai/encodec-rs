@@ -445,36 +445,102 @@ fn overlap_add_decoded_frames(
     decoded_frames: &[f32],
     layout: EcdcChunkLayout,
 ) -> anyhow::Result<Vec<f32>> {
-    let frame_count = segment_starts(audio_length, layout.stride).len();
-    let expected = frame_count * meta.channels * layout.samples;
-    if decoded_frames.len() != expected {
-        anyhow::bail!(
-            "decoded frame sample count {} does not match expected {} for {} frames",
-            decoded_frames.len(),
-            expected,
-            frame_count
-        );
-    }
+    let starts = segment_starts(audio_length, layout.stride);
+    let frame_count = starts.len();
     if frame_count == 0 {
         return Ok(Vec::new());
+    }
+
+    let chunk_samples: Vec<usize> = starts
+        .iter()
+        .copied()
+        .map(|offset| (audio_length - offset).min(layout.samples))
+        .collect();
+    let native_samples_per_code = meta
+        .segment_samples
+        .checked_div(meta.frame_length.max(1))
+        .filter(|samples| *samples > 0)
+        .unwrap_or(320);
+    let native_decoded_samples: Vec<usize> = chunk_samples
+        .iter()
+        .copied()
+        .map(|samples| {
+            segment_frame_length(samples, meta.segment_samples, meta.frame_length)
+                * native_samples_per_code
+        })
+        .collect();
+    let exact_native_total: usize = native_decoded_samples
+        .iter()
+        .map(|samples| samples * meta.channels)
+        .sum();
+    let full_native_total = frame_count * meta.channels * meta.segment_samples;
+    let exact_chunk_total: usize = chunk_samples
+        .iter()
+        .map(|samples| samples * meta.channels)
+        .sum();
+    let source_samples_per_frame = if decoded_frames.len() == exact_native_total {
+        native_decoded_samples
+    } else if decoded_frames.len() == full_native_total {
+        vec![meta.segment_samples; frame_count]
+    } else if decoded_frames.len() == exact_chunk_total {
+        chunk_samples.clone()
+    } else {
+        let frame_channel_count = frame_count * meta.channels;
+        if decoded_frames.len() % frame_channel_count != 0 {
+            anyhow::bail!(
+                "decoded frame sample count {} is not divisible by {} frame channels for {} frames",
+                decoded_frames.len(),
+                frame_channel_count,
+                frame_count
+            );
+        }
+        vec![decoded_frames.len() / frame_channel_count; frame_count]
+    };
+
+    for (index, (decoded_samples, required_samples)) in source_samples_per_frame
+        .iter()
+        .copied()
+        .zip(chunk_samples.iter().copied())
+        .enumerate()
+    {
+        if decoded_samples < required_samples {
+            anyhow::bail!(
+                "decoded frame {index} sample count {decoded_samples} cannot satisfy ECDC chunk sample count {required_samples}"
+            );
+        }
+    }
+    let expected_total: usize = source_samples_per_frame
+        .iter()
+        .map(|samples| samples * meta.channels)
+        .sum();
+    if decoded_frames.len() != expected_total {
+        anyhow::bail!(
+            "decoded frame sample count {} does not match expected {} for {} ECDC frames",
+            decoded_frames.len(),
+            expected_total,
+            frame_count
+        );
     }
 
     let total_size = layout.stride * (frame_count - 1) + layout.samples;
     let mut output = vec![0.0_f32; meta.channels * total_size];
     let mut sum_weight = vec![0.0_f32; total_size];
     let weight = triangle_weight(layout.samples);
+    let mut source_frame_base = 0usize;
 
     for frame in 0..frame_count {
         let offset = frame * layout.stride;
-        for sample in 0..layout.samples {
+        let decoded_samples = source_samples_per_frame[frame];
+        for sample in 0..chunk_samples[frame] {
             let w = weight[sample];
             sum_weight[offset + sample] += w;
             for channel in 0..meta.channels {
-                let source_index = (frame * meta.channels + channel) * layout.samples + sample;
+                let source_index = source_frame_base + channel * decoded_samples + sample;
                 let target_index = channel * total_size + offset + sample;
                 output[target_index] += decoded_frames[source_index] * w;
             }
         }
+        source_frame_base += meta.channels * decoded_samples;
     }
 
     let mut trimmed = vec![0.0_f32; meta.channels * audio_length];
