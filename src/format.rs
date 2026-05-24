@@ -143,7 +143,9 @@ pub fn ecdc_chunk_layout_from_metadata(
     bundle_meta: &OnnxFrameBundleMetadata,
     metadata: &EcdcMetadata,
 ) -> Result<EcdcChunkLayout> {
-    let samples = metadata.chunk_samples.unwrap_or(bundle_meta.segment_samples);
+    let samples = metadata
+        .chunk_samples
+        .unwrap_or(bundle_meta.segment_samples);
     let stride = metadata
         .chunk_stride
         .unwrap_or(bundle_meta.segment_stride.max(1));
@@ -156,6 +158,41 @@ pub fn ecdc_chunk_layout_from_metadata(
     }
 
     Ok(EcdcChunkLayout { samples, stride })
+}
+
+pub fn ecdc_chunk_layout_for_chunk_count(
+    bundle_meta: &OnnxFrameBundleMetadata,
+    metadata: &EcdcMetadata,
+    chunk_count: usize,
+) -> Result<EcdcChunkLayout> {
+    let explicit = metadata.chunk_samples.is_some() || metadata.chunk_stride.is_some();
+    let default = ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?;
+    if explicit {
+        return Ok(default);
+    }
+
+    let mut candidates = vec![default];
+    if bundle_meta.sample_rate == 48_000 {
+        candidates.push(EcdcChunkLayout {
+            samples: 63_998,
+            stride: 63_998,
+        });
+        candidates.push(EcdcChunkLayout {
+            samples: 86_400,
+            stride: 86_400,
+        });
+    }
+
+    for layout in candidates {
+        if segment_starts(metadata.audio_length, layout.stride).len() == chunk_count {
+            return Ok(layout);
+        }
+    }
+
+    anyhow::bail!(
+        "ECDC payload has {chunk_count} chunks, but metadata implies {} chunks",
+        segment_starts(metadata.audio_length, default.stride).len()
+    );
 }
 
 pub fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {

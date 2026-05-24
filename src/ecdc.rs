@@ -9,7 +9,7 @@ use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
 use crate::format::{
-    ecdc_chunk_layout_from_metadata, ecdc_chunk_layout_from_ms, segment_frame_length,
+    ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_ms, segment_frame_length,
     segment_starts, validate_metadata, EcdcChunkLayout,
 };
 pub use crate::format::{
@@ -384,11 +384,24 @@ fn decode_ecdc_impl(
     let metadata: EcdcMetadata = read_ecdc_header(&mut reader)?;
     let bundle_meta = codec.metadata().clone();
     validate_metadata(&bundle_meta, &metadata)?;
-    let chunk_layout = ecdc_chunk_layout_from_metadata(&bundle_meta, &metadata)?;
+    let mut raw_chunks = Vec::new();
+    while (reader.position() as usize) < payload.len() {
+        raw_chunks.push(read_chunk_payload(&mut reader, true)?);
+    }
+
+    let chunk_layout =
+        ecdc_chunk_layout_for_chunk_count(&bundle_meta, &metadata, raw_chunks.len())?;
 
     let mut frames = Vec::new();
     let starts = segment_starts(metadata.audio_length, chunk_layout.stride);
-    for offset in starts {
+    if starts.len() != raw_chunks.len() {
+        bail!(
+            "LM ECDC payload has {} chunks, but metadata implies {} chunks",
+            raw_chunks.len(),
+            starts.len()
+        );
+    }
+    for (offset, chunk) in starts.into_iter().zip(raw_chunks) {
         let this_len = (metadata.audio_length - offset).min(chunk_layout.samples);
         let frame_length = segment_frame_length(
             this_len,
@@ -416,7 +429,6 @@ fn decode_ecdc_impl(
                 actual_hash,
             );
         }
-        let chunk = read_chunk_payload(&mut reader, true)?;
         let frame = decode_lm_chunk_payload(
             codec,
             lm_codec,

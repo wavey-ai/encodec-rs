@@ -1,19 +1,19 @@
-use crate::ecdc_presets::{bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name};
-use serde::Serialize;
-use std::io::Cursor;
-use wasm_bindgen::prelude::*;
 use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
+use crate::ecdc_presets::{bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name};
 use crate::format::{
-    ecdc_chunk_layout_from_metadata, segment_frame_length, segment_starts, validate_metadata,
-    EcdcChunkLayout, EcdcMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
-    DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
+    ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, segment_frame_length,
+    segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata, ARITHMETIC_TOTAL_RANGE_BITS,
+    DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
 use crate::stable_hash::stable_hash_hex;
+use serde::Serialize;
+use std::io::Cursor;
+use wasm_bindgen::prelude::*;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,8 +117,10 @@ pub fn lm_ecdc_header_for_weights(
         )));
     }
     let meta = parse_bundle(bundle_json)?;
-    let metadata =
+    let mut metadata =
         EcdcMetadata::from_bundle(&meta, audio_length, None, Some(stable_hash_hex(weights)));
+    metadata.chunk_samples = Some(meta.segment_samples);
+    metadata.chunk_stride = Some(meta.segment_stride.max(1));
     let mut out = Vec::new();
     write_ecdc_header(&mut out, &metadata).map_err(to_js_error)?;
     Ok(out)
@@ -141,12 +143,25 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
         return Err(to_js_error("ECDC payload does not use LM coding"));
     }
 
-    let layout = ecdc_chunk_layout_from_metadata(&meta, &metadata).map_err(to_js_error)?;
+    let mut raw_chunks = Vec::new();
+    while (reader.position() as usize) < payload.len() {
+        raw_chunks.push(read_chunk_payload(&mut reader, true).map_err(to_js_error)?);
+    }
+
+    let layout = ecdc_chunk_layout_for_chunk_count(&meta, &metadata, raw_chunks.len())
+        .map_err(to_js_error)?;
     let mut chunks = Vec::new();
-    for offset in segment_starts(metadata.audio_length, layout.stride) {
+    let starts = segment_starts(metadata.audio_length, layout.stride);
+    if starts.len() != raw_chunks.len() {
+        return Err(to_js_error(format!(
+            "LM ECDC payload has {} chunks, but metadata implies {} chunks",
+            raw_chunks.len(),
+            starts.len()
+        )));
+    }
+    for (offset, payload) in starts.into_iter().zip(raw_chunks) {
         let samples = (metadata.audio_length - offset).min(layout.samples);
         let frame_length = segment_frame_length(samples, meta.segment_samples, meta.frame_length);
-        let payload = read_chunk_payload(&mut reader, true).map_err(to_js_error)?;
         chunks.push(LmEcdcChunk {
             offset,
             samples,
@@ -154,12 +169,6 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
             payload,
         });
     }
-    if reader.position() as usize != payload.len() {
-        return Err(to_js_error(
-            "LM ECDC payload has trailing bytes after expected chunks",
-        ));
-    }
-
     to_js_value(&LmEcdcChunks { metadata, chunks })
 }
 
