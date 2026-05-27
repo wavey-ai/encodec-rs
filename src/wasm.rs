@@ -4,9 +4,10 @@ use crate::binary::{
 };
 use crate::ecdc_presets::{bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name};
 use crate::format::{
-    ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, segment_frame_length,
-    segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata, ARITHMETIC_TOTAL_RANGE_BITS,
-    DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
+    ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, ecdc_lm_frame_length,
+    segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata,
+    ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
+    QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
@@ -110,6 +111,26 @@ pub fn lm_ecdc_header_for_weights(
     bitstream_version: u8,
     weights: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
+    lm_ecdc_header_for_weights_impl(bundle_json, audio_length, bitstream_version, weights, false)
+}
+
+#[wasm_bindgen(js_name = lmEcdcFixedHeaderForWeights)]
+pub fn lm_ecdc_fixed_header_for_weights(
+    bundle_json: &str,
+    audio_length: usize,
+    bitstream_version: u8,
+    weights: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    lm_ecdc_header_for_weights_impl(bundle_json, audio_length, bitstream_version, weights, true)
+}
+
+fn lm_ecdc_header_for_weights_impl(
+    bundle_json: &str,
+    audio_length: usize,
+    bitstream_version: u8,
+    weights: &[u8],
+    fixed_frame_length: bool,
+) -> Result<Vec<u8>, JsValue> {
     if bitstream_version != QUANTIZED_LM_BITSTREAM_VERSION {
         return Err(to_js_error(format!(
             "only q8 acv={} is supported, got acv={bitstream_version}",
@@ -119,8 +140,11 @@ pub fn lm_ecdc_header_for_weights(
     let meta = parse_bundle(bundle_json)?;
     let mut metadata =
         EcdcMetadata::from_bundle(&meta, audio_length, None, Some(stable_hash_hex(weights)));
-    metadata.chunk_samples = Some(meta.segment_samples);
-    metadata.chunk_stride = Some(meta.segment_stride.max(1));
+    if fixed_frame_length {
+        metadata.chunk_samples = Some(meta.segment_samples);
+        metadata.chunk_stride = Some(meta.segment_stride.max(1));
+        metadata.lm_frame_length = Some(meta.frame_length);
+    }
     let mut out = Vec::new();
     write_ecdc_header(&mut out, &metadata).map_err(to_js_error)?;
     Ok(out)
@@ -161,7 +185,8 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
     }
     for (offset, payload) in starts.into_iter().zip(raw_chunks) {
         let samples = (metadata.audio_length - offset).min(layout.samples);
-        let frame_length = segment_frame_length(samples, meta.segment_samples, meta.frame_length);
+        let frame_length =
+            ecdc_lm_frame_length(&metadata, samples, meta.segment_samples, meta.frame_length);
         chunks.push(LmEcdcChunk {
             offset,
             samples,
@@ -180,6 +205,7 @@ pub struct QuantizedLmChunkEncoder {
     input_symbols: Vec<usize>,
     encoder: ArithmeticEncoder,
     prefix: Vec<u8>,
+    pushed_steps: usize,
 }
 
 #[wasm_bindgen]
@@ -209,6 +235,7 @@ impl QuantizedLmChunkEncoder {
             state,
             encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
             prefix,
+            pushed_steps: 0,
         })
     }
 
@@ -218,25 +245,49 @@ impl QuantizedLmChunkEncoder {
 
     pub fn push(&mut self, codes: &[u16]) -> Result<(), JsValue> {
         let symbols = symbols_from_codes(codes, &self.meta).map_err(to_js_error)?;
-        let logits = self
-            .lm
-            .forward_step(&mut self.state, &self.input_symbols)
-            .map_err(to_js_error)?;
-        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0).map_err(to_js_error)?;
-        self.encoder
-            .push_pdf_symbols(
-                &pdf,
-                self.meta.lm_cardinality(),
-                self.meta.num_codebooks,
-                &symbols,
-                DEFAULT_FP_SCALE,
-                DEFAULT_MIN_RANGE,
-            )
-            .map_err(to_js_error)?;
-        for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols) {
+        self.push_symbols(&symbols).map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = finishPadded)]
+    pub fn finish_padded(&mut self, frame_length: usize) -> Result<Vec<u8>, JsValue> {
+        let target = if frame_length == 0 {
+            self.meta.frame_length
+        } else {
+            frame_length
+        };
+        if target > self.meta.frame_length {
+            return Err(to_js_error(format!(
+                "padded LM frame length {target} exceeds bundle frame length {}",
+                self.meta.frame_length
+            )));
+        }
+        while self.pushed_steps < target {
+            self.push_zero_step().map_err(to_js_error)?;
+        }
+        Ok(self.finish())
+    }
+
+    fn push_symbols(&mut self, symbols: &[usize]) -> anyhow::Result<()> {
+        let logits = self.lm.forward_step(&mut self.state, &self.input_symbols)?;
+        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0)?;
+        self.encoder.push_pdf_symbols(
+            &pdf,
+            self.meta.lm_cardinality(),
+            self.meta.num_codebooks,
+            &symbols,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+        )?;
+        for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
             *dst = symbol + 1;
         }
+        self.pushed_steps += 1;
         Ok(())
+    }
+
+    fn push_zero_step(&mut self) -> anyhow::Result<()> {
+        let symbols = vec![0; self.meta.num_codebooks];
+        self.push_symbols(&symbols)
     }
 
     pub fn finish(&mut self) -> Vec<u8> {

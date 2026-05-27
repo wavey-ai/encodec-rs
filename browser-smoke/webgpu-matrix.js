@@ -3,7 +3,7 @@ import init, {
   initPanicHook,
   lmEcdcChunk,
   lmEcdcDecodeChunks,
-  lmEcdcHeaderForWeights,
+  lmEcdcFixedHeaderForWeights,
   QuantizedLmChunkDecoder,
   QuantizedLmChunkEncoder,
   ecdcMetadata,
@@ -58,7 +58,7 @@ async function encode(options) {
 
   const encodeSession = await getSession(`${bundleName}:encode`, new URL(meta.encode_model, bundleRoot).href);
   const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
-  const chunks = [lmEcdcHeaderForWeights(bundleJson, wav.frames, 2, weights)];
+  const chunks = [lmEcdcFixedHeaderForWeights(bundleJson, wav.frames, 2, weights)];
   let frameOnnxMs = 0;
   let lmMs = 0;
 
@@ -187,7 +187,7 @@ function encodeQ8LmFrame(bundleJson, weights, frame, meta) {
     for (let step = 0; step < frame.frameLength; step += 1) {
       encoder.push(frameStepCodes(frame, meta, step));
     }
-    return encoder.finish();
+    return encoder.finishPadded(meta.frame_length);
   } finally {
     encoder.free();
   }

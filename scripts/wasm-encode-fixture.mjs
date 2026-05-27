@@ -12,7 +12,7 @@ import {
   initPanicHook,
   lmEcdcChunk,
   lmEcdcDecodeChunks,
-  lmEcdcHeaderForWeights,
+  lmEcdcFixedHeaderForWeights,
   QuantizedLmChunkDecoder,
   QuantizedLmChunkEncoder,
   stableHashHex,
@@ -68,7 +68,7 @@ async function encodeFixture(options) {
   const sessionMs = performance.now() - sessionsStarted;
 
   const encodedStarted = performance.now();
-  const chunks = [lmEcdcHeaderForWeights(bundleJson, wav.frames, lmRuntime.bitstreamVersion, lmRuntime.weights)];
+  const chunks = [lmEcdcFixedHeaderForWeights(bundleJson, wav.frames, lmRuntime.bitstreamVersion, lmRuntime.weights)];
   const frames = [];
   let frameOnnxMs = 0;
   let lmOnnxMs = 0;
@@ -462,7 +462,7 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
     }
 
     return {
-      payload: encoder.finish(),
+      payload: encoder.finishPadded(meta.frame_length),
       lmOnnxMs,
       lmDeterministicMs,
       arithmeticMs,

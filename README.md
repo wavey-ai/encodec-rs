@@ -72,11 +72,20 @@ The exported wasm helpers used by the q8 matrix path are:
 - `ecdcMetadata(payload)`
 - `ecdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
 - `lmEcdcHeaderForWeights(bundleJson, audioLength, 2, weights)`
+- `lmEcdcFixedHeaderForWeights(bundleJson, audioLength, 2, weights)`
 - `lmEcdcChunk(payload)`
 - `lmEcdcDecodeChunks(bundleJson, payload)`
 - `QuantizedLmChunkEncoder`
 - `QuantizedLmChunkDecoder`
 - `stableHashHex(bytes)`
+
+Use `lmEcdcHeaderForWeights` for dynamic bundles. Use
+`lmEcdcFixedHeaderForWeights` when writing ECDC against a fixed-length ONNX
+graph; it records the fixed chunk samples, stride, and LM frame length (`fl`) so
+decoders pull the full graph width for every chunk, including the final chunk.
+For fixed graph chunks, finish LM packet encoding with
+`QuantizedLmChunkEncoder.finishPadded(frameLength)` so encodec-rs writes zero-code
+padding for any short final segment before the ECDC packet is wrapped.
 
 ## Native Scope
 
@@ -106,6 +115,32 @@ So LM-assisted `.ecdc` compression works after the bundle download step.
 
 Native and browser LM entropy coding use the q8 Rust/wasm LM backend. Older raw
 and f32/ONNX-LM bitstreams are intentionally not supported.
+
+### Bundle Sizes
+
+The dynamic bundles are the default native bundles. Their frame models accept a
+variable final frame, so ECDC can derive each chunk's LM frame length from the
+actual sample count:
+
+| Bundle | Bandwidth | Nominal chunk | Samples | Stride | LM frames | Codebooks |
+|---|---:|---:|---:|---:|---:|---:|
+| `encodec_48khz_6kbps` | 6 kbps | 1000ms | 48,000 | 47,520 | 150 | 4 |
+| `encodec_48khz_12kbps` | 12 kbps | 1000ms | 48,000 | 47,520 | 150 | 8 |
+
+Fixed bundles trace the ONNX graph at one chunk size. ECDC written for these
+bundles should include `cs`, `cst`, and `fl`, and should entropy-code the full
+`fl` steps. The PCM input segment is already zero-padded before EnCodec encode;
+the ECDC writer must not shorten the LM stream for the final partial chunk.
+
+| Fixed chunk | Samples | Stride | LM frames | Bundle suffix |
+|---|---:|---:|---:|---|
+| 1000ms | 48,000 | 47,520 | 150 | `_1000ms` |
+| 1333ms | 64,000 | 63,520 | 200 | `_1333ms` |
+| 1800ms | 86,400 | 85,920 | 270 | `_1800ms` |
+
+The default wasm fixed-bundle package currently ships the `1333ms` and
+`1800ms` variants for both `6 kbps` and `12 kbps`. The export tooling also knows
+the `1000ms` shape; include it in `BUNDLES` when a fixed 1s graph is needed.
 
 ## Runtime Notes
 
@@ -296,6 +331,8 @@ If your source is not already `48 kHz` stereo WAV, normalize it first.
 - LM / arithmetic settings
 - q8 bitstream version (`acv=2`)
 - q8 LM weight hash
+- fixed chunk sample count (`cs`), stride (`cst`), and LM frame length (`fl`)
+  when the payload targets a fixed-length graph
 
 ## Library Use
 

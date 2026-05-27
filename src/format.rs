@@ -48,6 +48,8 @@ pub struct EcdcMetadata {
     pub chunk_samples: Option<usize>,
     #[serde(rename = "cst", skip_serializing_if = "Option::is_none")]
     pub chunk_stride: Option<usize>,
+    #[serde(rename = "fl", skip_serializing_if = "Option::is_none")]
+    pub lm_frame_length: Option<usize>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -71,6 +73,7 @@ impl EcdcMetadata {
             lm_hash,
             chunk_samples: None,
             chunk_stride: None,
+            lm_frame_length: None,
             extra: BTreeMap::new(),
         }
     }
@@ -103,6 +106,15 @@ pub fn validate_metadata(
     }
     if !metadata.use_lm {
         bail!("q8 ECDC payload unexpectedly advertises lm=false");
+    }
+    if let Some(lm_frame_length) = metadata.lm_frame_length {
+        if lm_frame_length == 0 || lm_frame_length > bundle_meta.frame_length {
+            bail!(
+                "ECDC LM frame length {} is out of range for bundle frame length {}",
+                lm_frame_length,
+                bundle_meta.frame_length
+            );
+        }
     }
     Ok(())
 }
@@ -209,6 +221,18 @@ pub fn segment_frame_length(samples: usize, segment_samples: usize, frame_length
     (samples * frame_length).div_ceil(segment_samples)
 }
 
+pub fn ecdc_lm_frame_length(
+    metadata: &EcdcMetadata,
+    samples: usize,
+    segment_samples: usize,
+    frame_length: usize,
+) -> usize {
+    metadata
+        .lm_frame_length
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| segment_frame_length(samples, segment_samples, frame_length))
+}
+
 fn default_fp_scale() -> i64 {
     DEFAULT_FP_SCALE
 }
@@ -235,6 +259,7 @@ mod tests {
             lm_hash: None,
             chunk_samples: None,
             chunk_stride: None,
+            lm_frame_length: None,
             extra: BTreeMap::new(),
         };
         let json = serde_json::to_string(&metadata).unwrap();
