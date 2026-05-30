@@ -1,4 +1,6 @@
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::fs::File;
+use std::io::Write;
 use std::os::raw::c_double;
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -8,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use ndarray::{Array2, Array3};
 
 use crate::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options, FrameCodec};
+use crate::ecdc::encode_audio_to_ecdc_stream_with_options;
 use crate::format::segment_frame_length;
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::portable_lm::PortableLmCodec;
@@ -184,6 +187,10 @@ fn byte_success(bytes: Vec<u8>) -> EncodecRsMlxByteResult {
     EncodecRsMlxByteResult { ok: true, ptr, len, error: ptr::null_mut() }
 }
 
+fn byte_count_success(len: usize) -> EncodecRsMlxByteResult {
+    EncodecRsMlxByteResult { ok: true, ptr: ptr::null_mut(), len, error: ptr::null_mut() }
+}
+
 fn byte_error(error: impl std::fmt::Display) -> EncodecRsMlxByteResult {
     EncodecRsMlxByteResult { ok: false, ptr: ptr::null_mut(), len: 0, error: c_error(error) }
 }
@@ -272,6 +279,89 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc(
 
     match result {
         Ok(bytes) => byte_success(bytes),
+        Err(error) => byte_error(error),
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
+    bundle_dir: *const c_char,
+    audio: *const f32,
+    channels: usize,
+    samples: usize,
+    use_lm: bool,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: c_double,
+    has_chunk_ms: bool,
+    output_path: *const c_char,
+    progress_path: *const c_char,
+    callbacks: EncodecRsMlxFrameCallbacks,
+) -> EncodecRsMlxByteResult {
+    let result = (|| -> Result<usize> {
+        if audio.is_null() && channels.saturating_mul(samples) > 0 {
+            bail!("audio pointer is null");
+        }
+        if output_path.is_null() {
+            bail!("output_path pointer is null");
+        }
+        let output_path = CStr::from_ptr(output_path)
+            .to_str()
+            .context("output_path is not valid UTF-8")?;
+        let progress_path = if progress_path.is_null() {
+            None
+        } else {
+            let value = CStr::from_ptr(progress_path)
+                .to_str()
+                .context("progress_path is not valid UTF-8")?;
+            (!value.is_empty()).then_some(value.to_owned())
+        };
+        let bundle_dir = bundle_dir_from_c(bundle_dir)?;
+        let mut codec = CallbackFrameCodec::from_bundle_dir(&bundle_dir, callbacks)?;
+        if channels != codec.metadata.channels {
+            bail!("audio channel count {channels} does not match bundle {}", codec.metadata.channels);
+        }
+        let audio = if channels.saturating_mul(samples) == 0 {
+            &[]
+        } else {
+            slice::from_raw_parts(audio, channels.saturating_mul(samples))
+        };
+        let audio = Array3::from_shape_vec((1, channels, samples), audio.to_vec())?;
+        if !use_lm {
+            bail!("use_lm=false is unsupported for q8 ECDC payloads in this build");
+        }
+        let mut lm_codec = PortableLmCodec::from_dir(&bundle_dir)?;
+        let mut output = File::create(output_path)
+            .with_context(|| format!("failed to create {output_path}"))?;
+        let mut bytes_written = 0_usize;
+        let mut emissions = 0_usize;
+        encode_audio_to_ecdc_stream_with_options(
+            &mut codec,
+            &mut lm_codec,
+            &audio,
+            None,
+            frame_batch_size.max(1),
+            chunk_crc,
+            has_chunk_ms.then_some(chunk_ms as f64),
+            |bytes| {
+                output.write_all(bytes)?;
+                bytes_written += bytes.len();
+                emissions += 1;
+                if let Some(progress_path) = progress_path.as_deref() {
+                    let progress = format!(
+                        "{{\"bytes_written\":{bytes_written},\"emissions\":{emissions}}}\n"
+                    );
+                    std::fs::write(progress_path, progress)?;
+                }
+                Ok(())
+            },
+        )?;
+        output.flush()?;
+        Ok(bytes_written)
+    })();
+
+    match result {
+        Ok(len) => byte_count_success(len),
         Err(error) => byte_error(error),
     }
 }

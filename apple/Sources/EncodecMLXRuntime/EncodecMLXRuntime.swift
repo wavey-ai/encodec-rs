@@ -101,6 +101,10 @@ public struct EncodecNativeDecodedAudio: Sendable {
     public let frameCount: Int
 }
 
+public struct EncodecNativeStreamResult: Sendable {
+    public let bytesWritten: Int
+}
+
 public enum EncodecMLXRuntimeError: Error, LocalizedError, Sendable {
     case missingFile(URL)
     case missingModel(String)
@@ -308,6 +312,79 @@ public final class MLXEncodecNativePipeline {
         defer { encodec_rs_mlx_free_bytes(ptr, result.len) }
 
         return Data(bytes: ptr, count: result.len)
+    }
+
+    public func encodeEcdcStreaming(
+        samples: [Float],
+        channels: Int,
+        outputURL: URL,
+        progressURL: URL? = nil,
+        useLM: Bool = true,
+        frameBatchSize: Int = 1,
+        chunkMilliseconds: Double? = nil,
+        chunkCRC: Bool = true
+    ) throws -> EncodecNativeStreamResult {
+        guard channels > 0 else {
+            throw EncodecMLXRuntimeError.nativeBridge("channel count must be positive")
+        }
+        guard samples.count % channels == 0 else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                "interleaved sample count \(samples.count) is not divisible by \(channels) channels"
+            )
+        }
+
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if let progressURL {
+            try FileManager.default.createDirectory(
+                at: progressURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
+        let callbacks = callbackBox.callbacks()
+        let frames = samples.count / channels
+        let planarSamples = try encodecInterleavedToPlanar(samples, channels: channels)
+        let result = withExtendedLifetime(callbackBox) {
+            bundleURL.path.withCString { bundlePath in
+                outputURL.path.withCString { outputPath in
+                    let invoke = { (progressPath: UnsafePointer<CChar>?) in
+                        planarSamples.withUnsafeBufferPointer { sampleBuffer in
+                            encodec_rs_mlx_encode_ecdc_stream_to_path(
+                                bundlePath,
+                                sampleBuffer.baseAddress,
+                                channels,
+                                frames,
+                                useLM,
+                                frameBatchSize,
+                                chunkCRC,
+                                chunkMilliseconds ?? 0.0,
+                                chunkMilliseconds != nil,
+                                outputPath,
+                                progressPath,
+                                callbacks
+                            )
+                        }
+                    }
+                    if let progressURL {
+                        return progressURL.path.withCString { progressPath in
+                            invoke(progressPath)
+                        }
+                    }
+                    return invoke(nil)
+                }
+            }
+        }
+
+        guard result.ok else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                Self.bridgeError(result.error, callbackError: callbackBox.lastError)
+            )
+        }
+        return EncodecNativeStreamResult(bytesWritten: result.len)
     }
 
     private static func consumeError(_ pointer: UnsafeMutablePointer<CChar>?) -> String {

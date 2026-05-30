@@ -66,6 +66,21 @@ EncodecRsMlxByteResult encodec_rs_mlx_encode_ecdc(
     EncodecRsMlxFrameCallbacks callbacks
 );
 
+EncodecRsMlxByteResult encodec_rs_mlx_encode_ecdc_stream_to_path(
+    const char *bundle_dir,
+    const float *audio,
+    size_t channels,
+    size_t samples,
+    bool use_lm,
+    size_t frame_batch_size,
+    bool chunk_crc,
+    double chunk_ms,
+    bool has_chunk_ms,
+    const char *output_path,
+    const char *progress_path,
+    EncodecRsMlxFrameCallbacks callbacks
+);
+
 EncodecRsMlxAudioResult encodec_rs_mlx_decode_ecdc(
     const char *bundle_dir,
     const unsigned char *payload,

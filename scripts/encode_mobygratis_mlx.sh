@@ -120,11 +120,14 @@ while IFS= read -r -d '' src; do
 
   tmp_ecdc="$ecdc.tmp.$$"
   tmp_json="$meta.tmp.$$"
+  progress="$STATE_DIR/$stem.progress.json"
   echo "encode $base"
   if "$ENCODER" \
       --bundle "$BUNDLE_DIR" \
       --input "$wav" \
       --output "$tmp_ecdc" \
+      --progress "$progress" \
+      --stream \
       --batch-size "$BATCH_SIZE" \
       --chunk-ms "$CHUNK_MS" >"$tmp_json" 2>>"$log"; then
     mv "$tmp_ecdc" "$ecdc"

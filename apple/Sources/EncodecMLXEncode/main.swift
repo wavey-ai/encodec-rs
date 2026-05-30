@@ -8,6 +8,8 @@ struct Options {
     var batchSize = 8
     var chunkMilliseconds: Double? = 1333.333333
     var useLM = true
+    var streaming = true
+    var progress: URL?
 }
 
 enum CliError: Error, LocalizedError {
@@ -41,6 +43,8 @@ func parseOptions(_ args: [String]) throws -> Options {
             options.input = URL(fileURLWithPath: try value())
         case "--output":
             options.output = URL(fileURLWithPath: try value())
+        case "--progress":
+            options.progress = URL(fileURLWithPath: try value())
         case "--batch-size":
             guard let parsed = Int(try value()), parsed > 0 else {
                 throw CliError.usage("--batch-size must be a positive integer")
@@ -57,6 +61,10 @@ func parseOptions(_ args: [String]) throws -> Options {
             }
         case "--no-lm":
             options.useLM = false
+        case "--stream":
+            options.streaming = true
+        case "--no-stream":
+            options.streaming = false
         case "-h", "--help":
             throw CliError.usage(usage())
         default:
@@ -72,7 +80,7 @@ func parseOptions(_ args: [String]) throws -> Options {
 
 func usage() -> String {
     """
-    Usage: EncodecMLXEncode --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--batch-size N] [--chunk-ms MS] [--no-lm]
+    Usage: EncodecMLXEncode --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--progress PROGRESS.json] [--batch-size N] [--chunk-ms MS] [--no-lm] [--no-stream]
     """
 }
 
@@ -183,18 +191,33 @@ do {
     let audio = try readWav(input)
     let pipeline = try MLXEncodecNativePipeline(bundleURL: bundle)
     let started = DispatchTime.now().uptimeNanoseconds
-    let payload = try pipeline.encodeEcdc(
-        samples: audio.samples,
-        channels: audio.channels,
-        useLM: options.useLM,
-        frameBatchSize: options.batchSize,
-        chunkMilliseconds: options.chunkMilliseconds
-    )
-    try FileManager.default.createDirectory(
-        at: output.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-    )
-    try payload.write(to: output, options: .atomic)
+    let bytes: Int
+    if options.streaming {
+        let result = try pipeline.encodeEcdcStreaming(
+            samples: audio.samples,
+            channels: audio.channels,
+            outputURL: output,
+            progressURL: options.progress,
+            useLM: options.useLM,
+            frameBatchSize: options.batchSize,
+            chunkMilliseconds: options.chunkMilliseconds
+        )
+        bytes = result.bytesWritten
+    } else {
+        let payload = try pipeline.encodeEcdc(
+            samples: audio.samples,
+            channels: audio.channels,
+            useLM: options.useLM,
+            frameBatchSize: options.batchSize,
+            chunkMilliseconds: options.chunkMilliseconds
+        )
+        try FileManager.default.createDirectory(
+            at: output.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try payload.write(to: output, options: .atomic)
+        bytes = payload.count
+    }
     let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
     let duration = Double(audio.frameCount) / Double(audio.sampleRate)
     print(
@@ -208,7 +231,8 @@ do {
             "\"duration_s\":\(duration)," +
             "\"encode_s\":\(elapsed)," +
             "\"encode_rtfx\":\(duration / elapsed)," +
-            "\"bytes\":\(payload.count)" +
+            "\"streaming\":\(options.streaming)," +
+            "\"bytes\":\(bytes)" +
         "}"
     )
 } catch {
