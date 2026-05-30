@@ -508,6 +508,11 @@ fn encode_lm_chunk_payload(
     let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
+        if t > 0 && t % meta.frame_length == 0 {
+            states = lm_codec.initial_states(1)?;
+            offset = 0;
+            input.fill(0);
+        }
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
             lm_codec.forward_logits(&input, offset, &states)?;
@@ -593,18 +598,25 @@ fn decode_lm_chunk_payload(
     let remaining = payload.len().saturating_sub(cursor.position() as usize);
     let encoded = read_exactly(&mut cursor, remaining)?;
     let mut decoder = ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)?;
-    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, frame_length));
+    let decode_frame_length = frame_length.max(model_meta.frame_length);
+    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, decode_frame_length));
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
     let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
+    let lm_window_frame_length = lm_codec.metadata().frame_length;
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
+        if t > 0 && t % lm_window_frame_length == 0 {
+            states = lm_codec.initial_states(1)?;
+            offset = 0;
+            input.fill(0);
+        }
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
             lm_codec.forward_logits(&input, offset, &states)?;

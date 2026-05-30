@@ -108,12 +108,8 @@ pub fn validate_metadata(
         bail!("q8 ECDC payload unexpectedly advertises lm=false");
     }
     if let Some(lm_frame_length) = metadata.lm_frame_length {
-        if lm_frame_length == 0 || lm_frame_length > bundle_meta.frame_length {
-            bail!(
-                "ECDC LM frame length {} is out of range for bundle frame length {}",
-                lm_frame_length,
-                bundle_meta.frame_length
-            );
+        if lm_frame_length == 0 {
+            bail!("ECDC LM frame length must be positive");
         }
     }
     Ok(())

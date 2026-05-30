@@ -10,6 +10,8 @@ pub mod ecdc_presets;
 pub mod format;
 #[cfg(feature = "ecdc")]
 pub mod metadata;
+#[cfg(feature = "ecdc")]
+pub mod mlx_bridge;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 #[cfg(feature = "ecdc")]

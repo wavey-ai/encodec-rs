@@ -1,0 +1,217 @@
+import EncodecMLXRuntime
+import Foundation
+
+struct Options {
+    var bundle: URL?
+    var input: URL?
+    var output: URL?
+    var batchSize = 8
+    var chunkMilliseconds: Double? = 1333.333333
+    var useLM = true
+}
+
+enum CliError: Error, LocalizedError {
+    case usage(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .usage(message):
+            return message
+        }
+    }
+}
+
+func parseOptions(_ args: [String]) throws -> Options {
+    var options = Options()
+    var index = 0
+    while index < args.count {
+        let arg = args[index]
+        func value() throws -> String {
+            guard index + 1 < args.count else {
+                throw CliError.usage("missing value for \(arg)")
+            }
+            index += 1
+            return args[index]
+        }
+
+        switch arg {
+        case "--bundle":
+            options.bundle = URL(fileURLWithPath: try value())
+        case "--input":
+            options.input = URL(fileURLWithPath: try value())
+        case "--output":
+            options.output = URL(fileURLWithPath: try value())
+        case "--batch-size":
+            guard let parsed = Int(try value()), parsed > 0 else {
+                throw CliError.usage("--batch-size must be a positive integer")
+            }
+            options.batchSize = parsed
+        case "--chunk-ms":
+            let raw = try value()
+            if raw == "default" || raw == "none" {
+                options.chunkMilliseconds = nil
+            } else if let parsed = Double(raw), parsed > 0 {
+                options.chunkMilliseconds = parsed
+            } else {
+                throw CliError.usage("--chunk-ms must be a positive number, default, or none")
+            }
+        case "--no-lm":
+            options.useLM = false
+        case "-h", "--help":
+            throw CliError.usage(usage())
+        default:
+            throw CliError.usage("unknown argument: \(arg)\n\n\(usage())")
+        }
+        index += 1
+    }
+    guard options.bundle != nil, options.input != nil, options.output != nil else {
+        throw CliError.usage(usage())
+    }
+    return options
+}
+
+func usage() -> String {
+    """
+    Usage: EncodecMLXEncode --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--batch-size N] [--chunk-ms MS] [--no-lm]
+    """
+}
+
+struct WavAudio {
+    let samples: [Float]
+    let channels: Int
+    let sampleRate: Int
+    let frameCount: Int
+}
+
+func readWav(_ url: URL) throws -> WavAudio {
+    let data = try Data(contentsOf: url)
+    guard data.count >= 44, ascii(data, 0, 4) == "RIFF", ascii(data, 8, 4) == "WAVE" else {
+        throw CliError.usage("unsupported WAV container: \(url.path)")
+    }
+
+    var offset = 12
+    var audioFormat: UInt16?
+    var channels: Int?
+    var sampleRate: Int?
+    var bitsPerSample: UInt16?
+    var dataOffset: Int?
+    var dataSize: Int?
+
+    while offset + 8 <= data.count {
+        let chunkID = ascii(data, offset, 4)
+        let chunkSize = Int(readUInt32LE(data, offset + 4))
+        let body = offset + 8
+        guard body + chunkSize <= data.count else {
+            throw CliError.usage("truncated WAV chunk \(chunkID): \(url.path)")
+        }
+        if chunkID == "fmt " {
+            guard chunkSize >= 16 else {
+                throw CliError.usage("short WAV fmt chunk: \(url.path)")
+            }
+            audioFormat = readUInt16LE(data, body)
+            channels = Int(readUInt16LE(data, body + 2))
+            sampleRate = Int(readUInt32LE(data, body + 4))
+            bitsPerSample = readUInt16LE(data, body + 14)
+        } else if chunkID == "data" {
+            dataOffset = body
+            dataSize = chunkSize
+        }
+        offset = body + chunkSize + (chunkSize & 1)
+    }
+
+    guard let audioFormat, let channels, let sampleRate, let bitsPerSample, let dataOffset, let dataSize else {
+        throw CliError.usage("missing WAV fmt/data chunk: \(url.path)")
+    }
+    guard channels > 0 else {
+        throw CliError.usage("WAV channel count must be positive: \(url.path)")
+    }
+
+    let samples: [Float]
+    switch (audioFormat, bitsPerSample) {
+    case (1, 16):
+        samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 2).map { index in
+            Float(Int16(bitPattern: readUInt16LE(data, index))) / Float(Int16.max)
+        }
+    case (3, 32):
+        samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 4).map { index in
+            Float(bitPattern: readUInt32LE(data, index))
+        }
+    default:
+        throw CliError.usage("unsupported WAV format \(audioFormat)/\(bitsPerSample): \(url.path)")
+    }
+
+    guard samples.count % channels == 0 else {
+        throw CliError.usage("WAV sample count is not divisible by channels: \(url.path)")
+    }
+
+    return WavAudio(
+        samples: samples,
+        channels: channels,
+        sampleRate: sampleRate,
+        frameCount: samples.count / channels
+    )
+}
+
+func ascii(_ data: Data, _ offset: Int, _ count: Int) -> String {
+    guard offset >= 0, count >= 0, offset + count <= data.count else {
+        return ""
+    }
+    return String(decoding: data[offset ..< offset + count], as: UTF8.self)
+}
+
+func readUInt16LE(_ data: Data, _ offset: Int) -> UInt16 {
+    UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+}
+
+func readUInt32LE(_ data: Data, _ offset: Int) -> UInt32 {
+    UInt32(data[offset])
+        | (UInt32(data[offset + 1]) << 8)
+        | (UInt32(data[offset + 2]) << 16)
+        | (UInt32(data[offset + 3]) << 24)
+}
+
+func jsonString(_ value: String) -> String {
+    let data = try! JSONEncoder().encode(value)
+    return String(decoding: data, as: UTF8.self)
+}
+
+do {
+    let options = try parseOptions(Array(CommandLine.arguments.dropFirst()))
+    let bundle = options.bundle!
+    let input = options.input!
+    let output = options.output!
+    let audio = try readWav(input)
+    let pipeline = try MLXEncodecNativePipeline(bundleURL: bundle)
+    let started = DispatchTime.now().uptimeNanoseconds
+    let payload = try pipeline.encodeEcdc(
+        samples: audio.samples,
+        channels: audio.channels,
+        useLM: options.useLM,
+        frameBatchSize: options.batchSize,
+        chunkMilliseconds: options.chunkMilliseconds
+    )
+    try FileManager.default.createDirectory(
+        at: output.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try payload.write(to: output, options: .atomic)
+    let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+    let duration = Double(audio.frameCount) / Double(audio.sampleRate)
+    print(
+        "{" +
+            "\"input\":\(jsonString(input.path))," +
+            "\"output\":\(jsonString(output.path))," +
+            "\"bundle\":\(jsonString(bundle.path))," +
+            "\"sample_rate\":\(audio.sampleRate)," +
+            "\"channels\":\(audio.channels)," +
+            "\"frames\":\(audio.frameCount)," +
+            "\"duration_s\":\(duration)," +
+            "\"encode_s\":\(elapsed)," +
+            "\"encode_rtfx\":\(duration / elapsed)," +
+            "\"bytes\":\(payload.count)" +
+        "}"
+    )
+} catch {
+    fputs("\(error.localizedDescription)\n", stderr)
+    exit(1)
+}

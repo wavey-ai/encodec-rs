@@ -175,10 +175,15 @@ harness. For iOS/macOS product code, the intended final shape is a Swift/MLX
 frame backend, with Core ML or ONNX Runtime used only as transitional parity
 checks.
 
-### MLX Frame Archive Export
+### Apple MLX Runtime
 
-The Apple app loads MLX Swift `.safetensors` archives instead of ONNX files for
-the frame encoder/decoder. After downloading the bundles, convert them with:
+Apple MLX support now lives in this repository under `apple/`. The Swift package
+loads MLX Swift `.safetensors` archives for frame `encode_frame` /
+`decode_frame`, while the Rust crate owns `.ecdc`, portable q8 LM coding, and
+the C ABI bridge in `src/mlx_bridge.rs`. See `apple/README.md` for Swift package
+build, test, and Westside benchmark commands.
+
+After downloading the bundles, convert them with:
 
 ```bash
 target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
