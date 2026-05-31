@@ -1,7 +1,13 @@
 import EncodecMLXRuntime
 import Foundation
 
+enum Mode {
+    case encode
+    case decode
+}
+
 struct Options {
+    var mode: Mode = .encode
     var bundle: URL?
     var input: URL?
     var output: URL?
@@ -37,6 +43,10 @@ func parseOptions(_ args: [String]) throws -> Options {
         }
 
         switch arg {
+        case "--encode":
+            options.mode = .encode
+        case "--decode":
+            options.mode = .decode
         case "--bundle":
             options.bundle = URL(fileURLWithPath: try value())
         case "--input":
@@ -80,7 +90,9 @@ func parseOptions(_ args: [String]) throws -> Options {
 
 func usage() -> String {
     """
-    Usage: EncodecMLXEncode --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--progress PROGRESS.json] [--batch-size N] [--chunk-ms MS] [--no-lm] [--no-stream]
+    Usage:
+      EncodecMLXEncode [--encode] --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--progress PROGRESS.json] [--batch-size N] [--chunk-ms MS] [--no-lm] [--no-stream]
+      EncodecMLXEncode --decode --bundle DIR --input INPUT.ecdc --output OUTPUT.f32le
     """
 }
 
@@ -183,13 +195,52 @@ func jsonString(_ value: String) -> String {
     return String(decoding: data, as: UTF8.self)
 }
 
+func writePcmF32LE(_ url: URL, samples: [Float]) throws -> Int {
+    try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    var data = Data(capacity: samples.count * MemoryLayout<Float>.size)
+    for sample in samples {
+        var bits = sample.bitPattern.littleEndian
+        withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+    }
+    try data.write(to: url, options: .atomic)
+    return data.count
+}
+
 do {
     let options = try parseOptions(Array(CommandLine.arguments.dropFirst()))
     let bundle = options.bundle!
     let input = options.input!
     let output = options.output!
-    let audio = try readWav(input)
     let pipeline = try MLXEncodecNativePipeline(bundleURL: bundle)
+    if options.mode == .decode {
+        let payload = try Data(contentsOf: input)
+        let started = DispatchTime.now().uptimeNanoseconds
+        let decoded = try pipeline.decodeEcdc(payload)
+        let bytes = try writePcmF32LE(output, samples: decoded.samples)
+        let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+        let sampleRate = pipeline.summary.sampleRate
+        let duration = Double(decoded.frameCount) / Double(sampleRate)
+        print(
+            "{" +
+                "\"input\":\(jsonString(input.path))," +
+                "\"output\":\(jsonString(output.path))," +
+                "\"bundle\":\(jsonString(bundle.path))," +
+                "\"sample_rate\":\(sampleRate)," +
+                "\"channels\":\(decoded.channels)," +
+                "\"frames\":\(decoded.frameCount)," +
+                "\"duration_s\":\(duration)," +
+                "\"decode_s\":\(elapsed)," +
+                "\"decode_rtfx\":\(duration / elapsed)," +
+                "\"pcm_format\":\(jsonString("f32le"))," +
+                "\"bytes\":\(bytes)" +
+            "}"
+        )
+        exit(0)
+    }
+    let audio = try readWav(input)
     let started = DispatchTime.now().uptimeNanoseconds
     let bytes: Int
     if options.streaming {

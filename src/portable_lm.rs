@@ -12,6 +12,7 @@ use crate::stable_hash::stable_hash_hex;
 pub struct PortableLmCodec {
     bundle_dir: Option<PathBuf>,
     metadata: OnnxFrameBundleMetadata,
+    lm_window_frame_length: usize,
     backend: PortableLmBackend,
 }
 
@@ -63,9 +64,11 @@ impl PortableLmCodec {
         let weights = QuantizedLmWeights::from_bytes(weights)
             .context("failed to parse quantized LM weights")?;
         weights.validate_for_codebooks(metadata.num_codebooks)?;
+        let lm_window_frame_length = weights.frame_length.max(1);
         Ok(Self {
             bundle_dir: None,
             metadata,
+            lm_window_frame_length,
             backend: PortableLmBackend::Q8 {
                 lm: QuantizedLm::new(weights),
                 state: None,
@@ -96,6 +99,10 @@ impl LmCodec for PortableLmCodec {
         match &self.backend {
             PortableLmBackend::Q8 { hash, .. } => Some(hash),
         }
+    }
+
+    fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
     }
 
     fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>> {

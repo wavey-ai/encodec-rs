@@ -609,9 +609,9 @@ private struct MLXEncodecFrameEncoder {
                 "MLX encode currently supports encodec_48khz bundles only."
             )
         }
-        guard metadata.sampleRate == 48_000, metadata.channels == 2, metadata.frameLength == 150 else {
+        guard metadata.sampleRate == 48_000, metadata.channels == 2 else {
             throw EncodecMLXRuntimeError.unsupportedBundle(
-                "MLX encode currently expects 48 kHz stereo frames with length 150."
+                "MLX encode currently expects 48 kHz stereo bundles."
             )
         }
 
@@ -979,9 +979,9 @@ private struct MLXEncodecFrameDecoder {
                 "MLX decode currently supports encodec_48khz bundles only."
             )
         }
-        guard metadata.sampleRate == 48_000, metadata.channels == 2, metadata.frameLength == 150 else {
+        guard metadata.sampleRate == 48_000, metadata.channels == 2 else {
             throw EncodecMLXRuntimeError.unsupportedBundle(
-                "MLX decode currently expects 48 kHz stereo frames with length 150."
+                "MLX decode currently expects 48 kHz stereo bundles."
             )
         }
 

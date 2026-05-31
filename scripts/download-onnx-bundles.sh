@@ -5,21 +5,43 @@ repo_id="${ENCODEC_BUNDLE_REPO:-wavey-ai/encodec-rs-onnx-bundles}"
 revision="${ENCODEC_BUNDLE_REVISION:-main}"
 base_url="https://huggingface.co/${repo_id}/resolve/${revision}"
 
-files=(
-  "SHA256SUMS"
-  "onnx-bundles/encodec_48khz_6kbps/bundle.json"
-  "onnx-bundles/encodec_48khz_6kbps/decode_frame.onnx"
-  "onnx-bundles/encodec_48khz_6kbps/decode_frame.onnx.parts.json"
-  "onnx-bundles/encodec_48khz_6kbps/encode_frame.onnx"
-  "onnx-bundles/encodec_48khz_6kbps/encode_frame.onnx.parts.json"
-  "onnx-bundles/encodec_48khz_6kbps/lm_weights_q8.bin"
-  "onnx-bundles/encodec_48khz_12kbps/bundle.json"
-  "onnx-bundles/encodec_48khz_12kbps/decode_frame.onnx"
-  "onnx-bundles/encodec_48khz_12kbps/decode_frame.onnx.parts.json"
-  "onnx-bundles/encodec_48khz_12kbps/encode_frame.onnx"
-  "onnx-bundles/encodec_48khz_12kbps/encode_frame.onnx.parts.json"
-  "onnx-bundles/encodec_48khz_12kbps/lm_weights_q8.bin"
+base_bundles=(
+  "encodec_48khz_6kbps"
+  "encodec_48khz_12kbps"
 )
+
+fixed_bundles=(
+  "encodec_48khz_6kbps_1000ms"
+  "encodec_48khz_6kbps_1333ms"
+  "encodec_48khz_6kbps_1800ms"
+  "encodec_48khz_12kbps_1000ms"
+  "encodec_48khz_12kbps_1333ms"
+  "encodec_48khz_12kbps_1800ms"
+  "encodec_48khz_12kbps_1333ms_mobygratisv0"
+  "encodec_48khz_12kbps_1800ms_mobygratisv0"
+)
+
+files=("SHA256SUMS")
+
+for bundle in "${base_bundles[@]}"; do
+  files+=(
+    "onnx-bundles/$bundle/bundle.json"
+    "onnx-bundles/$bundle/decode_frame.onnx"
+    "onnx-bundles/$bundle/decode_frame.onnx.parts.json"
+    "onnx-bundles/$bundle/encode_frame.onnx"
+    "onnx-bundles/$bundle/encode_frame.onnx.parts.json"
+    "onnx-bundles/$bundle/lm_weights_q8.bin"
+  )
+done
+
+for bundle in "${fixed_bundles[@]}"; do
+  files+=(
+    "onnx-bundles/$bundle/bundle.json"
+    "onnx-bundles/$bundle/decode_frame.onnx"
+    "onnx-bundles/$bundle/encode_frame.onnx"
+    "onnx-bundles/$bundle/lm_weights_q8.bin"
+  )
+done
 
 for file in "${files[@]}"; do
   mkdir -p "$(dirname "$file")"

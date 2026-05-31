@@ -204,6 +204,7 @@ impl FrameCodec for OnnxFrameCodec {
 pub struct OnnxLmCodec {
     bundle_dir: PathBuf,
     metadata: OnnxFrameBundleMetadata,
+    lm_window_frame_length: usize,
     backend: OnnxLmBackend,
 }
 
@@ -247,6 +248,7 @@ impl OnnxLmCodec {
         let weights = QuantizedLmWeights::from_bytes(&weight_bytes)
             .with_context(|| format!("failed to parse {}", weights_path.display()))?;
         weights.validate_for_codebooks(metadata.num_codebooks)?;
+        let lm_window_frame_length = weights.frame_length.max(1);
         let backend = OnnxLmBackend::Quantized {
             lm: QuantizedLm::new(weights),
             state: None,
@@ -256,6 +258,7 @@ impl OnnxLmCodec {
         Ok(Self {
             bundle_dir,
             metadata,
+            lm_window_frame_length,
             backend,
         })
     }
@@ -338,6 +341,10 @@ impl LmCodec for OnnxLmCodec {
         match &self.backend {
             OnnxLmBackend::Quantized { hash, .. } => Some(hash),
         }
+    }
+
+    fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
     }
 
     fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>> {

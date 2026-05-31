@@ -202,6 +202,7 @@ pub struct QuantizedLmChunkEncoder {
     meta: OnnxFrameBundleMetadata,
     lm: QuantizedLm,
     state: QuantizedLmState,
+    lm_window_frame_length: usize,
     input_symbols: Vec<usize>,
     encoder: ArithmeticEncoder,
     prefix: Vec<u8>,
@@ -222,6 +223,7 @@ impl QuantizedLmChunkEncoder {
         weights
             .validate_for_codebooks(meta.num_codebooks)
             .map_err(to_js_error)?;
+        let lm_window_frame_length = weights.frame_length.max(1);
         let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
         let mut prefix = Vec::new();
@@ -233,6 +235,7 @@ impl QuantizedLmChunkEncoder {
             meta,
             lm,
             state,
+            lm_window_frame_length,
             encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
             prefix,
             pushed_steps: 0,
@@ -241,6 +244,11 @@ impl QuantizedLmChunkEncoder {
 
     pub fn bitstream_version(&self) -> u8 {
         QUANTIZED_LM_BITSTREAM_VERSION
+    }
+
+    #[wasm_bindgen(js_name = lmWindowFrameLength)]
+    pub fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
     }
 
     pub fn push(&mut self, codes: &[u16]) -> Result<(), JsValue> {
@@ -268,6 +276,10 @@ impl QuantizedLmChunkEncoder {
     }
 
     fn push_symbols(&mut self, symbols: &[usize]) -> anyhow::Result<()> {
+        if self.pushed_steps > 0 && self.pushed_steps % self.lm_window_frame_length == 0 {
+            self.state = self.lm.initial_state();
+            self.input_symbols.fill(0);
+        }
         let logits = self.lm.forward_step(&mut self.state, &self.input_symbols)?;
         let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0)?;
         self.encoder.push_pdf_symbols(
@@ -302,9 +314,11 @@ pub struct QuantizedLmChunkDecoder {
     meta: OnnxFrameBundleMetadata,
     lm: QuantizedLm,
     state: QuantizedLmState,
+    lm_window_frame_length: usize,
     input_symbols: Vec<usize>,
     decoder: ArithmeticDecoder,
     scale: f32,
+    pulled_steps: usize,
 }
 
 #[wasm_bindgen]
@@ -321,6 +335,7 @@ impl QuantizedLmChunkDecoder {
         weights
             .validate_for_codebooks(meta.num_codebooks)
             .map_err(to_js_error)?;
+        let lm_window_frame_length = weights.frame_length.max(1);
         let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
         let mut cursor = Cursor::new(payload);
@@ -337,9 +352,11 @@ impl QuantizedLmChunkDecoder {
             meta,
             lm,
             state,
+            lm_window_frame_length,
             decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
                 .map_err(to_js_error)?,
             scale,
+            pulled_steps: 0,
         })
     }
 
@@ -347,11 +364,20 @@ impl QuantizedLmChunkDecoder {
         QUANTIZED_LM_BITSTREAM_VERSION
     }
 
+    #[wasm_bindgen(js_name = lmWindowFrameLength)]
+    pub fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
+    }
+
     pub fn scale(&self) -> f32 {
         self.scale
     }
 
     pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> {
+        if self.pulled_steps > 0 && self.pulled_steps % self.lm_window_frame_length == 0 {
+            self.state = self.lm.initial_state();
+            self.input_symbols.fill(0);
+        }
         let logits = self
             .lm
             .forward_step(&mut self.state, &self.input_symbols)
@@ -370,6 +396,7 @@ impl QuantizedLmChunkDecoder {
         for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
             *dst = symbol + 1;
         }
+        self.pulled_steps += 1;
         symbols
             .into_iter()
             .map(|symbol| {

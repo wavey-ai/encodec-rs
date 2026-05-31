@@ -37,6 +37,10 @@ pub trait LmCodec {
         None
     }
 
+    fn lm_window_frame_length(&self) -> usize {
+        self.metadata().frame_length
+    }
+
     fn initial_states(&self, batch: usize) -> Result<Vec<Array3<f32>>>;
 
     fn forward_logits(
@@ -503,12 +507,13 @@ fn encode_lm_chunk_payload(
     let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
     let mut symbols = vec![0_usize; meta.num_codebooks];
     let mut scratch = ProbabilityScratch::default();
+    let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
-        if t > 0 && t % meta.frame_length == 0 {
+        if t > 0 && t % lm_window_frame_length == 0 {
             states = lm_codec.initial_states(1)?;
             offset = 0;
             input.fill(0);
@@ -606,7 +611,7 @@ fn decode_lm_chunk_payload(
     let mut scratch = ProbabilityScratch::default();
     let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
     let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
-    let lm_window_frame_length = lm_codec.metadata().frame_length;
+    let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_DIR="${SOURCE_DIR:-$ROOT/../bitneedle/mobygratis}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/mobygratis-ecdc}"
-BUNDLE_DIR="${BUNDLE_DIR:-$ROOT/target/mlx-bundles/encodec_48khz_12kbps}"
+BUNDLE_DIR="${BUNDLE_DIR:-$ROOT/target/mlx-bundles/encodec_48khz_12kbps_1333ms}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
 CHUNK_MS="${CHUNK_MS:-1333.333333}"
 LIMIT="${LIMIT:-0}"
@@ -18,6 +18,11 @@ mkdir -p "$WAV_CACHE" "$LOG_DIR" "$ECDC_DIR" "$STATE_DIR"
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg is required to decode source audio" >&2
+  exit 1
+fi
+if [[ ! -d "$BUNDLE_DIR" ]]; then
+  echo "MLX bundle does not exist: $BUNDLE_DIR" >&2
+  echo "Run scripts/create_mlx_fixed_bundles.sh or set BUNDLE_DIR explicitly." >&2
   exit 1
 fi
 

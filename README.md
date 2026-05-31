@@ -193,12 +193,19 @@ target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
 target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
   onnx-bundles/encodec_48khz_12kbps \
   target/mlx-bundles/encodec_48khz_12kbps
+
+scripts/create_mlx_fixed_bundles.sh
 ```
 
 Each MLX bundle contains `bundle.json`, `lm_weights_q8.bin`,
 `encode_frame.safetensors`, `decode_frame.safetensors`, and
 `mlx-manifest.json`. The Python step is offline conversion tooling only; the
 native app path is Swift/MLX plus the Rust `.ecdc`/portable-LM boundary.
+The fixed-bundle helper exports from the fixed ONNX bundles, so the standard
+1333ms and 1800ms MLX bundles use the same 300-step q8 LM weights as ONNX. It
+also creates `*_mobygratisv0` MLX bundles when those ONNX compatibility bundles
+are present; those keep the 150-step LM weights needed by existing Mobygratis
+v0 `.ecdc` files.
 
 ## Native Build
 
@@ -338,6 +345,33 @@ If your source is not already `48 kHz` stereo WAV, normalize it first.
 - q8 LM weight hash
 - fixed chunk sample count (`cs`), stride (`cst`), and LM frame length (`fl`)
   when the payload targets a fixed-length graph
+
+## ECDC Container Layout
+
+An `.ecdc` file is one self-contained container. The file header is written
+once, followed by one or more framed chunk payloads:
+
+```text
+4 bytes   magic: "ECDC"
+1 byte    version: 0
+4 bytes   metadata JSON byte length, big-endian u32
+N bytes   metadata JSON
+
+repeated chunks:
+4 bytes   chunk payload length, big-endian u32
+4 bytes   CRC32 of the chunk payload, big-endian u32
+M bytes   chunk payload
+```
+
+The normal q8 LM `.ecdc` path always writes CRC-wrapped chunks. Chunk count is
+not stored as a separate top-level field; decoders read chunk frames after the
+metadata header and validate the count against the audio length and chunk
+layout implied by metadata (`al`, `cs`, `cst`, `fl`).
+
+Do not concatenate multiple `.ecdc` files to make one record payload. A record
+spiral carries one complete `.ecdc` byte stream. That stream may contain many
+framed chunks internally, but each independently playable record needs its own
+container header and metadata.
 
 ## Library Use
 
