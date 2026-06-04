@@ -9,8 +9,8 @@ use std::slice;
 use anyhow::{bail, Context, Result};
 use ndarray::{Array2, Array3};
 
-use crate::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options, FrameCodec};
 use crate::ecdc::encode_audio_to_ecdc_stream_with_options;
+use crate::ecdc::{decode_ecdc, encode_audio_to_ecdc_with_options, FrameCodec};
 use crate::format::segment_frame_length;
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::portable_lm::PortableLmCodec;
@@ -71,14 +71,20 @@ struct CallbackFrameCodec {
 }
 
 impl CallbackFrameCodec {
-    fn from_bundle_dir(bundle_dir: impl AsRef<Path>, callbacks: EncodecRsMlxFrameCallbacks) -> Result<Self> {
+    fn from_bundle_dir(
+        bundle_dir: impl AsRef<Path>,
+        callbacks: EncodecRsMlxFrameCallbacks,
+    ) -> Result<Self> {
         let metadata_path = bundle_dir.as_ref().join("bundle.json");
         let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
             &std::fs::read_to_string(&metadata_path)
                 .with_context(|| format!("failed to read {}", metadata_path.display()))?,
         )
         .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
-        Ok(Self { metadata, callbacks })
+        Ok(Self {
+            metadata,
+            callbacks,
+        })
     }
 }
 
@@ -98,7 +104,9 @@ impl FrameCodec for CallbackFrameCodec {
         let batch = shape[0];
         let channels = shape[1];
         let samples = shape[2];
-        let audio = audio.as_slice_memory_order().context("MLX encode audio batch is not contiguous")?;
+        let audio = audio
+            .as_slice_memory_order()
+            .context("MLX encode audio batch is not contiguous")?;
         let frame_length = segment_frame_length(
             samples,
             self.metadata.segment_samples,
@@ -122,7 +130,8 @@ impl FrameCodec for CallbackFrameCodec {
         if status != 0 {
             bail!("MLX frame encode callback failed with status {status}");
         }
-        let codes = Array3::from_shape_vec((batch, self.metadata.num_codebooks, frame_length), codes)?;
+        let codes =
+            Array3::from_shape_vec((batch, self.metadata.num_codebooks, frame_length), codes)?;
         let scales = Array2::from_shape_vec((batch, 1), scales)?;
         Ok((codes, scales))
     }
@@ -138,8 +147,12 @@ impl FrameCodec for CallbackFrameCodec {
         let batch = shape[0];
         let codebooks = shape[1];
         let frames = shape[2];
-        let codes = codes.as_slice_memory_order().context("MLX decode code batch is not contiguous")?;
-        let scales = scale.as_slice_memory_order().context("MLX decode scale batch is not contiguous")?;
+        let codes = codes
+            .as_slice_memory_order()
+            .context("MLX decode code batch is not contiguous")?;
+        let scales = scale
+            .as_slice_memory_order()
+            .context("MLX decode scale batch is not contiguous")?;
         let decoded_samples = frames
             .saturating_mul(self.metadata.segment_samples)
             .div_ceil(self.metadata.frame_length);
@@ -160,7 +173,10 @@ impl FrameCodec for CallbackFrameCodec {
         if status != 0 {
             bail!("MLX frame decode callback failed with status {status}");
         }
-        Ok(Array3::from_shape_vec((batch, self.metadata.channels, decoded_samples), audio)?)
+        Ok(Array3::from_shape_vec(
+            (batch, self.metadata.channels, decoded_samples),
+            audio,
+        )?)
     }
 }
 
@@ -168,7 +184,9 @@ unsafe fn bundle_dir_from_c(bundle_dir: *const c_char) -> Result<PathBuf> {
     if bundle_dir.is_null() {
         bail!("bundle_dir pointer is null");
     }
-    let value = CStr::from_ptr(bundle_dir).to_str().context("bundle_dir is not valid UTF-8")?;
+    let value = CStr::from_ptr(bundle_dir)
+        .to_str()
+        .context("bundle_dir is not valid UTF-8")?;
     if value.is_empty() {
         bail!("bundle_dir is empty");
     }
@@ -176,7 +194,9 @@ unsafe fn bundle_dir_from_c(bundle_dir: *const c_char) -> Result<PathBuf> {
 }
 
 fn c_error(error: impl std::fmt::Display) -> *mut c_char {
-    CString::new(error.to_string()).map(CString::into_raw).unwrap_or(ptr::null_mut())
+    CString::new(error.to_string())
+        .map(CString::into_raw)
+        .unwrap_or(ptr::null_mut())
 }
 
 fn byte_success(bytes: Vec<u8>) -> EncodecRsMlxByteResult {
@@ -184,15 +204,30 @@ fn byte_success(bytes: Vec<u8>) -> EncodecRsMlxByteResult {
     let len = bytes.len();
     let ptr = bytes.as_mut_ptr();
     std::mem::forget(bytes);
-    EncodecRsMlxByteResult { ok: true, ptr, len, error: ptr::null_mut() }
+    EncodecRsMlxByteResult {
+        ok: true,
+        ptr,
+        len,
+        error: ptr::null_mut(),
+    }
 }
 
 fn byte_count_success(len: usize) -> EncodecRsMlxByteResult {
-    EncodecRsMlxByteResult { ok: true, ptr: ptr::null_mut(), len, error: ptr::null_mut() }
+    EncodecRsMlxByteResult {
+        ok: true,
+        ptr: ptr::null_mut(),
+        len,
+        error: ptr::null_mut(),
+    }
 }
 
 fn byte_error(error: impl std::fmt::Display) -> EncodecRsMlxByteResult {
-    EncodecRsMlxByteResult { ok: false, ptr: ptr::null_mut(), len: 0, error: c_error(error) }
+    EncodecRsMlxByteResult {
+        ok: false,
+        ptr: ptr::null_mut(),
+        len: 0,
+        error: c_error(error),
+    }
 }
 
 fn audio_success(audio: Array3<f32>) -> EncodecRsMlxAudioResult {
@@ -203,11 +238,25 @@ fn audio_success(audio: Array3<f32>) -> EncodecRsMlxAudioResult {
     let len = data.len();
     let ptr = data.as_mut_ptr();
     std::mem::forget(data);
-    EncodecRsMlxAudioResult { ok: true, ptr, len, channels: shape[1], samples: shape[2], error: ptr::null_mut() }
+    EncodecRsMlxAudioResult {
+        ok: true,
+        ptr,
+        len,
+        channels: shape[1],
+        samples: shape[2],
+        error: ptr::null_mut(),
+    }
 }
 
 fn audio_error(error: impl std::fmt::Display) -> EncodecRsMlxAudioResult {
-    EncodecRsMlxAudioResult { ok: false, ptr: ptr::null_mut(), len: 0, channels: 0, samples: 0, error: c_error(error) }
+    EncodecRsMlxAudioResult {
+        ok: false,
+        ptr: ptr::null_mut(),
+        len: 0,
+        channels: 0,
+        samples: 0,
+        error: c_error(error),
+    }
 }
 
 #[no_mangle]
@@ -254,7 +303,10 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc(
         let bundle_dir = bundle_dir_from_c(bundle_dir)?;
         let mut codec = CallbackFrameCodec::from_bundle_dir(&bundle_dir, callbacks)?;
         if channels != codec.metadata.channels {
-            bail!("audio channel count {channels} does not match bundle {}", codec.metadata.channels);
+            bail!(
+                "audio channel count {channels} does not match bundle {}",
+                codec.metadata.channels
+            );
         }
         let audio = if channels.saturating_mul(samples) == 0 {
             &[]
@@ -319,7 +371,10 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
         let bundle_dir = bundle_dir_from_c(bundle_dir)?;
         let mut codec = CallbackFrameCodec::from_bundle_dir(&bundle_dir, callbacks)?;
         if channels != codec.metadata.channels {
-            bail!("audio channel count {channels} does not match bundle {}", codec.metadata.channels);
+            bail!(
+                "audio channel count {channels} does not match bundle {}",
+                codec.metadata.channels
+            );
         }
         let audio = if channels.saturating_mul(samples) == 0 {
             &[]
@@ -331,8 +386,8 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
             bail!("use_lm=false is unsupported for q8 ECDC payloads in this build");
         }
         let mut lm_codec = PortableLmCodec::from_dir(&bundle_dir)?;
-        let mut output = File::create(output_path)
-            .with_context(|| format!("failed to create {output_path}"))?;
+        let mut output =
+            File::create(output_path).with_context(|| format!("failed to create {output_path}"))?;
         let mut bytes_written = 0_usize;
         let mut emissions = 0_usize;
         encode_audio_to_ecdc_stream_with_options(

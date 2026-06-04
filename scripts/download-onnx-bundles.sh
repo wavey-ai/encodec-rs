@@ -17,8 +17,6 @@ fixed_bundles=(
   "encodec_48khz_12kbps_1000ms"
   "encodec_48khz_12kbps_1333ms"
   "encodec_48khz_12kbps_1800ms"
-  "encodec_48khz_12kbps_1333ms_mobygratisv0"
-  "encodec_48khz_12kbps_1800ms_mobygratisv0"
 )
 
 files=("SHA256SUMS")

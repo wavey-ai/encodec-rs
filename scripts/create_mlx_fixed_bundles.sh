@@ -6,7 +6,6 @@ ONNX_ROOT="${ONNX_ROOT:-$ROOT/onnx-bundles}"
 OUT_ROOT="${OUT_ROOT:-$ROOT/target/mlx-bundles}"
 BANDWIDTHS="${BANDWIDTHS:-6 12}"
 CHUNKS="${CHUNKS:-1333 1800}"
-INCLUDE_MOBYGRATIS_V0="${INCLUDE_MOBYGRATIS_V0:-1}"
 PYTHON="${PYTHON:-python3}"
 
 q8_lm_window_frame_length() {
@@ -72,18 +71,3 @@ for bandwidth in $BANDWIDTHS; do
     echo "created $OUT_ROOT/$name"
   done
 done
-
-if [[ "$INCLUDE_MOBYGRATIS_V0" != "0" ]]; then
-  for chunk in $CHUNKS; do
-    case "$chunk" in
-      1333|1333ms) suffix="1333ms" ;;
-      1800|1800ms) suffix="1800ms" ;;
-      *) continue ;;
-    esac
-    name="encodec_48khz_12kbps_${suffix}_mobygratisv0"
-    if [[ -f "$ONNX_ROOT/$name/bundle.json" ]]; then
-      export_mlx_fixed_bundle "$ONNX_ROOT/$name" "$OUT_ROOT/$name"
-      echo "created $OUT_ROOT/$name"
-    fi
-  done
-fi

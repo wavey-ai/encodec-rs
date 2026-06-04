@@ -203,9 +203,7 @@ Each MLX bundle contains `bundle.json`, `lm_weights_q8.bin`,
 native app path is Swift/MLX plus the Rust `.ecdc`/portable-LM boundary.
 The fixed-bundle helper exports from the fixed ONNX bundles, so the standard
 1333ms and 1800ms MLX bundles use the same 300-step q8 LM weights as ONNX. It
-also creates `*_mobygratisv0` MLX bundles when those ONNX compatibility bundles
-are present; those keep the 150-step LM weights needed by existing Mobygratis
-v0 `.ecdc` files.
+does not create application-specific compatibility bundles.
 
 ## Native Build
 

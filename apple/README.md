@@ -46,8 +46,7 @@ The fixed bundle helper creates 1333ms and 1800ms MLX bundles for both 6kbps
 and 12kbps models by exporting the fixed ONNX bundles. The standard fixed MLX
 bundles therefore use the ONNX 300-step q8 LM weights, with decoder frame sizes
 of 64,000 samples / 200 code frames for 1333ms and 86,400 samples / 270 code
-frames for 1800ms. If present, `*_mobygratisv0` compatibility bundles are also
-exported with the old 150-step LM weights.
+frames for 1800ms.
 
 ## Run tests
 
