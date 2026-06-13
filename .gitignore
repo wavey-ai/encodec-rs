@@ -1,7 +1,7 @@
 target/
 build/
 .wrangler/
-pkg/
+/pkg/
 browser-smoke/node_modules/
 SHA256SUMS
 onnx-bundles/

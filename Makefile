@@ -27,6 +27,7 @@ wasm-clean:
 wasm-check:
 	test -f $(WASM_DIST)/pkg/encodec_rs.js
 	test -f $(WASM_DIST)/pkg/encodec_rs_bg.wasm
+	test -f $(WASM_DIST)/encodec-ecdc-runtime.js
 	test -f $(WASM_DIST)/manifest.json
 	test -d $(WASM_DIST)/bundles/encodec_48khz_6kbps_1333ms
 	test -d $(WASM_DIST)/bundles/encodec_48khz_6kbps_1800ms

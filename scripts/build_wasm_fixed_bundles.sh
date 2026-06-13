@@ -75,6 +75,7 @@ wasm-bindgen "$wasm_path" \
   --out-dir "$ROOT/pkg"
 
 cp -R "$ROOT/pkg/." "$OUT/pkg/"
+cp "$ROOT/browser-runtime/encodec-ecdc-runtime.js" "$OUT/encodec-ecdc-runtime.js"
 
 copy_model_asset() {
   local src_dir="$1"

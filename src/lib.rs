@@ -10,7 +10,7 @@ pub mod ecdc_presets;
 pub mod format;
 #[cfg(feature = "ecdc")]
 pub mod metadata;
-#[cfg(feature = "ecdc")]
+#[cfg(all(feature = "ecdc", not(target_arch = "wasm32")))]
 pub mod mlx_bridge;
 #[cfg(feature = "onnx")]
 pub mod onnx;

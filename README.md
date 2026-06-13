@@ -60,6 +60,44 @@ node scripts/webgpu-matrix.mjs
 It writes browser WebGPU artifacts under `target/webgpu-matrix/`. See
 `MATRIX.md` for the current full-track matrix output folders.
 
+### Chunked WASM Round-Trip Test
+
+`scripts/westside-chunk-wasm-roundtrip.mjs` exercises the full wasm
+encode/decode path on the `Lori Asha - Westside` track in independent
+fixed-chunk mode. It uses only the exported wasm helpers (no native runtime):
+
+1. reads the source WAV from
+   `target/lori-asha-wasm-native/wav/02 - Lori Asha - Westside.48k-stereo.wav`
+2. splits it, soundkit-style, into non-overlapping `1.333s` PCM chunks (one
+   chunk per `encodec_48khz_12kbps_1333ms` non-overlapping hop, `63,520`
+   frames)
+3. wasm-encodes each chunk to its own standalone `.ecdc` in `testdata/out/ecdc/`
+4. wasm-decodes each `.ecdc` (read back from disk) to PCM in `testdata/out/pcm/`
+5. concatenates the per-chunk PCM into one contiguous
+   `testdata/out/westside.contiguous.wav`
+
+```bash
+# full track (~4.5 min, 158 chunks)
+node scripts/westside-chunk-wasm-roundtrip.mjs
+
+# quick smoke test over the first N chunks
+WESTSIDE_MAX_CHUNKS=3 node scripts/westside-chunk-wasm-roundtrip.mjs
+```
+
+Chatty progress is written to stderr; a JSON summary is written to stdout
+(`node scripts/westside-chunk-wasm-roundtrip.mjs 2>/dev/null` to keep only the
+summary). Each chunk re-uses `lmEcdcFixedHeaderForWeights`, so the chunk size is
+the bundle's `63,520`-frame non-overlapping stride (`~1.323s`); this tiles the
+track gaplessly and reconstructs every source frame.
+
+Because `wasm-bindgen --target web` does not emit a `package.json`, Node treats
+the generated `pkg/encodec_rs.js` as CommonJS. If the import fails, add the ESM
+marker to the gitignored build output:
+
+```bash
+echo '{ "type": "module" }' > pkg/package.json
+```
+
 Safari requires Safari 26 or newer for WebGPU, or Safari Technology Preview
 with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself;
 the browser must expose `navigator.gpu` to the page. In Safari, enable

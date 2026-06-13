@@ -157,6 +157,56 @@ pub fn lm_ecdc_chunk(payload: &[u8]) -> Result<Vec<u8>, JsValue> {
     Ok(out)
 }
 
+#[wasm_bindgen(js_name = ecdcEncodeModelInput)]
+pub fn ecdc_encode_model_input(bundle_json: &str, audio: &[f32]) -> Result<Vec<f32>, JsValue> {
+    let meta = parse_bundle(bundle_json)?;
+    let expected = meta
+        .channels
+        .checked_mul(meta.segment_samples)
+        .ok_or_else(|| to_js_error("ECDC model input shape overflows usize"))?;
+    let mut padded = vec![0.0_f32; expected];
+    let copy_len = audio.len().min(expected);
+    padded[..copy_len].copy_from_slice(&audio[..copy_len]);
+    Ok(padded)
+}
+
+#[wasm_bindgen(js_name = lmEcdcChunkFromFrame)]
+pub fn lm_ecdc_chunk_from_frame(
+    bundle_json: &str,
+    weights: &[u8],
+    scale: f32,
+    codes: &[u16],
+    frame_length: usize,
+) -> Result<Vec<u8>, JsValue> {
+    let meta = parse_bundle(bundle_json)?;
+    validate_lm_metadata(&meta).map_err(to_js_error)?;
+    let expected_codes = meta
+        .num_codebooks
+        .checked_mul(meta.frame_length)
+        .ok_or_else(|| to_js_error("ECDC frame code shape overflows usize"))?;
+    if codes.len() != expected_codes {
+        return Err(to_js_error(format!(
+            "ECDC frame code length {} does not match {} codebooks * {} frames",
+            codes.len(),
+            meta.num_codebooks,
+            meta.frame_length
+        )));
+    }
+
+    let target_frame_length = meta.frame_length.max(1);
+    let encoded_frame_length = frame_length.max(1).min(target_frame_length);
+    let mut encoder = QuantizedLmChunkEncoder::new(bundle_json, weights, scale)?;
+    for step in 0..encoded_frame_length {
+        let mut step_codes = Vec::with_capacity(meta.num_codebooks);
+        for codebook in 0..meta.num_codebooks {
+            step_codes.push(codes[codebook * meta.frame_length + step]);
+        }
+        encoder.push(&step_codes)?;
+    }
+    let payload = encoder.finish_padded(target_frame_length)?;
+    lm_ecdc_chunk(&payload)
+}
+
 #[wasm_bindgen(js_name = lmEcdcDecodeChunks)]
 pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValue, JsValue> {
     let meta = parse_bundle(bundle_json)?;
