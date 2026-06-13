@@ -15,7 +15,7 @@ exclude = [
 ]
 
 [lib]
-name = "encodec-rs"
+name = "encodec_rs"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
