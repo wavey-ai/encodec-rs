@@ -246,7 +246,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "encodec"
+name = "encodec-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -364,7 +364,8 @@ dependencies = [
 [[package]]
 name = "gpu-worker-ort"
 version = "0.1.0"
-source = "git+https://github.com/wavey-ai/gpu-workers.git?rev=d7fcea671a28854d263a3eb06a2be629de98af43#d7fcea671a28854d263a3eb06a2be629de98af43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6069490bf9381dbceb5c75c29b982891cc0a3c0b51ee3779efd7fbec140e377c"
 dependencies = [
  "anyhow",
  "ort",
@@ -641,7 +642,8 @@ dependencies = [
 [[package]]
 name = "ort"
 version = "2.0.0-rc.12"
-source = "git+https://github.com/pykeio/ort.git?rev=8724e89ff005ebef4339d7280ff592837404a98d#8724e89ff005ebef4339d7280ff592837404a98d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
 dependencies = [
  "libloading",
  "ndarray",
@@ -654,7 +656,8 @@ dependencies = [
 [[package]]
 name = "ort-sys"
 version = "2.0.0-rc.12"
-source = "git+https://github.com/pykeio/ort.git?rev=8724e89ff005ebef4339d7280ff592837404a98d#8724e89ff005ebef4339d7280ff592837404a98d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7b497d21a8b6fbb4b5a544f8fadb77e801a09ae0add9e411d31c6f89e3c1e90"
 dependencies = [
  "hmac-sha256",
  "lzma-rust2",
