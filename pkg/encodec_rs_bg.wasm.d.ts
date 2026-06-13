@@ -1,0 +1,35 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const fixedEcdcBundleName: (a: any, b: any) => [number, number, number, number];
+export const bundleMetadata: (a: number, b: number) => [number, number, number];
+export const stableHashHex: (a: number, b: number) => [number, number];
+export const ecdcMetadata: (a: number, b: number) => [number, number, number];
+export const ecdcOverlapAdd: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const ecdcOverlapAddForMetadata: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const lmEcdcHeaderForWeights: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const lmEcdcFixedHeaderForWeights: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const lmEcdcChunk: (a: number, b: number) => [number, number, number, number];
+export const ecdcEncodeModelInput: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const lmEcdcChunkFromFrame: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+export const lmEcdcDecodeChunks: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const __wbg_quantizedlmchunkencoder_free: (a: number, b: number) => void;
+export const quantizedlmchunkencoder_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const quantizedlmchunkencoder_lmWindowFrameLength: (a: number) => number;
+export const quantizedlmchunkencoder_push: (a: number, b: number, c: number) => [number, number];
+export const quantizedlmchunkencoder_finishPadded: (a: number, b: number) => [number, number, number, number];
+export const quantizedlmchunkencoder_finish: (a: number) => [number, number];
+export const __wbg_quantizedlmchunkdecoder_free: (a: number, b: number) => void;
+export const quantizedlmchunkdecoder_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const quantizedlmchunkdecoder_bitstream_version: (a: number) => number;
+export const quantizedlmchunkdecoder_lmWindowFrameLength: (a: number) => number;
+export const quantizedlmchunkdecoder_scale: (a: number) => number;
+export const quantizedlmchunkdecoder_pull: (a: number) => [number, number, number, number];
+export const initPanicHook: () => void;
+export const quantizedlmchunkencoder_bitstream_version: (a: number) => number;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
