@@ -3,6 +3,7 @@
   "bundleJson": "bundle.json",
   "lmWeights": "lm_weights_q8.bin",
   "encodeModel": "encode_frame.onnx",
+  "decodeModel": "decode_frame.onnx",
   "modelName": "encodec_48khz",
   "bandwidthKbps": 12.0,
   "sampleRate": 48000,

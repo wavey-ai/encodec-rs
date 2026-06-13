@@ -136,7 +136,19 @@ print(bundle.get("encode_model", "encode_frame.onnx"))
 PY
   )"
 
+  decode_model="$(
+    python - "${src}/bundle.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+bundle = json.loads(Path(sys.argv[1]).read_text())
+print(bundle.get("decode_model", "decode_frame.onnx"))
+PY
+  )"
+
   copy_model_asset "$src" "$dst" "$encode_model"
+  copy_model_asset "$src" "$dst" "$decode_model"
 
   python - "$dst" <<'PY'
 import json
@@ -156,6 +168,7 @@ manifest = {
     "bundleJson": "bundle.json",
     "lmWeights": "lm_weights_q8.bin",
     "encodeModel": bundle.get("encode_model", "encode_frame.onnx"),
+    "decodeModel": bundle.get("decode_model", "decode_frame.onnx"),
     "modelName": bundle.get("model_name"),
     "bandwidthKbps": bundle.get("bandwidth_kbps"),
     "sampleRate": bundle.get("sample_rate"),
