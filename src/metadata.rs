@@ -81,4 +81,5 @@ impl OnnxFrameBundleMetadata {
             .or(self.codebook_cardinality)
             .unwrap_or(1024)
     }
+
 }

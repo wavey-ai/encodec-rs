@@ -69,8 +69,8 @@ fixed-chunk mode. It uses only the exported wasm helpers (no native runtime):
 1. reads the source WAV from
    `target/lori-asha-wasm-native/wav/02 - Lori Asha - Westside.48k-stereo.wav`
 2. splits it, soundkit-style, into non-overlapping `1.333s` PCM chunks (one
-   chunk per `encodec_48khz_12kbps_1333ms` non-overlapping hop, `63,520`
-   frames)
+   chunk per `encodec_48khz_12kbps_1333ms_guard10` owned hop, `64,000`
+   samples)
 3. wasm-encodes each chunk to its own standalone `.ecdc` in `testdata/out/ecdc/`
 4. wasm-decodes each `.ecdc` (read back from disk) to PCM in `testdata/out/pcm/`
 5. concatenates the per-chunk PCM into one contiguous
@@ -170,15 +170,20 @@ bundles should include `cs`, `cst`, and `fl`, and should entropy-code the full
 `fl` steps. The PCM input segment is already zero-padded before EnCodec encode;
 the ECDC writer must not shorten the LM stream for the final partial chunk.
 
-| Fixed chunk | Samples | Stride | LM frames | Bundle suffix |
-|---|---:|---:|---:|---|
-| 1000ms | 48,000 | 47,520 | 150 | `_1000ms` |
-| 1333ms | 64,000 | 63,520 | 200 | `_1333ms` |
-| 1800ms | 86,400 | 85,920 | 270 | `_1800ms` |
+Fixed bundles are guarded: each logical chunk is encoded with ±10 ms (480
+samples) of real neighbouring source context on each side. The model window is
+`owned + 2 × 480`; the guard samples are codec context only and are cropped
+after decode, leaving the exact owned-sample timeline. Adjacent decoded chunks
+are then joined with a deterministic `cubic-hermite-v1` 0.5 ms (24-sample) seam
+repair (see `chunk-continuity.md`).
 
-The default wasm fixed-bundle package currently ships the `1333ms` and
-`1800ms` variants for both `6 kbps` and `12 kbps`. The export tooling also knows
-the `1000ms` shape; include it in `BUNDLES` when a fixed 1s graph is needed.
+| Fixed chunk | Owned | Model window | LM frames | Bundle suffix |
+|---|---:|---:|---:|---|
+| 1333ms | 64,000 | 64,960 | 203 | `_1333ms_guard10` |
+| 1800ms | 86,400 | 87,360 | 273 | `_1800ms_guard10` |
+
+The default wasm fixed-bundle package ships the `1333ms_guard10` and
+`1800ms_guard10` variants for both `6 kbps` and `12 kbps`.
 
 ## Runtime Notes
 

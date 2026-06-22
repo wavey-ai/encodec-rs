@@ -79,6 +79,62 @@ pub fn read_ecdc_header<T: DeserializeOwned>(reader: &mut impl Read) -> Result<T
     read_tagged_header(reader, ECDC_MAGIC, ECDC_VERSION)
 }
 
+/// Parsed pieces of an ECDC byte stream: the deserialized header metadata, the
+/// raw header JSON bytes (the `{...}` object exactly as stored), and the codec
+/// payload bytes that follow the header.
+///
+/// This lets callers (e.g. record packagers) lift the ECDC header out of a file
+/// into side-band metadata and store only `payload` as the codec block, then
+/// later reconstruct the original stream with [`prepend_ecdc_header`].
+#[derive(Debug, Clone, Copy)]
+pub struct EcdcStreamParts<'a, T> {
+    pub metadata: T,
+    pub header_json: &'a [u8],
+    pub payload: &'a [u8],
+}
+
+/// Split an ECDC byte stream into its header metadata, raw header JSON bytes,
+/// and trailing codec payload bytes without copying the payload.
+pub fn split_ecdc_header<T: DeserializeOwned>(bytes: &[u8]) -> Result<EcdcStreamParts<'_, T>> {
+    if bytes.len() < 9 {
+        bail!("ECDC stream is too small to contain a header");
+    }
+    if &bytes[0..4] != ECDC_MAGIC {
+        bail!("ECDC stream has unexpected magic");
+    }
+    if bytes[4] != ECDC_VERSION {
+        bail!("unsupported ECDC file version {}", bytes[4]);
+    }
+    let meta_len = u32::from_be_bytes(bytes[5..9].try_into().expect("slice length")) as usize;
+    let header_end = 9_usize
+        .checked_add(meta_len)
+        .context("ECDC header length overflow")?;
+    let header_json = bytes
+        .get(9..header_end)
+        .context("ECDC header JSON is truncated")?;
+    let metadata =
+        serde_json::from_slice(header_json).context("failed to parse ECDC metadata JSON")?;
+    let payload = &bytes[header_end..];
+    Ok(EcdcStreamParts {
+        metadata,
+        header_json,
+        payload,
+    })
+}
+
+/// Reconstruct an ECDC byte stream from raw header JSON bytes and codec payload
+/// bytes, the inverse of [`split_ecdc_header`].
+pub fn prepend_ecdc_header(header_json: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
+    let meta_len = u32::try_from(header_json.len()).context("ECDC header JSON exceeds u32")?;
+    let mut out = Vec::with_capacity(9 + header_json.len() + payload.len());
+    out.extend_from_slice(ECDC_MAGIC);
+    out.push(ECDC_VERSION);
+    out.extend_from_slice(&meta_len.to_be_bytes());
+    out.extend_from_slice(header_json);
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
 pub fn write_chunk(writer: &mut impl Write, payload: &[u8], with_crc: bool) -> Result<()> {
     writer
         .write_all(&(payload.len() as u32).to_be_bytes())
@@ -227,6 +283,36 @@ mod tests {
         write_chunk(&mut buf, payload, true).unwrap();
         let decoded = read_chunk_payload(&mut Cursor::new(buf), true).unwrap();
         assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn split_and_prepend_ecdc_header_round_trip() {
+        #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+        struct Metadata {
+            m: String,
+            al: usize,
+        }
+
+        let metadata = Metadata {
+            m: "encodec_48khz".into(),
+            al: 64_960,
+        };
+        let mut stream = Vec::new();
+        write_ecdc_header(&mut stream, &metadata).unwrap();
+        let codec_bytes = b"\x00\x00\x00\x04dead";
+        stream.extend_from_slice(codec_bytes);
+
+        let parts = split_ecdc_header::<Metadata>(&stream).unwrap();
+        assert_eq!(parts.metadata, metadata);
+        assert_eq!(parts.payload, codec_bytes);
+
+        let reconstructed = prepend_ecdc_header(parts.header_json, parts.payload).unwrap();
+        assert_eq!(reconstructed, stream);
+    }
+
+    #[test]
+    fn split_ecdc_header_rejects_bad_magic() {
+        assert!(split_ecdc_header::<serde_json::Value>(b"NOPE\x00\x00\x00\x00\x00").is_err());
     }
 
     #[test]

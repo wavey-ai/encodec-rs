@@ -44,10 +44,6 @@ pub struct EcdcMetadata {
     pub lm_tau: Option<f32>,
     #[serde(rename = "lmh", skip_serializing_if = "Option::is_none")]
     pub lm_hash: Option<String>,
-    #[serde(rename = "cs", skip_serializing_if = "Option::is_none")]
-    pub chunk_samples: Option<usize>,
-    #[serde(rename = "cst", skip_serializing_if = "Option::is_none")]
-    pub chunk_stride: Option<usize>,
     #[serde(rename = "fl", skip_serializing_if = "Option::is_none")]
     pub lm_frame_length: Option<usize>,
     #[serde(flatten)]
@@ -71,8 +67,6 @@ impl EcdcMetadata {
             bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
             lm_tau: Some(1.0),
             lm_hash,
-            chunk_samples: None,
-            chunk_stride: None,
             lm_frame_length: None,
             extra: BTreeMap::new(),
         }
@@ -148,24 +142,20 @@ pub fn ecdc_chunk_layout_from_ms(
 }
 
 pub fn ecdc_chunk_layout_from_metadata(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    _bundle_meta: &OnnxFrameBundleMetadata,
     metadata: &EcdcMetadata,
 ) -> Result<EcdcChunkLayout> {
-    let samples = metadata
-        .chunk_samples
-        .unwrap_or(bundle_meta.segment_samples);
-    let stride = metadata
-        .chunk_stride
-        .unwrap_or(bundle_meta.segment_stride.max(1));
-
+    // Each ECDC stream carries a single chunk spanning the whole audio, so the
+    // chunk geometry is just the audio length; there is no separate `cs`/`cst`.
+    let samples = metadata.audio_length;
     if samples == 0 {
-        bail!("ECDC metadata has invalid chunk sample count 0");
-    }
-    if stride == 0 {
-        bail!("ECDC metadata has invalid chunk stride 0");
+        bail!("ECDC metadata has invalid audio length 0");
     }
 
-    Ok(EcdcChunkLayout { samples, stride })
+    Ok(EcdcChunkLayout {
+        samples,
+        stride: samples,
+    })
 }
 
 pub fn ecdc_chunk_layout_for_chunk_count(
@@ -173,34 +163,68 @@ pub fn ecdc_chunk_layout_for_chunk_count(
     metadata: &EcdcMetadata,
     chunk_count: usize,
 ) -> Result<EcdcChunkLayout> {
-    let explicit = metadata.chunk_samples.is_some() || metadata.chunk_stride.is_some();
-    let default = ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?;
-    if explicit {
-        return Ok(default);
+    let layout = ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?;
+    let implied = segment_starts(metadata.audio_length, layout.stride).len();
+    if implied != chunk_count {
+        bail!("ECDC payload has {chunk_count} chunks, but metadata implies {implied} chunks");
     }
+    Ok(layout)
+}
 
-    let mut candidates = vec![default];
-    if bundle_meta.sample_rate == 48_000 {
-        candidates.push(EcdcChunkLayout {
-            samples: 63_998,
-            stride: 63_998,
-        });
-        candidates.push(EcdcChunkLayout {
-            samples: 86_400,
-            stride: 86_400,
-        });
+/// Walks the length-prefixed ECDC packet stream starting at `payload_start`
+/// (the byte offset just past the metadata header) and returns the byte range
+/// of each packet. The 4-byte big-endian length prefix does not include the
+/// prefix bytes themselves; packets carry either a 4- or 8-byte overhead before
+/// the payload, so try the 8-byte framing first and require it to land exactly
+/// on the payload end, else fall back to 4. This mirrors the JS port that used
+/// to live in apps/shared/ecdc-pcm-layout.js.
+pub fn ecdc_frame_ranges(bytes: &[u8], payload_start: usize) -> Result<Vec<std::ops::Range<usize>>> {
+    if let Ok((ranges, true)) = ecdc_frame_ranges_with_overhead(bytes, payload_start, 8) {
+        return Ok(ranges);
     }
+    ecdc_frame_ranges_with_overhead(bytes, payload_start, 4).map(|(ranges, _exact)| ranges)
+}
 
-    for layout in candidates {
-        if segment_starts(metadata.audio_length, layout.stride).len() == chunk_count {
-            return Ok(layout);
+fn ecdc_frame_ranges_with_overhead(
+    bytes: &[u8],
+    mut offset: usize,
+    overhead: usize,
+) -> Result<(Vec<std::ops::Range<usize>>, bool)> {
+    let mut ranges = Vec::new();
+
+    while offset < bytes.len() {
+        if offset + 4 > bytes.len() {
+            bail!(
+                "truncated ECDC frame length at byte {offset}: payload_len={}",
+                bytes.len()
+            );
         }
+
+        let frame_len =
+            u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("slice length")) as usize;
+
+        if frame_len < 4 {
+            bail!("invalid ECDC packet length at byte {offset}: {frame_len}");
+        }
+
+        let frame_end = offset
+            .checked_add(overhead + frame_len)
+            .ok_or_else(|| anyhow::anyhow!("ECDC packet length overflow"))?;
+
+        if frame_end > bytes.len() {
+            bail!(
+                "ECDC packet at byte {} exceeds payload length: frame_end={}, payload_len={}",
+                offset,
+                frame_end,
+                bytes.len()
+            );
+        }
+
+        ranges.push(offset..frame_end);
+        offset = frame_end;
     }
 
-    anyhow::bail!(
-        "ECDC payload has {chunk_count} chunks, but metadata implies {} chunks",
-        segment_starts(metadata.audio_length, default.stride).len()
-    );
+    Ok((ranges, offset == bytes.len()))
 }
 
 pub fn segment_starts(total_samples: usize, stride: usize) -> Vec<usize> {
@@ -253,8 +277,6 @@ mod tests {
             bitstream_version: QUANTIZED_LM_BITSTREAM_VERSION,
             lm_tau: None,
             lm_hash: None,
-            chunk_samples: None,
-            chunk_stride: None,
             lm_frame_length: None,
             extra: BTreeMap::new(),
         };

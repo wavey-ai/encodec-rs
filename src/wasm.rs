@@ -141,9 +141,11 @@ fn lm_ecdc_header_for_weights_impl(
     let mut metadata =
         EcdcMetadata::from_bundle(&meta, audio_length, None, Some(stable_hash_hex(weights)));
     if fixed_frame_length {
-        metadata.chunk_samples = Some(meta.segment_samples);
-        metadata.chunk_stride = Some(meta.segment_stride.max(1));
-        metadata.lm_frame_length = Some(meta.frame_length);
+        metadata.lm_frame_length = Some(segment_frame_length(
+            audio_length,
+            meta.segment_samples,
+            meta.frame_length,
+        ));
     }
     let mut out = Vec::new();
     write_ecdc_header(&mut out, &metadata).map_err(to_js_error)?;
@@ -164,6 +166,10 @@ pub fn ecdc_encode_model_input(bundle_json: &str, audio: &[f32]) -> Result<Vec<f
         .channels
         .checked_mul(meta.segment_samples)
         .ok_or_else(|| to_js_error("ECDC model input shape overflows usize"))?;
+    if audio.len() == expected {
+        return Ok(audio.to_vec());
+    }
+
     let mut padded = vec![0.0_f32; expected];
     let copy_len = audio.len().min(expected);
     padded[..copy_len].copy_from_slice(&audio[..copy_len]);
@@ -701,4 +707,136 @@ fn to_js_value<T: Serialize + ?Sized>(value: &T) -> Result<JsValue, JsValue> {
 
 fn to_js_error(error: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_bundle_json() -> String {
+        serde_json::to_string(&OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz_test".to_string(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 48_000,
+            segment_stride: 47_520,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 200,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".to_string(),
+            decode_model: "decode_frame.onnx".to_string(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".to_string()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(crate::metadata::Q8_LM_LOGIT_STEP as f32),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn fixed_block_header_validates_one_packet_entry() {
+        let bundle_json = test_bundle_json();
+        let bundle_meta: OnnxFrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
+        let weights = [0x42_u8; 32];
+
+        for block_samples in [48_123_usize, 65_537_usize] {
+            let mut entry = lm_ecdc_fixed_header_for_weights(
+                &bundle_json,
+                block_samples,
+                QUANTIZED_LM_BITSTREAM_VERSION,
+                &weights,
+            )
+            .unwrap();
+            write_chunk(&mut entry, &[1, 2, 3, 4], true).unwrap();
+
+            let mut reader = Cursor::new(entry.as_slice());
+            let metadata: EcdcMetadata = read_ecdc_header(&mut reader).unwrap();
+            let mut packet_count = 0usize;
+            while (reader.position() as usize) < entry.len() {
+                read_chunk_payload(&mut reader, true).unwrap();
+                packet_count += 1;
+            }
+
+            let layout =
+                ecdc_chunk_layout_for_chunk_count(&bundle_meta, &metadata, packet_count).unwrap();
+            assert_eq!(metadata.audio_length, block_samples);
+            assert_eq!(layout.samples, block_samples);
+            assert_eq!(layout.stride, block_samples);
+            assert_eq!(packet_count, 1);
+        }
+    }
+
+    fn fixed_block_bundle_json() -> String {
+        serde_json::to_string(&OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz_test".to_string(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 64_960,
+            segment_stride: 64_960,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 203,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".to_string(),
+            decode_model: "decode_frame.onnx".to_string(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".to_string()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(crate::metadata::Q8_LM_LOGIT_STEP as f32),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn fixed_block_model_input_is_passthrough() {
+        // encodec-rs treats the whole 64,960-sample block as ordinary audio:
+        // a full block is returned unchanged, a short final block is zero-padded.
+        let bundle_json = fixed_block_bundle_json();
+
+        let mut block = vec![0.0_f32; 2 * 64_960];
+        block[0] = 0.25;
+        block[(2 * 64_960) - 1] = -0.5;
+        let model = ecdc_encode_model_input(&bundle_json, &block).unwrap();
+        assert_eq!(model, block);
+
+        let short = vec![0.5_f32; 2 * 1_000];
+        let padded = ecdc_encode_model_input(&bundle_json, &short).unwrap();
+        assert_eq!(padded.len(), 2 * 64_960);
+        assert!(padded[..2 * 1_000].iter().all(|value| *value == 0.5));
+        assert!(padded[2 * 1_000..].iter().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn fixed_block_header_uses_full_block_length() {
+        // A 64,960-sample fixed block produces al = 64,960 and fl = 203, with no
+        // owned/guard fields anywhere in the header.
+        let bundle_json = fixed_block_bundle_json();
+        let weights = [0x42_u8; 32];
+        let header = lm_ecdc_fixed_header_for_weights(
+            &bundle_json,
+            64_960,
+            QUANTIZED_LM_BITSTREAM_VERSION,
+            &weights,
+        )
+        .unwrap();
+        let metadata: EcdcMetadata = read_ecdc_header(&mut Cursor::new(header.as_slice())).unwrap();
+        assert_eq!(metadata.audio_length, 64_960);
+        assert_eq!(metadata.lm_frame_length, Some(203));
+        assert!(metadata.extra.is_empty());
+    }
 }

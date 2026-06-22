@@ -187,8 +187,6 @@ pub fn encode_ecdc_header_with_options(
 ) -> Result<Vec<u8>> {
     let mut metadata = EcdcMetadata::from_bundle(codec.metadata(), audio_length, source, lm_hash);
     if let Some(chunk_layout) = chunk_layout {
-        metadata.chunk_samples = Some(chunk_layout.samples);
-        metadata.chunk_stride = Some(chunk_layout.stride);
         metadata.lm_frame_length = Some(segment_frame_length(
             chunk_layout.samples,
             codec.metadata().segment_samples,
