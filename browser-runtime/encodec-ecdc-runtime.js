@@ -94,6 +94,8 @@ function normalizeEncodeMessage(payload = {}) {
     sessionKey: String(payload.sessionKey || "default"),
     bundleRoot: String(payload.bundleRoot || ""),
     segment: payload.segment,
+    leftGuard: payload.leftGuard,
+    rightGuard: payload.rightGuard,
     segmentIndex: Math.max(0, Math.floor(Number(payload.segmentIndex) || 0)),
     segmentSamples: Math.max(0, Math.floor(Number(payload.segmentSamples) || 0)),
     segmentFrameLength: Math.max(0, Math.floor(Number(payload.segmentFrameLength) || 0)),
@@ -306,6 +308,52 @@ export function createEncodecEcdcRuntime({
     }
   }
 
+  // Assemble the guarded model input block `[left guard | owned | right guard]`
+  // per channel (planar), to length channels * segment_samples. encodec-rs no
+  // longer has a guard concept, so the Bitneedle integration layer owns this:
+  // the owned audio is centred and real neighbour samples (or silence at the
+  // track head/tail) fill the guard regions. Returns null when the bundle has no
+  // guard profile, so the caller uses the plain model input.
+  function assembleGuardedModelInput(meta, owned, leftGuard, rightGuard) {
+    const channels = positiveInteger(meta.channels, "bundle channels");
+    const segmentSamples = positiveInteger(meta.segment_samples, "bundle segment_samples");
+    const leftGuardSamples = Math.max(0, Math.floor(Number(meta.left_guard_samples) || 0));
+    const rightGuardSamples = Math.max(0, Math.floor(Number(meta.right_guard_samples) || 0));
+    const ownedSamples = Math.max(0, Math.floor(Number(meta.owned_samples) || 0)) || segmentSamples;
+    const hasGuardProfile =
+      leftGuardSamples > 0 || rightGuardSamples > 0 || ownedSamples !== segmentSamples;
+    if (!hasGuardProfile) return null;
+    if (leftGuardSamples + ownedSamples + rightGuardSamples !== segmentSamples) {
+      throw new Error(
+        `guard profile (${leftGuardSamples}+${ownedSamples}+${rightGuardSamples}) does not sum to segment_samples ${segmentSamples}`,
+      );
+    }
+    if (owned.length !== channels * ownedSamples) {
+      throw new Error(
+        `owned audio length ${owned.length} != channels(${channels}) * owned_samples(${ownedSamples})`,
+      );
+    }
+
+    const out = new Float32Array(channels * segmentSamples);
+    for (let ch = 0; ch < channels; ch += 1) {
+      const base = ch * segmentSamples;
+      if (leftGuardSamples > 0 && leftGuard && leftGuard.length >= (ch + 1) * leftGuardSamples) {
+        out.set(leftGuard.subarray(ch * leftGuardSamples, (ch + 1) * leftGuardSamples), base);
+      }
+      out.set(
+        owned.subarray(ch * ownedSamples, (ch + 1) * ownedSamples),
+        base + leftGuardSamples,
+      );
+      if (rightGuardSamples > 0 && rightGuard && rightGuard.length >= (ch + 1) * rightGuardSamples) {
+        out.set(
+          rightGuard.subarray(ch * rightGuardSamples, (ch + 1) * rightGuardSamples),
+          base + leftGuardSamples + ownedSamples,
+        );
+      }
+    }
+    return out;
+  }
+
   async function encodeEcdcChunk(payload, { requestId = null } = {}) {
     const data = normalizeEncodeMessage(payload);
     const encodecModule = await ensureEncodecWasmModule();
@@ -339,7 +387,15 @@ export function createEncodecEcdcRuntime({
     }
 
     const segmentAudio = normalizeFloat32(data.segment, "segment");
-    const modelInput = encodecModule.ecdcEncodeModelInput(state.bundleJson, segmentAudio);
+    const leftGuardAudio = data.leftGuard == null ? null : normalizeFloat32(data.leftGuard, "leftGuard");
+    const rightGuardAudio = data.rightGuard == null ? null : normalizeFloat32(data.rightGuard, "rightGuard");
+    // Centre the owned audio in the guarded block `[left | owned | right]` so the
+    // codec encodes the full segment_samples block (e.g. 64960 = 480+64000+480).
+    // Falls back to the plain model input for non-guard bundles.
+    const guardedInput = assembleGuardedModelInput(meta, segmentAudio, leftGuardAudio, rightGuardAudio);
+    const modelInput = guardedInput !== null
+      ? guardedInput
+      : encodecModule.ecdcEncodeModelInput(state.bundleJson, segmentAudio);
     const inputAudio = modelInput instanceof Float32Array ? modelInput : new Float32Array(modelInput);
     const expectedInputSamples = channels * modelSegmentSamples;
     if (inputAudio.length !== expectedInputSamples) {

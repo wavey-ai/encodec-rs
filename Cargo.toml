@@ -1,18 +1,12 @@
 [package]
 name = "encodec-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Pure Rust EnCodec runtime with native ECDC encode/decode"
 repository = "https://github.com/wavey-ai/encodec-rs"
 
-exclude = [
-  "dist",
-  "onnx-bundles",
-  "deploy",
-  "scripts",
-  "testdata/out"
-]
+exclude = ["dist", "onnx-bundles", "deploy", "scripts", "testdata/out"]
 
 [lib]
 name = "encodec_rs"
