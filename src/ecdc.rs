@@ -186,13 +186,22 @@ pub fn encode_ecdc_header_with_options(
     lm_hash: Option<String>,
     chunk_layout: Option<EcdcChunkLayout>,
 ) -> Result<Vec<u8>> {
-    let mut metadata = EcdcMetadata::from_bundle(codec.metadata(), audio_length, source, lm_hash);
+    let bundle_meta = codec.metadata();
+    let mut metadata = EcdcMetadata::from_bundle(bundle_meta, audio_length, source, lm_hash);
     if let Some(chunk_layout) = chunk_layout {
         metadata.lm_frame_length = Some(segment_frame_length(
             chunk_layout.samples,
-            codec.metadata().segment_samples,
-            codec.metadata().frame_length,
+            bundle_meta.segment_samples,
+            bundle_meta.frame_length,
         ));
+    } else if fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)?
+        .is_some()
+    {
+        // The fixed model/code window always covers the full bundle
+        // frame_length, regardless of how much logical owned audio a
+        // chunk carries; segment_frame_length()'s al/segment_samples
+        // proportion would otherwise undercount it (e.g. 200 vs 203).
+        metadata.lm_frame_length = Some(bundle_meta.frame_length);
     }
     let mut header = Vec::new();
     write_ecdc_header(&mut header, &metadata)?;
@@ -964,4 +973,174 @@ fn triangle_weight(frame_length: usize) -> Vec<f32> {
             0.5 - (t - 0.5).abs()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixed_1333ms_meta() -> OnnxFrameBundleMetadata {
+        OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz_test".into(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 1,
+            segment_samples: 64_960,
+            segment_stride: 64_000,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 203,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".into(),
+            decode_model: "decode_frame.onnx".into(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".into()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(2.1),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        }
+    }
+
+    /// 2 full owned chunks (64,000 each) plus a final partial chunk of
+    /// 2,000 owned samples: 130,000 logical samples total.
+    fn indexed_audio(total_samples: usize) -> Array3<f32> {
+        let mut audio = Array3::<f32>::zeros((1, 1, total_samples));
+        for index in 0..total_samples {
+            audio[[0, 0, index]] = index as f32;
+        }
+        audio
+    }
+
+    #[test]
+    fn encode_segment_batches_builds_context_window_for_every_chunk() {
+        let meta = fixed_1333ms_meta();
+        let stride = meta.segment_stride;
+        let window = meta.segment_samples;
+        let context = 480usize;
+        let total_samples = stride * 2 + 2_000;
+        let audio = indexed_audio(total_samples);
+        let layout = EcdcChunkLayout {
+            samples: window,
+            stride,
+        };
+
+        let batches = encode_segment_batches_with_size(&audio, &meta, 8, layout, None).unwrap();
+        assert_eq!(batches.len(), 1);
+        let (frame_lengths, batch) = &batches[0];
+        assert_eq!(batch.shape(), &[3, 1, window]);
+        // Every chunk, including the final partial one, encodes the full
+        // bundle frame length -- never a reduced owned-region count.
+        assert_eq!(frame_lengths, &vec![meta.frame_length; 3]);
+
+        // Chunk 0: start of track, left context zero-filled.
+        for index in 0..context {
+            assert_eq!(batch[[0, 0, index]], 0.0);
+        }
+        for index in 0..stride {
+            assert_eq!(batch[[0, 0, context + index]], index as f32);
+        }
+        for index in 0..context {
+            assert_eq!(batch[[0, 0, context + stride + index]], (stride + index) as f32);
+        }
+
+        // Chunk 1: real source samples on both sides.
+        for index in 0..context {
+            assert_eq!(batch[[1, 0, index]], (stride - context + index) as f32);
+        }
+        for index in 0..stride {
+            assert_eq!(batch[[1, 0, context + index]], (stride + index) as f32);
+        }
+        for index in 0..context {
+            assert_eq!(
+                batch[[1, 0, context + stride + index]],
+                (2 * stride + index) as f32
+            );
+        }
+
+        // Chunk 2: final partial owned region (2,000 real samples), the
+        // rest of the owned region and the right context are zero-filled
+        // past the end of the track.
+        let owned_len = total_samples - 2 * stride;
+        for index in 0..context {
+            assert_eq!(
+                batch[[2, 0, index]],
+                (2 * stride - context + index) as f32
+            );
+        }
+        for index in 0..owned_len {
+            assert_eq!(batch[[2, 0, context + index]], (2 * stride + index) as f32);
+        }
+        for index in owned_len..stride {
+            assert_eq!(batch[[2, 0, context + index]], 0.0);
+        }
+        for index in 0..context {
+            assert_eq!(batch[[2, 0, context + stride + index]], 0.0);
+        }
+    }
+
+    #[test]
+    fn crop_and_concat_strip_context_and_concatenate_without_overlap() {
+        let context = 480usize;
+        let stride = 64_000usize;
+        let window = 64_960usize;
+        let owned_lens = [stride, stride, 2_000usize];
+
+        let frames: Vec<Array3<f32>> = owned_lens
+            .iter()
+            .enumerate()
+            .map(|(frame_index, _)| {
+                let mut frame = Array3::<f32>::zeros((1, 1, window));
+                for index in 0..window {
+                    frame[[0, 0, index]] = (frame_index * 1_000_000 + index) as f32;
+                }
+                frame
+            })
+            .collect();
+
+        let cropped: Vec<Array3<f32>> = frames
+            .iter()
+            .zip(owned_lens.iter())
+            .map(|(frame, owned_len)| crop_owned_segment(frame, context, *owned_len).unwrap())
+            .collect();
+
+        for (frame_index, (cropped_frame, owned_len)) in
+            cropped.iter().zip(owned_lens.iter()).enumerate()
+        {
+            assert_eq!(cropped_frame.shape(), &[1, 1, *owned_len]);
+            assert_eq!(cropped_frame[[0, 0, 0]], (frame_index * 1_000_000 + context) as f32);
+            assert_eq!(
+                cropped_frame[[0, 0, owned_len - 1]],
+                (frame_index * 1_000_000 + context + owned_len - 1) as f32
+            );
+        }
+
+        let concatenated = concat_owned_frames(&cropped);
+        let audio_length: usize = owned_lens.iter().sum();
+        assert_eq!(concatenated.shape(), &[1, 1, audio_length]);
+
+        // No overlap-add, no duplicated/missing samples: each owned region
+        // lands exactly at its logical stride offset with no blending.
+        assert_eq!(concatenated[[0, 0, 0]], context as f32);
+        assert_eq!(concatenated[[0, 0, stride - 1]], (context + stride - 1) as f32);
+        assert_eq!(concatenated[[0, 0, stride]], (1_000_000 + context) as f32);
+        assert_eq!(
+            concatenated[[0, 0, 2 * stride]],
+            (2_000_000 + context) as f32
+        );
+        assert_eq!(
+            concatenated[[0, 0, audio_length - 1]],
+            (2_000_000 + context + 1_999) as f32
+        );
+    }
+
+    #[test]
+    fn crop_owned_segment_rejects_decoded_output_shorter_than_context_plus_owned_len() {
+        let frame = Array3::<f32>::zeros((1, 1, 500));
+        assert!(crop_owned_segment(&frame, 480, 64_000).is_err());
+    }
 }

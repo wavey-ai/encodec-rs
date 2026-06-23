@@ -4,6 +4,7 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::ecdc_presets::fixed_context_samples;
 use crate::metadata::OnnxFrameBundleMetadata;
 
 pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
@@ -163,7 +164,19 @@ pub fn ecdc_chunk_layout_for_chunk_count(
     metadata: &EcdcMetadata,
     chunk_count: usize,
 ) -> Result<EcdcChunkLayout> {
-    let layout = ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?;
+    // Recognised fixed-context bundles carry a private model window
+    // (segment_samples) larger than the logical owned stride
+    // (segment_stride). `metadata.audio_length` is logical output length,
+    // not model-window length, so the bundle's own geometry must be used
+    // here rather than substituting audio_length for both samples and
+    // stride.
+    let layout = match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
+        Some(_context) => EcdcChunkLayout {
+            samples: bundle_meta.segment_samples,
+            stride: bundle_meta.segment_stride,
+        },
+        None => ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?,
+    };
     let implied = segment_starts(metadata.audio_length, layout.stride).len();
     if implied != chunk_count {
         bail!("ECDC payload has {chunk_count} chunks, but metadata implies {implied} chunks");

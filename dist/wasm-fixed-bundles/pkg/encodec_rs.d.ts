@@ -24,8 +24,6 @@ export class QuantizedLmChunkEncoder {
 
 export function bundleMetadata(bundle_json: string): any;
 
-export function ecdcEncodeModelInput(bundle_json: string, audio: Float32Array): Float32Array;
-
 export function ecdcMetadata(payload: Uint8Array): any;
 
 export function ecdcOverlapAdd(bundle_json: string, audio_length: number, decoded_frames: Float32Array): Float32Array;
@@ -55,7 +53,6 @@ export interface InitOutput {
     readonly __wbg_quantizedlmchunkdecoder_free: (a: number, b: number) => void;
     readonly __wbg_quantizedlmchunkencoder_free: (a: number, b: number) => void;
     readonly bundleMetadata: (a: number, b: number) => [number, number, number];
-    readonly ecdcEncodeModelInput: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly ecdcMetadata: (a: number, b: number) => [number, number, number];
     readonly ecdcOverlapAdd: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly ecdcOverlapAddForMetadata: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];

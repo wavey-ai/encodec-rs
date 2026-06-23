@@ -2,18 +2,30 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Result};
 
-/// (segment_samples, segment_stride) pairs for the fixed contextual bundles.
-/// A bundle is only treated as a fixed-context profile (full-window decode +
-/// sample-domain crop, no overlap-add) when its geometry matches one of
-/// these exactly. Legacy EnCodec bundles may also have segment_samples >
-/// segment_stride for ordinary overlap-add and must not be misclassified.
-const FIXED_CONTEXT_GEOMETRIES: &[(usize, usize)] = &[(64_960, 64_000), (87_360, 86_400)];
+/// Per-side context sample count required by every recognised fixed
+/// contextual bundle profile.
+const FIXED_CONTEXT_SAMPLES_PER_SIDE: usize = 480;
+
+/// Owned-audio strides (segment_stride) of the recognised fixed contextual
+/// bundle profiles: 1.333s (64,000 samples) and 1.8s (86,400 samples).
+/// A bundle is only ever treated as a fixed-context profile (full-window
+/// decode + sample-domain crop, no overlap-add) when its segment_stride
+/// matches one of these. Legacy EnCodec bundles may also have
+/// segment_samples > segment_stride for ordinary overlap-add (e.g. with a
+/// different stride) and must not be misclassified.
+const FIXED_CONTEXT_STRIDES: &[usize] = &[64_000, 86_400];
 
 /// Returns the symmetric per-side context sample count for a recognized
-/// fixed contextual bundle profile, or `None` if the geometry does not
-/// match a known fixed-context profile (e.g. a legacy overlap-add bundle).
+/// fixed contextual bundle profile, or `None` if `segment_stride` does not
+/// match a known fixed-context owned duration (e.g. a legacy overlap-add
+/// bundle). Once a bundle's stride is recognized, the geometry is validated
+/// strictly: `segment_samples` must be at least `segment_stride`, the
+/// excess must be evenly split, and it must equal exactly
+/// [`FIXED_CONTEXT_SAMPLES_PER_SIDE`] per side; any other relationship is a
+/// malformed fixed-profile bundle and is rejected rather than silently
+/// falling back to non-context behaviour.
 pub fn fixed_context_samples(segment_samples: usize, segment_stride: usize) -> Result<Option<usize>> {
-    if !FIXED_CONTEXT_GEOMETRIES.contains(&(segment_samples, segment_stride)) {
+    if !FIXED_CONTEXT_STRIDES.contains(&segment_stride) {
         return Ok(None);
     }
     let excess = segment_samples.checked_sub(segment_stride).ok_or_else(|| {
@@ -30,7 +42,18 @@ pub fn fixed_context_samples(segment_samples: usize, segment_stride: usize) -> R
             segment_stride,
         );
     }
-    Ok(Some(excess / 2))
+    let context = excess / 2;
+    if context != FIXED_CONTEXT_SAMPLES_PER_SIDE {
+        bail!(
+            "recognised fixed-context bundles must use {} samples of context per side, \
+             got {} for samples={} stride={}",
+            FIXED_CONTEXT_SAMPLES_PER_SIDE,
+            context,
+            segment_samples,
+            segment_stride,
+        );
+    }
+    Ok(Some(context))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,4 +121,36 @@ pub fn fixed_bundle_dir(
     Ok(bundle_root
         .as_ref()
         .join(fixed_bundle_name(bandwidth, chunk)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_known_fixed_context_geometries() {
+        assert_eq!(fixed_context_samples(64_960, 64_000).unwrap(), Some(480));
+        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), Some(480));
+    }
+
+    #[test]
+    fn does_not_recognize_unrelated_strides() {
+        assert_eq!(fixed_context_samples(48_000, 47_520).unwrap(), None);
+        assert_eq!(fixed_context_samples(64_960, 64_960).unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_samples_smaller_than_stride() {
+        assert!(fixed_context_samples(63_999, 64_000).is_err());
+    }
+
+    #[test]
+    fn rejects_odd_context_excess() {
+        assert!(fixed_context_samples(64_961, 64_000).is_err());
+    }
+
+    #[test]
+    fn rejects_context_not_equal_to_480_samples_per_side() {
+        assert!(fixed_context_samples(65_000, 64_000).is_err());
+    }
 }

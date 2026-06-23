@@ -2,7 +2,9 @@ use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
-use crate::ecdc_presets::{bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name};
+use crate::ecdc_presets::{
+    bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name, fixed_context_samples,
+};
 use crate::format::{
     ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, ecdc_lm_frame_length,
     segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata,
@@ -84,6 +86,18 @@ pub fn ecdc_overlap_add(
     decoded_frames: &[f32],
 ) -> Result<Vec<f32>, JsValue> {
     let meta = parse_bundle(bundle_json)?;
+    if let Some(context) =
+        fixed_context_samples(meta.segment_samples, meta.segment_stride).map_err(to_js_error)?
+    {
+        return fixed_context_crop_concat(
+            &meta,
+            audio_length,
+            decoded_frames,
+            meta.segment_stride,
+            context,
+        )
+        .map_err(to_js_error);
+    }
     let layout = EcdcChunkLayout {
         samples: meta.segment_samples,
         stride: meta.segment_stride.max(1),
@@ -99,6 +113,23 @@ pub fn ecdc_overlap_add_for_metadata(
 ) -> Result<Vec<f32>, JsValue> {
     let meta = parse_bundle(bundle_json)?;
     let metadata: EcdcMetadata = serde_json::from_str(metadata_json).map_err(to_js_error)?;
+    // Recognised fixed-context bundles never go through ordinary
+    // triangle overlap-add: each decoded model window is
+    // segment_samples long and only `decoded[context..context+owned_len]`
+    // is logical audio. Legacy (non-fixed-context) bundles keep the
+    // existing overlap-add path.
+    if let Some(context) =
+        fixed_context_samples(meta.segment_samples, meta.segment_stride).map_err(to_js_error)?
+    {
+        return fixed_context_crop_concat(
+            &meta,
+            metadata.audio_length,
+            decoded_frames,
+            meta.segment_stride,
+            context,
+        )
+        .map_err(to_js_error);
+    }
     let layout = ecdc_chunk_layout_from_metadata(&meta, &metadata).map_err(to_js_error)?;
     overlap_add_decoded_frames(&meta, metadata.audio_length, decoded_frames, layout)
         .map_err(to_js_error)
@@ -141,11 +172,17 @@ fn lm_ecdc_header_for_weights_impl(
     let mut metadata =
         EcdcMetadata::from_bundle(&meta, audio_length, None, Some(stable_hash_hex(weights)));
     if fixed_frame_length {
-        metadata.lm_frame_length = Some(segment_frame_length(
-            audio_length,
-            meta.segment_samples,
-            meta.frame_length,
-        ));
+        // For recognised fixed-context bundles the model/code window
+        // always spans the full bundle frame_length (e.g. 203), never a
+        // proportion of the logical audio_length (which would otherwise
+        // undercount it, e.g. 200).
+        let frame_length = match fixed_context_samples(meta.segment_samples, meta.segment_stride)
+            .map_err(to_js_error)?
+        {
+            Some(_context) => meta.frame_length,
+            None => segment_frame_length(audio_length, meta.segment_samples, meta.frame_length),
+        };
+        metadata.lm_frame_length = Some(frame_length);
     }
     let mut out = Vec::new();
     write_ecdc_header(&mut out, &metadata).map_err(to_js_error)?;
@@ -157,23 +194,6 @@ pub fn lm_ecdc_chunk(payload: &[u8]) -> Result<Vec<u8>, JsValue> {
     let mut out = Vec::new();
     write_chunk(&mut out, payload, true).map_err(to_js_error)?;
     Ok(out)
-}
-
-#[wasm_bindgen(js_name = ecdcEncodeModelInput)]
-pub fn ecdc_encode_model_input(bundle_json: &str, audio: &[f32]) -> Result<Vec<f32>, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    let expected = meta
-        .channels
-        .checked_mul(meta.segment_samples)
-        .ok_or_else(|| to_js_error("ECDC model input shape overflows usize"))?;
-    if audio.len() == expected {
-        return Ok(audio.to_vec());
-    }
-
-    let mut padded = vec![0.0_f32; expected];
-    let copy_len = audio.len().min(expected);
-    padded[..copy_len].copy_from_slice(&audio[..copy_len]);
-    Ok(padded)
 }
 
 #[wasm_bindgen(js_name = lmEcdcChunkFromFrame)]
@@ -230,6 +250,8 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
 
     let layout = ecdc_chunk_layout_for_chunk_count(&meta, &metadata, raw_chunks.len())
         .map_err(to_js_error)?;
+    let context =
+        fixed_context_samples(meta.segment_samples, meta.segment_stride).map_err(to_js_error)?;
     let mut chunks = Vec::new();
     let starts = segment_starts(metadata.audio_length, layout.stride);
     if starts.len() != raw_chunks.len() {
@@ -240,9 +262,18 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
         )));
     }
     for (offset, payload) in starts.into_iter().zip(raw_chunks) {
-        let samples = (metadata.audio_length - offset).min(layout.samples);
-        let frame_length =
-            ecdc_lm_frame_length(&metadata, samples, meta.segment_samples, meta.frame_length);
+        // `samples` is the logical owned length of this chunk, bounded by
+        // segment_stride; it must never include the private context
+        // samples that make up the rest of a fixed model window.
+        let samples = (metadata.audio_length - offset).min(layout.stride);
+        let frame_length = if context.is_some() {
+            metadata
+                .lm_frame_length
+                .filter(|value| *value > 0)
+                .unwrap_or(meta.frame_length)
+        } else {
+            ecdc_lm_frame_length(&metadata, samples, meta.segment_samples, meta.frame_length)
+        };
         chunks.push(LmEcdcChunk {
             offset,
             samples,
@@ -573,6 +604,59 @@ fn quantize_logit(value: f64, step: f64) -> f64 {
     (y + 0.5 - eps).floor() * step
 }
 
+/// Crops each fully-decoded fixed model window (`segment_samples` long, the
+/// same layout the native decoder produces) down to its owned region and
+/// concatenates the results directly at logical stride positions. No
+/// crossfade/triangle weighting happens here: that's only valid for legacy
+/// overlap-add bundles, never for recognised fixed-context bundles, where
+/// the discarded context is purely a private model-input/output detail.
+fn fixed_context_crop_concat(
+    meta: &OnnxFrameBundleMetadata,
+    audio_length: usize,
+    decoded_frames: &[f32],
+    stride: usize,
+    context: usize,
+) -> anyhow::Result<Vec<f32>> {
+    let starts = segment_starts(audio_length, stride);
+    let frame_count = starts.len();
+    let channels = meta.channels;
+    let segment_samples = meta.segment_samples;
+
+    let expected_total = frame_count
+        .checked_mul(channels)
+        .and_then(|value| value.checked_mul(segment_samples))
+        .ok_or_else(|| anyhow::anyhow!("decoded fixed-context frame buffer size overflows usize"))?;
+    if decoded_frames.len() != expected_total {
+        anyhow::bail!(
+            "decoded frame sample count {} does not match expected {} for {} fixed-context frames",
+            decoded_frames.len(),
+            expected_total,
+            frame_count
+        );
+    }
+
+    let mut output = vec![0.0_f32; channels * audio_length];
+    for (frame_index, offset) in starts.into_iter().enumerate() {
+        let owned_len = (audio_length - offset).min(stride);
+        if context + owned_len > segment_samples {
+            anyhow::bail!(
+                "decoded model output is too short: context={} owned_len={} decoded={}",
+                context,
+                owned_len,
+                segment_samples
+            );
+        }
+        let frame_base = frame_index * channels * segment_samples;
+        for channel in 0..channels {
+            let src_base = frame_base + channel * segment_samples + context;
+            let dst_base = channel * audio_length + offset;
+            output[dst_base..dst_base + owned_len]
+                .copy_from_slice(&decoded_frames[src_base..src_base + owned_len]);
+        }
+    }
+    Ok(output)
+}
+
 fn overlap_add_decoded_frames(
     meta: &OnnxFrameBundleMetadata,
     audio_length: usize,
@@ -774,6 +858,9 @@ mod tests {
         }
     }
 
+    /// The real 1.333s fixed-context bundle geometry: a 64,960-sample
+    /// private model window holding 480 previous-context samples, 64,000
+    /// owned samples, and 480 following-context samples.
     fn fixed_block_bundle_json() -> String {
         serde_json::to_string(&OnnxFrameBundleMetadata {
             schema_version: 1,
@@ -782,7 +869,7 @@ mod tests {
             sample_rate: 48_000,
             channels: 2,
             segment_samples: 64_960,
-            segment_stride: 64_960,
+            segment_stride: 64_000,
             normalize: true,
             num_codebooks: 8,
             frame_length: 203,
@@ -803,40 +890,139 @@ mod tests {
     }
 
     #[test]
-    fn fixed_block_model_input_is_passthrough() {
-        // encodec-rs treats the whole 64,960-sample block as ordinary audio:
-        // a full block is returned unchanged, a short final block is zero-padded.
-        let bundle_json = fixed_block_bundle_json();
-
-        let mut block = vec![0.0_f32; 2 * 64_960];
-        block[0] = 0.25;
-        block[(2 * 64_960) - 1] = -0.5;
-        let model = ecdc_encode_model_input(&bundle_json, &block).unwrap();
-        assert_eq!(model, block);
-
-        let short = vec![0.5_f32; 2 * 1_000];
-        let padded = ecdc_encode_model_input(&bundle_json, &short).unwrap();
-        assert_eq!(padded.len(), 2 * 64_960);
-        assert!(padded[..2 * 1_000].iter().all(|value| *value == 0.5));
-        assert!(padded[2 * 1_000..].iter().all(|value| *value == 0.0));
-    }
-
-    #[test]
-    fn fixed_block_header_uses_full_block_length() {
-        // A 64,960-sample fixed block produces al = 64,960 and fl = 203, with no
-        // owned/guard fields anywhere in the header.
+    fn fixed_block_header_uses_logical_audio_length_and_full_frame_length() {
+        // The public ECDC header reports logical owned audio length (al =
+        // 64,000), never the private 64,960-sample model window, and the
+        // full bundle frame_length (fl = 203), never a proportion of al.
         let bundle_json = fixed_block_bundle_json();
         let weights = [0x42_u8; 32];
         let header = lm_ecdc_fixed_header_for_weights(
             &bundle_json,
-            64_960,
+            64_000,
             QUANTIZED_LM_BITSTREAM_VERSION,
             &weights,
         )
         .unwrap();
         let metadata: EcdcMetadata = read_ecdc_header(&mut Cursor::new(header.as_slice())).unwrap();
-        assert_eq!(metadata.audio_length, 64_960);
+        assert_eq!(metadata.audio_length, 64_000);
         assert_eq!(metadata.lm_frame_length, Some(203));
         assert!(metadata.extra.is_empty());
+    }
+
+    #[test]
+    fn fixed_block_1800ms_header_uses_logical_audio_length_and_full_frame_length() {
+        let bundle_json = serde_json::to_string(&OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz_test".to_string(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 87_360,
+            segment_stride: 86_400,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 273,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".to_string(),
+            decode_model: "decode_frame.onnx".to_string(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".to_string()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(crate::metadata::Q8_LM_LOGIT_STEP as f32),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        })
+        .unwrap();
+        let weights = [0x42_u8; 32];
+        let header = lm_ecdc_fixed_header_for_weights(
+            &bundle_json,
+            86_400,
+            QUANTIZED_LM_BITSTREAM_VERSION,
+            &weights,
+        )
+        .unwrap();
+        let metadata: EcdcMetadata = read_ecdc_header(&mut Cursor::new(header.as_slice())).unwrap();
+        assert_eq!(metadata.audio_length, 86_400);
+        assert_eq!(metadata.lm_frame_length, Some(273));
+        assert!(metadata.extra.is_empty());
+    }
+
+    #[test]
+    fn fixed_context_geometry_is_recognized_with_480_sample_context() {
+        assert_eq!(fixed_context_samples(64_960, 64_000).unwrap(), Some(480));
+        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), Some(480));
+    }
+
+    #[test]
+    fn non_fixed_geometry_is_not_misclassified_as_fixed_context() {
+        // Legacy EnCodec bundles may also have segment_samples >
+        // segment_stride for ordinary overlap-add; only the explicitly
+        // recognised fixed-context geometries should be treated specially.
+        assert_eq!(fixed_context_samples(48_000, 47_520).unwrap(), None);
+        assert_eq!(fixed_context_samples(64_960, 64_960).unwrap(), None);
+    }
+
+    #[test]
+    fn fixed_context_geometry_rejects_malformed_profiles() {
+        // segment_samples smaller than segment_stride for a recognized
+        // owned-duration stride.
+        assert!(fixed_context_samples(63_999, 64_000).is_err());
+        // Odd context excess (cannot be split symmetrically).
+        assert!(fixed_context_samples(64_961, 64_000).is_err());
+        // Even excess, but not the required 480 samples per side.
+        assert!(fixed_context_samples(65_000, 64_000).is_err());
+    }
+
+    #[test]
+    fn fixed_context_crop_concat_strips_context_and_returns_owned_audio() {
+        let meta: OnnxFrameBundleMetadata =
+            serde_json::from_str(&fixed_block_bundle_json()).unwrap();
+        let stride = meta.segment_stride;
+        let context = 480usize;
+
+        // Two full chunks plus a final partial chunk of 2,000 owned samples.
+        let audio_length = stride * 2 + 2_000;
+        let frame_count = 3usize;
+        let mut decoded = vec![0.0_f32; frame_count * meta.channels * meta.segment_samples];
+        for frame in 0..frame_count {
+            for channel in 0..meta.channels {
+                let base = frame * meta.channels * meta.segment_samples + channel * meta.segment_samples;
+                for index in 0..meta.segment_samples {
+                    // Encode a value that lets us check exactly which
+                    // window position (and therefore which logical sample)
+                    // ended up in the output.
+                    decoded[base + index] = (frame * 1_000_000 + channel * 100_000 + index) as f32;
+                }
+            }
+        }
+
+        let output =
+            fixed_context_crop_concat(&meta, audio_length, &decoded, stride, context).unwrap();
+        assert_eq!(output.len(), meta.channels * audio_length);
+
+        // First owned sample of chunk 0 comes from model index `context`.
+        assert_eq!(output[0], (0 * 1_000_000 + 480) as f32);
+        // Last owned sample of chunk 0 comes from model index context + stride - 1.
+        assert_eq!(output[stride - 1], (context + stride - 1) as f32);
+        // First owned sample of chunk 1 (logical offset = stride).
+        assert_eq!(output[stride], (1_000_000 + 480) as f32);
+        // Final partial chunk only contributes its true owned length (2,000).
+        assert_eq!(output[2 * stride], (2_000_000 + 480) as f32);
+        assert_eq!(output[audio_length - 1], (2_000_000 + 480 + 1_999) as f32);
+    }
+
+    #[test]
+    fn fixed_context_crop_concat_rejects_too_short_decoded_output() {
+        let meta: OnnxFrameBundleMetadata =
+            serde_json::from_str(&fixed_block_bundle_json()).unwrap();
+        let stride = meta.segment_stride;
+        let context = 480usize;
+        let audio_length = stride;
+        // Too short: missing the full segment_samples length per channel.
+        let decoded = vec![0.0_f32; meta.channels * (context + stride - 1)];
+        assert!(fixed_context_crop_concat(&meta, audio_length, &decoded, stride, context).is_err());
     }
 }

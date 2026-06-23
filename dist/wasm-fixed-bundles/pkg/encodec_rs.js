@@ -161,25 +161,6 @@ export function bundleMetadata(bundle_json) {
 }
 
 /**
- * @param {string} bundle_json
- * @param {Float32Array} audio
- * @returns {Float32Array}
- */
-export function ecdcEncodeModelInput(bundle_json, audio) {
-    const ptr0 = passStringToWasm0(bundle_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF32ToWasm0(audio, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.ecdcEncodeModelInput(ptr0, len0, ptr1, len1);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v3 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-    return v3;
-}
-
-/**
  * @param {Uint8Array} payload
  * @returns {any}
  */
