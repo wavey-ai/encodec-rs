@@ -1,6 +1,37 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
+
+/// (segment_samples, segment_stride) pairs for the fixed contextual bundles.
+/// A bundle is only treated as a fixed-context profile (full-window decode +
+/// sample-domain crop, no overlap-add) when its geometry matches one of
+/// these exactly. Legacy EnCodec bundles may also have segment_samples >
+/// segment_stride for ordinary overlap-add and must not be misclassified.
+const FIXED_CONTEXT_GEOMETRIES: &[(usize, usize)] = &[(64_960, 64_000), (87_360, 86_400)];
+
+/// Returns the symmetric per-side context sample count for a recognized
+/// fixed contextual bundle profile, or `None` if the geometry does not
+/// match a known fixed-context profile (e.g. a legacy overlap-add bundle).
+pub fn fixed_context_samples(segment_samples: usize, segment_stride: usize) -> Result<Option<usize>> {
+    if !FIXED_CONTEXT_GEOMETRIES.contains(&(segment_samples, segment_stride)) {
+        return Ok(None);
+    }
+    let excess = segment_samples.checked_sub(segment_stride).ok_or_else(|| {
+        anyhow!(
+            "segment_samples {} is smaller than segment_stride {}",
+            segment_samples,
+            segment_stride,
+        )
+    })?;
+    if excess % 2 != 0 {
+        bail!(
+            "fixed model geometry must be symmetric: samples={} stride={}",
+            segment_samples,
+            segment_stride,
+        );
+    }
+    Ok(Some(excess / 2))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EcdcBandwidthPreset {

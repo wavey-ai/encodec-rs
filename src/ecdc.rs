@@ -8,6 +8,7 @@ use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
+use crate::ecdc_presets::fixed_context_samples;
 use crate::format::{
     ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_ms, ecdc_lm_frame_length,
     segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout,
@@ -295,7 +296,7 @@ fn encode_audio_to_ecdc_impl(
         frame_batch_size,
         chunk_layout,
         fixed_lm_frame_length,
-    )
+    )?
     .into_iter()
     .enumerate()
     {
@@ -410,6 +411,7 @@ fn decode_ecdc_impl(
 
     let chunk_layout =
         ecdc_chunk_layout_for_chunk_count(&bundle_meta, &metadata, raw_chunks.len())?;
+    let context = fixed_context_samples(chunk_layout.samples, chunk_layout.stride)?;
 
     let mut frames = Vec::new();
     let starts = segment_starts(metadata.audio_length, chunk_layout.stride);
@@ -421,13 +423,25 @@ fn decode_ecdc_impl(
         );
     }
     for (offset, chunk) in starts.into_iter().zip(raw_chunks) {
-        let this_len = (metadata.audio_length - offset).min(chunk_layout.samples);
-        let frame_length = ecdc_lm_frame_length(
-            &metadata,
-            this_len,
-            bundle_meta.segment_samples,
-            bundle_meta.frame_length,
-        );
+        let owned_len = (metadata.audio_length - offset).min(chunk_layout.stride);
+        let decode_len = if context.is_some() {
+            chunk_layout.samples
+        } else {
+            owned_len
+        };
+        let frame_length = if context.is_some() {
+            metadata
+                .lm_frame_length
+                .filter(|value| *value > 0)
+                .unwrap_or(bundle_meta.frame_length)
+        } else {
+            ecdc_lm_frame_length(
+                &metadata,
+                owned_len,
+                bundle_meta.segment_samples,
+                bundle_meta.frame_length,
+            )
+        };
         let lm_version = lm_codec.bitstream_version();
         if lm_version != metadata.bitstream_version {
             bail!(
@@ -455,13 +469,20 @@ fn decode_ecdc_impl(
             &bundle_meta,
             &metadata,
             &chunk,
-            this_len,
+            decode_len,
             frame_length,
         )?;
+        let frame = if let Some(context) = context {
+            crop_owned_segment(&frame, context, owned_len)?
+        } else {
+            frame
+        };
         frames.push(frame);
     }
 
-    let reconstructed = if frames.len() <= 1 {
+    let reconstructed = if context.is_some() {
+        concat_owned_frames(&frames)
+    } else if frames.len() <= 1 {
         frames
             .into_iter()
             .next()
@@ -724,29 +745,41 @@ fn encode_segment_batches_with_size(
     batch_size: usize,
     chunk_layout: EcdcChunkLayout,
     fixed_lm_frame_length: Option<usize>,
-) -> Vec<(Vec<usize>, Array3<f32>)> {
+) -> Result<Vec<(Vec<usize>, Array3<f32>)>> {
     let total_samples = audio.shape()[2];
     let starts = segment_starts(total_samples, chunk_layout.stride);
+    let context = fixed_context_samples(chunk_layout.samples, chunk_layout.stride)?;
     let batch_size = batch_size.max(1);
     let mut batches = Vec::new();
     for offsets in starts.chunks(batch_size) {
         let mut frame_lengths = Vec::with_capacity(offsets.len());
         let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, chunk_layout.samples));
         for (batch_index, offset) in offsets.iter().copied().enumerate() {
-            let copy_len = (total_samples - offset).min(chunk_layout.samples);
+            let owned_len = (total_samples - offset).min(chunk_layout.stride);
             let frame_length = fixed_lm_frame_length.unwrap_or_else(|| {
-                segment_frame_length(copy_len, meta.segment_samples, meta.frame_length)
+                if context.is_some() {
+                    meta.frame_length
+                } else {
+                    segment_frame_length(owned_len, meta.segment_samples, meta.frame_length)
+                }
             });
             frame_lengths.push(frame_length);
+            let context = context.unwrap_or(0);
             for channel in 0..meta.channels {
-                for index in 0..copy_len {
-                    batch[[batch_index, channel, index]] = audio[[0, channel, offset + index]];
+                for index in 0..chunk_layout.samples {
+                    let src_index = offset as isize - context as isize + index as isize;
+                    let value = if src_index >= 0 && (src_index as usize) < total_samples {
+                        audio[[0, channel, src_index as usize]]
+                    } else {
+                        0.0
+                    };
+                    batch[[batch_index, channel, index]] = value;
                 }
             }
         }
         batches.push((frame_lengths, batch));
     }
-    batches
+    Ok(batches)
 }
 
 fn frame_encode_batch_size() -> usize {
@@ -841,6 +874,51 @@ fn quantize_logit(value: f64, step: f64) -> f64 {
     let eps = 2_f64.powi(-40);
     let y = value / step;
     (y + 0.5 - eps).floor() * step
+}
+
+/// Crops a fully-decoded fixed model window down to its owned audio region,
+/// discarding the symmetric codec-context samples on each side. No
+/// overlap-add/crossfade happens here: adjoining and seam repair are handled
+/// by the JS chunk-assembly layer.
+fn crop_owned_segment(
+    frame: &Array3<f32>,
+    context: usize,
+    owned_len: usize,
+) -> Result<Array3<f32>> {
+    let decoded_len = frame.shape()[2];
+    if context + owned_len > decoded_len {
+        bail!(
+            "decoded model output is too short: context={} owned_len={} decoded={}",
+            context,
+            owned_len,
+            decoded_len,
+        );
+    }
+    let channels = frame.shape()[1];
+    let mut out = Array3::<f32>::zeros((1, channels, owned_len));
+    for channel in 0..channels {
+        for index in 0..owned_len {
+            out[[0, channel, index]] = frame[[0, channel, context + index]];
+        }
+    }
+    Ok(out)
+}
+
+fn concat_owned_frames(frames: &[Array3<f32>]) -> Array3<f32> {
+    let channels = frames.first().map(|frame| frame.shape()[1]).unwrap_or(0);
+    let total_samples: usize = frames.iter().map(|frame| frame.shape()[2]).sum();
+    let mut output = Array3::<f32>::zeros((1, channels, total_samples));
+    let mut offset = 0usize;
+    for frame in frames {
+        let len = frame.shape()[2];
+        for channel in 0..channels {
+            for index in 0..len {
+                output[[0, channel, offset + index]] = frame[[0, channel, index]];
+            }
+        }
+        offset += len;
+    }
+    output
 }
 
 fn linear_overlap_add(frames: &[Array3<f32>], stride: usize) -> Array3<f32> {

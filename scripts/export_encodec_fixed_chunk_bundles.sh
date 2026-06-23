@@ -10,9 +10,11 @@ LM_FRAME_LENGTH="${LM_FRAME_LENGTH:-300}"
 LM_ENTROPY_LOGIT_STEP="${LM_ENTROPY_LOGIT_STEP:-2.1}"
 BANDWIDTHS="${BANDWIDTHS:-6.0 12.0}"
 
-# Fixed, non-overlapping model windows.
-# Format: bundle-suffix:segment-samples:segment-stride
-CHUNKS="${CHUNKS:-1000ms:48000:48000 1333ms:64000:64000 1800ms:86400:86400}"
+# Fixed model windows with 10ms (480-sample) source context on each side.
+# Format: bundle-suffix:trace-samples:trace-stride
+# trace-samples is the full fixed model input (480 prev + owned + 480 next);
+# trace-stride is the owned-audio advance between consecutive windows.
+CHUNKS="${CHUNKS:-1333ms:64960:64000 1800ms:87360:86400}"
 
 cd "$ENCODEC_REPO"
 
@@ -713,11 +715,12 @@ if bundle.get("segment_stride") != trace_stride:
         f"!= trace_stride {trace_stride}"
     )
 
-if trace_stride != trace_samples:
+context = trace_samples - trace_stride
+if context < 0 or context % 2 != 0:
     raise SystemExit(
-        f"fixed bundle must be non-overlapping: "
-        f"segment_stride {trace_stride} "
-        f"!= segment_samples {trace_samples}"
+        f"fixed bundle context must be symmetric: "
+        f"segment_samples {trace_samples} - segment_stride {trace_stride} "
+        f"must be a non-negative even number"
     )
 PY
 

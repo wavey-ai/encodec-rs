@@ -236,14 +236,6 @@ export function createEncodecEcdcRuntime({
         module.initPanicHook?.();
 
         if (
-          typeof module.ecdcEncodeModelInput !== "function"
-        ) {
-          throw new Error(
-            "encodec-rs WASM is missing ecdcEncodeModelInput; rebuild encodec-rs fixed bundles.",
-          );
-        }
-
-        if (
           typeof module.lmEcdcChunkFromFrame !== "function"
         ) {
           throw new Error(
@@ -670,68 +662,29 @@ export function createEncodecEcdcRuntime({
         encodeModelName,
       );
 
-    const segmentSamples = data.segmentSamples;
-    const segmentFrameLength =
-      data.segmentFrameLength;
-
-    if (segmentSamples <= 0) {
+    if (data.segmentFrameLength <= 0) {
       return new Uint8Array();
     }
 
-    if (segmentFrameLength <= 0) {
-      throw new Error(
-        "segmentFrameLength was not provided for this encode segment.",
-      );
-    }
-
-    if (segmentFrameLength > frameLength) {
-      throw new Error(
-        `segmentFrameLength ${segmentFrameLength} exceeds bundle frame_length ${frameLength}.`,
-      );
-    }
-
+    // The caller assembles the complete fixed model input itself (480
+    // samples of source context on each side of the owned audio); this
+    // runtime only validates and forwards it, it does not assemble context.
     const segmentAudio = normalizeFloat32(
       data.segment,
       "segment",
     );
 
-    const expectedSegmentSamples =
-      channels * segmentSamples;
-
-    if (
-      segmentAudio.length !==
-      expectedSegmentSamples
-    ) {
+    const expectedSegmentBufferLength =
+      channels * modelSegmentSamples;
+    if (segmentAudio.length !== expectedSegmentBufferLength) {
       throw new Error(
         `segment contains ${segmentAudio.length} samples, expected ` +
-        `${channels} channels * ${segmentSamples} samples = ` +
-        `${expectedSegmentSamples}.`,
+          `${channels} channels * ${modelSegmentSamples} model samples = ` +
+          `${expectedSegmentBufferLength}.`,
       );
     }
 
-    const modelInput =
-      encodecModule.ecdcEncodeModelInput(
-        state.bundleJson,
-        segmentAudio,
-      );
-
-    const inputAudio =
-      modelInput instanceof Float32Array
-        ? modelInput
-        : new Float32Array(modelInput);
-
-    const expectedInputSamples =
-      channels * modelSegmentSamples;
-
-    if (
-      inputAudio.length !==
-      expectedInputSamples
-    ) {
-      throw new Error(
-        `encodec-rs produced ${inputAudio.length} model input samples, ` +
-        `expected ${expectedInputSamples}.`,
-      );
-    }
+    const inputAudio = segmentAudio;
 
     const [ort, encodeSession] =
       await Promise.all([
@@ -804,7 +757,7 @@ export function createEncodecEcdcRuntime({
           state.lmWeights,
           scale,
           frameCodes,
-          segmentFrameLength,
+          frameLength,
         );
 
       return chunk instanceof Uint8Array
