@@ -53,7 +53,7 @@ bundles-clean:
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms"
 
 bundles:
-	CHUNKS="1333ms:64000:64000 1800ms:86400:86400" \
+	CHUNKS="1333ms:64960:64000 1800ms:87360:86400" \
 	ENCODEC_RS_REPO="$(ROOT)" \
 	"$(BUNDLE_EXPORT_SCRIPT)"
 
