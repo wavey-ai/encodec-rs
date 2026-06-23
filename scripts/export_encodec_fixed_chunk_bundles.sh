@@ -9,8 +9,13 @@ OPSET="${OPSET:-17}"
 LM_FRAME_LENGTH="${LM_FRAME_LENGTH:-300}"
 LM_ENTROPY_LOGIT_STEP="${LM_ENTROPY_LOGIT_STEP:-2.1}"
 BANDWIDTHS="${BANDWIDTHS:-6.0 12.0}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
-CHUNKS="${CHUNKS:-1000ms:48000:47520 1333ms:64000:63520 1800ms:86400:85920}"
+# guard10 = 480 samples (10 ms @ 48 kHz) of real source context each side.
+# Owned chunk + 2*guard = model window. owned_samples is derived in the bundle step.
+#   1333ms owned 64000 -> model 64960
+#   1800ms owned 86400 -> model 87360
+CHUNKS="${CHUNKS:-1333ms_guard10:64960:64960 1800ms_guard10:87360:87360}"
 
 cd "$ENCODEC_REPO"
 
@@ -20,14 +25,15 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 
 for BANDWIDTH in $BANDWIDTHS; do
-  bw_tag="$(python - "$BANDWIDTH" <<'PY'
+  bw_tag="$(
+    "$PYTHON_BIN" - "$BANDWIDTH" <<'PY'
 import sys
 v = float(sys.argv[1])
 print(str(int(v)) if v.is_integer() else str(v).replace(".", "p"))
 PY
-)"
+  )"
   for CHUNK_SPEC in $CHUNKS; do
-    IFS=: read -r chunk_tag trace_samples trace_stride <<< "$CHUNK_SPEC"
+    IFS=: read -r chunk_tag trace_samples trace_stride <<<"$CHUNK_SPEC"
     OUTPUT_DIR="${ENCODEC_RS_REPO}/onnx-bundles/${MODEL}_${bw_tag}kbps_${chunk_tag}"
     mkdir -p "$OUTPUT_DIR"
 
@@ -35,15 +41,15 @@ PY
     echo "exporting model=${MODEL} bandwidth=${BANDWIDTH} chunk=${chunk_tag} samples=${trace_samples} stride=${trace_stride} output=${OUTPUT_DIR} lm_frame_length=${LM_FRAME_LENGTH}"
 
     ENCODEC_ONNX_TRACE_SAMPLES="$trace_samples" \
-    ENCODEC_ONNX_TRACE_STRIDE="$trace_stride" \
-    python scripts/export_frame_onnx.py \
+      ENCODEC_ONNX_TRACE_STRIDE="$trace_stride" \
+      "$PYTHON_BIN" scripts/export_frame_onnx.py \
       --model "$MODEL" \
       --bandwidth "$BANDWIDTH" \
       --output-dir "$OUTPUT_DIR" \
       --device "$DEVICE" \
       --opset-version "$OPSET"
 
-    python - "$OUTPUT_DIR" "$MODEL" "$BANDWIDTH" "$DEVICE" "$LM_FRAME_LENGTH" "$LM_ENTROPY_LOGIT_STEP" <<'PY'
+    "$PYTHON_BIN" - "$OUTPUT_DIR" "$MODEL" "$BANDWIDTH" "$DEVICE" "$LM_FRAME_LENGTH" "$LM_ENTROPY_LOGIT_STEP" <<'PY'
 from __future__ import annotations
 
 import inspect
@@ -209,6 +215,14 @@ with lm_path.open("wb") as out:
 
 bundle_path = output_dir / "bundle.json"
 bundle = json.loads(bundle_path.read_text())
+guard_samples = None
+bundle_name = output_dir.name
+if "guard" in bundle_name:
+    try:
+        guard_ms = int(bundle_name.rsplit("guard", 1)[1])
+        guard_samples = int(round((guard_ms * 48000) / 1000))
+    except Exception:
+        guard_samples = None
 bundle.update({
     "lm_quant_weight_model": lm_path.name,
     "lm_dim": dim,
@@ -218,7 +232,6 @@ bundle.update({
     "lm_entropy_logit_step": entropy_logit_step,
     "lm_cardinality": cardinality,
 })
-bundle_path.write_text(json.dumps(bundle, indent=2) + "\n")
 
 print(json.dumps({
     "lm_weights": str(lm_path),
@@ -233,7 +246,7 @@ print(json.dumps({
 }, indent=2, sort_keys=True))
 PY
 
-    python - "$OUTPUT_DIR" "$trace_samples" <<'PY'
+    "$PYTHON_BIN" - "$OUTPUT_DIR" "$trace_samples" <<'PY'
 import json
 import struct
 import sys
