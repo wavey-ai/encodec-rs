@@ -293,7 +293,7 @@ export function createEncodecEcdcRuntime({
 
   async function fetchArrayBuffer(
     url,
-    { cache = "forc[118;1:3ue-cache" } = {},
+    { cache = "force-cache" } = {},
   ) {
     const response = await globalScope.fetch(url, {
       cache,
