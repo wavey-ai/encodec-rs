@@ -14,5 +14,11 @@
   "opset_version": 17,
   "bits_per_codebook": 10,
   "codebook_cardinality": 1024,
-  "lm_cardinality": 1024
+  "lm_cardinality": 1024,
+  "lm_quant_weight_model": "lm_weights_q8.bin",
+  "lm_dim": 200,
+  "lm_num_layers": 5,
+  "lm_past_context": 525,
+  "lm_logit_step": 0.015625,
+  "lm_entropy_logit_step": 2.1
 }
