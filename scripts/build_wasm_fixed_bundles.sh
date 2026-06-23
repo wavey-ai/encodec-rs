@@ -6,7 +6,7 @@ OUT="${OUT:-${ROOT}/dist/wasm-fixed-bundles}"
 BINDGEN_TARGET="${BINDGEN_TARGET:-web}"
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-nightly}"
 RUST_WASM_TARGET="${RUST_WASM_TARGET:-wasm32-unknown-unknown}"
-BUNDLES="${BUNDLES:-encodec_48khz_6kbps_1333ms_guard10 encodec_48khz_6kbps_1800ms_guard10 encodec_48khz_12kbps_1333ms_guard10 encodec_48khz_12kbps_1800ms_guard10}"
+BUNDLES="${BUNDLES:-encodec_48khz_6kbps_1333ms encodec_48khz_6kbps_1800ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_1800ms}"
 
 cd "$ROOT"
 

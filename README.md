@@ -69,7 +69,7 @@ fixed-chunk mode. It uses only the exported wasm helpers (no native runtime):
 1. reads the source WAV from
    `target/lori-asha-wasm-native/wav/02 - Lori Asha - Westside.48k-stereo.wav`
 2. splits it, soundkit-style, into non-overlapping `1.333s` PCM chunks (one
-   chunk per `encodec_48khz_12kbps_1333ms_guard10` owned hop, `64,000`
+   chunk per `encodec_48khz_12kbps_1333ms` owned hop, `64,000`
    samples)
 3. wasm-encodes each chunk to its own standalone `.ecdc` in `testdata/out/ecdc/`
 4. wasm-decodes each `.ecdc` (read back from disk) to PCM in `testdata/out/pcm/`
@@ -179,11 +179,11 @@ repair (see `chunk-continuity.md`).
 
 | Fixed chunk | Owned | Model window | LM frames | Bundle suffix |
 |---|---:|---:|---:|---|
-| 1333ms | 64,000 | 64,960 | 203 | `_1333ms_guard10` |
-| 1800ms | 86,400 | 87,360 | 273 | `_1800ms_guard10` |
+| 1333ms | 64,000 | 64,960 | 203 | `_1333ms` |
+| 1800ms | 86,400 | 87,360 | 273 | `_1800ms` |
 
-The default wasm fixed-bundle package ships the `1333ms_guard10` and
-`1800ms_guard10` variants for both `6 kbps` and `12 kbps`.
+The default wasm fixed-bundle package ships the `1333ms` and
+`1800ms` variants for both `6 kbps` and `12 kbps`.
 
 ## Runtime Notes
 
