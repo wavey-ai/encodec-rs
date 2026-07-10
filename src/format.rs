@@ -142,6 +142,26 @@ pub fn ecdc_chunk_layout_from_ms(
     }
 }
 
+/// Returns the chunk geometry declared by the bundle itself, without
+/// consulting ECDC stream metadata.
+///
+/// Use this when the caller is working from model-window payload structure or
+/// separately tracked chunk counts rather than a single logical audio-length
+/// field from one ECDC header. Recognised fixed-context bundles preserve their
+/// private model-window/sample-domain split here.
+pub fn ecdc_chunk_layout_from_bundle(bundle_meta: &OnnxFrameBundleMetadata) -> Result<EcdcChunkLayout> {
+    match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
+        Some(_context) => Ok(EcdcChunkLayout {
+            samples: bundle_meta.segment_samples,
+            stride: bundle_meta.segment_stride,
+        }),
+        None => Ok(EcdcChunkLayout {
+            samples: bundle_meta.segment_samples,
+            stride: bundle_meta.segment_stride.max(1),
+        }),
+    }
+}
+
 pub fn ecdc_chunk_layout_from_metadata(
     _bundle_meta: &OnnxFrameBundleMetadata,
     metadata: &EcdcMetadata,
@@ -171,10 +191,7 @@ pub fn ecdc_chunk_layout_for_chunk_count(
     // here rather than substituting audio_length for both samples and
     // stride.
     let layout = match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
-        Some(_context) => EcdcChunkLayout {
-            samples: bundle_meta.segment_samples,
-            stride: bundle_meta.segment_stride,
-        },
+        Some(_context) => ecdc_chunk_layout_from_bundle(bundle_meta)?,
         None => ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?,
     };
     let implied = segment_starts(metadata.audio_length, layout.stride).len();
@@ -385,5 +402,37 @@ mod tests {
         let custom_layout = ecdc_chunk_layout_from_ms(&bundle, Some(250.0)).unwrap();
         assert_eq!(custom_layout.samples, 12_000);
         assert_eq!(custom_layout.stride, 12_000);
+    }
+
+    #[test]
+    fn chunk_layout_from_bundle_preserves_fixed_context_geometry() {
+        let bundle = OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz".into(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 64_960,
+            segment_stride: 64_000,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 203,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".into(),
+            decode_model: "decode_frame.onnx".into(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".into()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(2.1),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        };
+
+        let layout = ecdc_chunk_layout_from_bundle(&bundle).unwrap();
+        assert_eq!(layout.samples, 64_960);
+        assert_eq!(layout.stride, 64_000);
     }
 }
