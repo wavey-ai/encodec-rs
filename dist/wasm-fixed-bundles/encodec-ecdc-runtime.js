@@ -203,6 +203,7 @@ export function createEncodecEcdcRuntime({
 
   const encodeSessionCache = new Map();
   const encodeJobState = new Map();
+  let encodeInferenceTail = Promise.resolve();
 
   function throwIfCancelled(requestId) {
     if (checkCancelled(requestId)) {
@@ -459,8 +460,22 @@ export function createEncodecEcdcRuntime({
     );
   }
 
-  function sessionCacheKey(modelPath, sessionKey) {
-    return `${sessionKey || "default"}:${modelPath || ""}`;
+  // The worker keeps one ONNX session. Jobs using the same model share it;
+  // switching bitrate releases the previous model before loading the next.
+  function sessionCacheKey(modelPath) {
+    return String(modelPath || "");
+  }
+
+  async function releaseCachedEncodeSessions() {
+    const sessions = [...encodeSessionCache.values()];
+    encodeSessionCache.clear();
+
+    await Promise.allSettled(
+      sessions.map(async (sessionPromise) => {
+        const session = await sessionPromise;
+        await session?.release?.();
+      }),
+    );
   }
 
   function bundleAssetMetadata(meta, assetName) {
@@ -504,17 +519,14 @@ export function createEncodecEcdcRuntime({
   }
 
   async function getEncodeSession(
-    sessionKey,
     modelPath,
     assetMetadata = null,
   ) {
-    const cacheKey = sessionCacheKey(
-      modelPath,
-      sessionKey,
-    );
+    const cacheKey = sessionCacheKey(modelPath);
 
     if (!encodeSessionCache.has(cacheKey)) {
       const sessionPromise = (async () => {
+        await releaseCachedEncodeSessions();
         const ort = await ensureOnnxRuntimeModule();
 
         const model = await loadModelForOrt(
@@ -559,6 +571,12 @@ export function createEncodecEcdcRuntime({
     return state;
   }
 
+  function releaseJobState(sessionKey) {
+    return encodeJobState.delete(
+      String(sessionKey || "default"),
+    );
+  }
+
   function updateJobState(
     state,
     data,
@@ -591,7 +609,7 @@ export function createEncodecEcdcRuntime({
     }
   }
 
-  async function encodeEcdcChunk(
+  async function encodeEcdcChunkNow(
     payload,
     { requestId = null } = {},
   ) {
@@ -690,7 +708,6 @@ export function createEncodecEcdcRuntime({
       await Promise.all([
         ensureOnnxRuntimeModule(),
         getEncodeSession(
-          data.sessionKey,
           encodeModelPath,
           encodeModelAssetMetadata,
         ),
@@ -769,11 +786,25 @@ export function createEncodecEcdcRuntime({
     }
   }
 
+  function encodeEcdcChunk(payload, options = {}) {
+    const operation = encodeInferenceTail.then(
+      () => encodeEcdcChunkNow(payload, options),
+    );
+    encodeInferenceTail = operation.catch(() => {});
+    return operation;
+  }
+
   return Object.freeze({
-    clearSessionCache() {
-      encodeSessionCache.clear();
+    clearSessionCache: releaseCachedEncodeSessions,
+
+    diagnostics() {
+      return {
+        encodeJobCount: encodeJobState.size,
+        encodeSessionCount: encodeSessionCache.size,
+      };
     },
 
     encodeEcdcChunk,
+    releaseJobState,
   });
 }
