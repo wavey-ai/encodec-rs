@@ -26,7 +26,8 @@ FIXED_BUNDLES := \
 	bundles \
 	bundles-clean \
 	bundles-check \
-	rebuild-bundles
+	rebuild-bundles \
+	benchmark-encodec-memory
 
 wasm:
 	BUNDLES="$(FIXED_BUNDLES)" \
@@ -81,6 +82,9 @@ rebuild-bundles:
 	$(MAKE) wasm-clean
 	$(MAKE) wasm
 	$(MAKE) wasm-check
+
+benchmark-encodec-memory:
+	/usr/bin/time -l node --expose-gc tools/benchmark-encodec-memory.mjs
 
 wasm-check:
 	test -f "$(WASM_DIST)/pkg/encodec_rs.js"

@@ -525,3 +525,163 @@ What is still missing:
 - CLI resampling
 - broader model coverage beyond the current `48 kHz` stereo family
 - further compression-ratio tuning versus upstream
+
+## Local Node Memory Benchmark
+
+On June 30, 2026, the production `encodec_48khz_12kbps_1333ms` bundle was
+measured locally from Node in this repo with:
+
+```bash
+node --expose-gc tools/benchmark-encodec-memory.mjs
+/usr/bin/time -l node --expose-gc tools/benchmark-encodec-memory.mjs
+```
+
+This benchmark uses the production model bundle at
+`../encodec-worker/wasm/encodec_48khz_12kbps_1333ms/`, records
+`process.memoryUsage()` checkpoints plus short-interval peak sampling, and
+writes the machine-readable report to `tmp/encodec-memory-benchmark.json`.
+
+The observed result was that this current local implementation does not fit
+within a `128 MiB` process budget. The peak sampled RSS was `396.453 MiB`
+(`415711232` raw bytes from `/usr/bin/time -l`), or roughly `268.453 MiB` over
+that limit. Repeated encodes did not show ongoing memory growth after warm-up:
+RSS fell after the first encode and then stayed effectively flat from 5 to 20
+segments (`318.688 MiB` to `319.047 MiB`). Even after encoder release and GC,
+the final settled RSS was still `319.141 MiB`, and a Cloudflare Worker would
+also need additional memory for the Workers runtime and request handling.
+
+Full timed-run output:
+
+```text
+EnCodec local memory benchmark
+Model:
+  encode_frame.onnx: 36.042 MiB (37792462 bytes)
+  lm_weights_q8.bin: 10.484 MiB (10993572 bytes)
+  total model bytes: 46.526 MiB (48786034 bytes)
+Baseline RSS: 42.453 MiB
+RSS after model load: 144.172 MiB
+RSS after encoder initialisation: 359.953 MiB
+RSS after first encode: 337.500 MiB
+RSS after 20 encodes: 319.047 MiB
+Peak sampled RSS: 396.453 MiB
+Final RSS after release and GC: 319.141 MiB
+Peak increase over baseline: 354.000 MiB
+Estimated model/init retained memory: 317.500 MiB
+Observed growth across repeated encodes: -18.453 MiB
+Initialisation time: 18214.804 ms
+First encode time: 905.591 ms
+Steady-state average encode time: 863.046 ms
+
+Checkpoints:
+1. Node process started
+  rss: 42.453 MiB (44515328 bytes, +0.000 MiB from baseline)
+  heapTotal: 6.344 MiB (6651904 bytes, +0.000 MiB from baseline)
+  heapUsed: 3.739 MiB (3920456 bytes, +0.000 MiB from baseline)
+  external: 1.652 MiB (1732062 bytes, +0.000 MiB from baseline)
+  arrayBuffers: 0.010 MiB (10475 bytes, +0.000 MiB from baseline)
+2. Encoder module imported
+  rss: 48.906 MiB (51281920 bytes, +6.453 MiB from baseline)
+  heapTotal: 6.594 MiB (6914048 bytes, +0.250 MiB from baseline)
+  heapUsed: 4.117 MiB (4316528 bytes, +0.378 MiB from baseline)
+  external: 1.909 MiB (2001512 bytes, +0.257 MiB from baseline)
+  arrayBuffers: 0.010 MiB (10475 bytes, +0.000 MiB from baseline)
+3. WASM runtime initialised
+  rss: 50.813 MiB (53280768 bytes, +8.359 MiB from baseline)
+  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
+  heapUsed: 4.196 MiB (4400192 bytes, +0.458 MiB from baseline)
+  external: 3.108 MiB (3259032 bytes, +1.456 MiB from baseline)
+  arrayBuffers: 0.421 MiB (441409 bytes, +0.411 MiB from baseline)
+4. ONNX model bytes loaded
+  rss: 123.156 MiB (129138688 bytes, +80.703 MiB from baseline)
+  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
+  heapUsed: 4.208 MiB (4412672 bytes, +0.469 MiB from baseline)
+  external: 39.150 MiB (41051494 bytes, +37.498 MiB from baseline)
+  arrayBuffers: 36.463 MiB (38233871 bytes, +36.453 MiB from baseline)
+5. LM weights loaded
+  rss: 144.172 MiB (151175168 bytes, +101.719 MiB from baseline)
+  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
+  heapUsed: 4.216 MiB (4421184 bytes, +0.478 MiB from baseline)
+  external: 60.118 MiB (63038638 bytes, +58.467 MiB from baseline)
+  arrayBuffers: 46.947 MiB (49227443 bytes, +46.937 MiB from baseline)
+6. Encoder instance created
+  rss: 359.953 MiB (377438208 bytes, +317.500 MiB from baseline)
+  heapTotal: 8.406 MiB (8814592 bytes, +2.063 MiB from baseline)
+  heapUsed: 5.980 MiB (6270832 bytes, +2.241 MiB from baseline)
+  external: 62.112 MiB (65128690 bytes, +60.460 MiB from baseline)
+  arrayBuffers: 46.947 MiB (49227492 bytes, +46.937 MiB from baseline)
+7. Production PCM segment allocated
+  rss: 360.750 MiB (378273792 bytes, +318.297 MiB from baseline)
+  heapTotal: 8.406 MiB (8814592 bytes, +2.063 MiB from baseline)
+  heapUsed: 5.988 MiB (6278600 bytes, +2.249 MiB from baseline)
+  external: 50.188 MiB (52625965 bytes, +48.536 MiB from baseline)
+  arrayBuffers: 47.443 MiB (49747172 bytes, +47.433 MiB from baseline)
+8. First segment encoded
+  rss: 337.500 MiB (353894400 bytes, +295.047 MiB from baseline)
+  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
+  heapUsed: 6.130 MiB (6428176 bytes, +2.392 MiB from baseline)
+  external: 73.580 MiB (77153809 bytes, +71.928 MiB from baseline)
+  arrayBuffers: 47.459 MiB (49764552 bytes, +47.449 MiB from baseline)
+9. Five segments encoded
+  rss: 318.688 MiB (334168064 bytes, +276.234 MiB from baseline)
+  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
+  heapUsed: 6.475 MiB (6789256 bytes, +2.736 MiB from baseline)
+  external: 73.646 MiB (77223329 bytes, +71.994 MiB from baseline)
+  arrayBuffers: 47.525 MiB (49834072 bytes, +47.515 MiB from baseline)
+10. Twenty segments encoded
+  rss: 319.047 MiB (334544896 bytes, +276.594 MiB from baseline)
+  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
+  heapUsed: 6.371 MiB (6680296 bytes, +2.632 MiB from baseline)
+  external: 73.616 MiB (77191977 bytes, +71.964 MiB from baseline)
+  arrayBuffers: 47.496 MiB (49802720 bytes, +47.486 MiB from baseline)
+11. Encoder references released
+  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
+  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
+  heapUsed: 6.192 MiB (6492312 bytes, +2.453 MiB from baseline)
+  external: 73.616 MiB (77191977 bytes, +71.964 MiB from baseline)
+  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
+12. Garbage collection requested
+  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
+  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
+  heapUsed: 6.194 MiB (6494488 bytes, +2.455 MiB from baseline)
+  external: 26.541 MiB (27830715 bytes, +24.890 MiB from baseline)
+  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
+13. Final settled memory after a short delay
+  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
+  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
+  heapUsed: 6.204 MiB (6505336 bytes, +2.465 MiB from baseline)
+  external: 26.541 MiB (27830715 bytes, +24.890 MiB from baseline)
+  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
+
+Peak sampled values:
+  rss: 396.453 MiB (415711232 bytes, +354.000 MiB from baseline)
+  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
+  heapUsed: 6.474 MiB (6788576 bytes, +2.735 MiB from baseline)
+  external: 74.554 MiB (78175918 bytes, +72.903 MiB from baseline)
+  arrayBuffers: 71.809 MiB (75297125 bytes, +71.799 MiB from baseline)
+
+Timings:
+  Initialisation: 18214.804 ms
+  First encode: 905.591 ms
+  Average encode time for segments 2-5: 871.123 ms
+  Average encode time for segments 6-20: 863.046 ms
+
+JSON report: tmp/encodec-memory-benchmark.json
+       18.93 real        18.11 user         0.16 sys
+           415711232  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+               25857  page reclaims
+                   8  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                  13  voluntary context switches
+               19112  involuntary context switches
+        311848026927  instructions retired
+         55398022140  cycles elapsed
+           379002176  peak memory footprint
+```
