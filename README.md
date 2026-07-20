@@ -14,9 +14,8 @@ overlap-add, and deterministic LM arithmetic coding. It also has no Python
 runtime dependency.
 
 The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
-WAV to `.ecdc`, decodes `.ecdc` back to WAV, and supports CPU, CUDA, CoreML,
-and TensorRT execution targets. LM-assisted entropy coding is implemented in
-Rust.
+WAV to `.ecdc`, and decodes `.ecdc` back to WAV. It supports CPU, CUDA, CoreML,
+and TensorRT execution targets. Rust implements LM-assisted entropy coding.
 
 ## Browser Support
 
@@ -84,10 +83,10 @@ node scripts/westside-chunk-wasm-roundtrip.mjs
 WESTSIDE_MAX_CHUNKS=3 node scripts/westside-chunk-wasm-roundtrip.mjs
 ```
 
-Chatty progress is written to stderr; a JSON summary is written to stdout
+Chatty progress is written to stderr. A JSON summary is written to stdout
 (`node scripts/westside-chunk-wasm-roundtrip.mjs 2>/dev/null` to keep only the
 summary). Each chunk re-uses `lmEcdcFixedHeaderForWeights`, so the chunk size is
-the bundle's `63,520`-frame non-overlapping stride (`~1.323s`); this tiles the
+the bundle's `63,520`-frame non-overlapping stride (`~1.323s`). This tiles the
 track gaplessly and reconstructs every source frame.
 
 Because `wasm-bindgen --target web` does not emit a `package.json`, Node treats
@@ -99,7 +98,7 @@ echo '{ "type": "module" }' > pkg/package.json
 ```
 
 Safari requires Safari 26 or newer for WebGPU, or Safari Technology Preview
-with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself;
+with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself.
 the browser must expose `navigator.gpu` to the page. In Safari, enable
 `Show features for web developers`, then open `Develop > Feature Flags`, search
 for `WebGPU`, and enable it. If present, also enable `GPU Process: DOM Rendering`
@@ -119,11 +118,11 @@ The exported wasm helpers used by the q8 matrix path are:
 
 Use `lmEcdcHeaderForWeights` for dynamic bundles. Use
 `lmEcdcFixedHeaderForWeights` when writing ECDC against a fixed-length ONNX
-graph; it records the fixed chunk samples, stride, and LM frame length (`fl`) so
-decoders pull the full graph width for every chunk, including the final chunk.
-For fixed graph chunks, finish LM packet encoding with
-`QuantizedLmChunkEncoder.finishPadded(frameLength)` so encodec-rs writes zero-code
-padding for any short final segment before the ECDC packet is wrapped.
+graph. It records the fixed chunk samples, stride, and LM frame length (`fl`) so
+decoders have the full graph width for each chunk. This also applies to the final
+chunk. For fixed graph chunks, finish LM packet encoding with
+`QuantizedLmChunkEncoder.finishPadded(frameLength)`. This makes encodec-rs write
+zero-code padding for a short final segment before it wraps the ECDC packet.
 
 ## Native Scope
 
@@ -167,12 +166,12 @@ actual sample count:
 
 Fixed bundles trace the ONNX graph at one chunk size. ECDC written for these
 bundles should include `cs`, `cst`, and `fl`, and should entropy-code the full
-`fl` steps. The PCM input segment is already zero-padded before EnCodec encode;
+`fl` steps. The PCM input segment is already zero-padded before EnCodec encode.
 the ECDC writer must not shorten the LM stream for the final partial chunk.
 
 Fixed bundles are guarded: each logical chunk is encoded with ±10 ms (480
 samples) of real neighbouring source context on each side. The model window is
-`owned + 2 × 480`; the guard samples are codec context only and are cropped
+`owned + 2 × 480`. The guard samples are codec context only and are cropped
 after decode, leaving the exact owned-sample timeline. Adjacent decoded chunks
 are then joined with a deterministic `cubic-hermite-v1` 0.5 ms (24-sample) seam
 repair (see `chunk-continuity.md`).
@@ -214,17 +213,16 @@ frame runtime:
 
 The ONNX runtime implements those traits through `OnnxFrameCodec`
 and `OnnxLmCodec`, so existing CLI/browser parity remains the validation
-harness. For iOS/macOS product code, the intended final shape is a Swift/MLX
-frame backend, with Core ML or ONNX Runtime used only as transitional parity
-checks.
+harness. The intended Apple product code uses a Swift/MLX frame backend. Use
+Core ML or ONNX Runtime only for transitional parity checks.
 
 ### Apple MLX Runtime
 
 Apple MLX support now lives in this repository under `apple/`. The Swift package
-loads MLX Swift `.safetensors` archives for frame `encode_frame` /
-`decode_frame`, while the Rust crate owns `.ecdc`, portable q8 LM coding, and
-the C ABI bridge in `src/mlx_bridge.rs`. See `apple/README.md` for Swift package
-build, test, and Westside benchmark commands.
+loads MLX Swift `.safetensors` archives for `encode_frame` and `decode_frame`.
+The Rust crate owns `.ecdc`, portable q8 LM coding, and the C ABI bridge in
+`src/mlx_bridge.rs`. See `apple/README.md` for Swift build, test, and Westside
+benchmark commands.
 
 After downloading the bundles, convert them with:
 
@@ -242,9 +240,9 @@ scripts/create_mlx_fixed_bundles.sh
 
 Each MLX bundle contains `bundle.json`, `lm_weights_q8.bin`,
 `encode_frame.safetensors`, `decode_frame.safetensors`, and
-`mlx-manifest.json`. The Python step is offline conversion tooling only; the
+`mlx-manifest.json`. The Python step is offline conversion tooling only. The
 native app path is Swift/MLX plus the Rust `.ecdc`/portable-LM boundary.
-The fixed-bundle helper exports from the fixed ONNX bundles, so the standard
+The fixed-bundle helper exports from the fixed ONNX bundles. Thus, the standard
 1333ms and 1800ms MLX bundles use the same 300-step q8 LM weights as ONNX. It
 does not create application-specific compatibility bundles.
 
@@ -405,9 +403,9 @@ M bytes   chunk payload
 ```
 
 The normal q8 LM `.ecdc` path always writes CRC-wrapped chunks. Chunk count is
-not stored as a separate top-level field; decoders read chunk frames after the
-metadata header and validate the count against the audio length and chunk
-layout implied by metadata (`al`, `cs`, `cst`, `fl`).
+not stored as a separate top-level field. Decoders read chunk frames after the
+metadata header. They validate the count against the audio length and the chunk
+layout from metadata (`al`, `cs`, `cst`, `fl`).
 
 Do not concatenate multiple `.ecdc` files to make one record payload. A record
 spiral carries one complete `.ecdc` byte stream. That stream may contain many
@@ -452,40 +450,40 @@ and decode, while payload size is still slightly larger than upstream.
 
 ### Apple M4 CoreML Check
 
-On April 26, 2026, the same `Lori Asha - Westside` track was also tested on an
-Apple M4 host using the new CoreML execution target and LM-assisted `6 kbps`
-`.ecdc` encode/decode:
+On April 26, 2026, the same `Lori Asha - Westside` track was tested on an Apple
+M4 host. The test used the new CoreML target and LM-assisted `6 kbps` `.ecdc`
+encoding and decoding:
 
 | Runtime | Bitrate | Encode | Decode | `.ecdc` size |
 |---|---:|---:|---:|---:|
 | `encodec-rs` CoreML (`--coreml --coreml-compute-units cpu-and-gpu`) | 6 kbps | 163.84s | 157.26s | 115,572 bytes |
 
-That is roughly `5.9x` slower than the current `encodec-rs` benchmark snapshot
-above (`27.74s` encode / `26.41s` decode at `6 kbps`), so CoreML support is
-functional on Apple Silicon but not yet competitive with the current Linux /
-NVIDIA path.
+This is approximately `5.9x` slower than the current `encodec-rs` benchmark.
+That benchmark took `27.74s` to encode and `26.41s` to decode at `6 kbps`.
+CoreML support works on Apple Silicon. It is not yet competitive with the
+current Linux and NVIDIA path.
 
 ### Apple M1 ONNX CPU Check
 
-On May 19, 2026, after splitting `.ecdc` from the concrete ONNX runtime, the
-same `Lori Asha - Westside` 48 kHz stereo fixture was measured on an Apple M1
-host using ONNX Runtime `1.25.1` CPU, release build, batch size `8`, and
-LM-assisted `.ecdc` with chunk CRC enabled:
+On May 19, 2026, the test measured the same `Lori Asha - Westside` fixture on an
+Apple M1 host. The fixture was 48 kHz stereo. The test used ONNX Runtime `1.25.1`
+on the CPU. It used a release build, batch size `8`, and LM-assisted `.ecdc` with
+chunk CRC. This test occurred after the `.ecdc` and ONNX runtime split:
 
 | Runtime | Bitrate | Encode | Decode | `.ecdc` size | vs native snapshot |
 |---|---:|---:|---:|---:|---:|
 | `encodec-rs` ONNX CPU on Apple M1 | 6 kbps | 101.44s | 105.67s | 121,816 bytes | 3.66x / 4.00x slower |
 | `encodec-rs` ONNX CPU on Apple M1 | 12 kbps | 126.48s | 143.18s | 255,061 bytes | 4.02x / 4.75x slower |
 
-This confirms the trait/backend split did not change the neural runtime: Apple
-native performance still needs a real MLX/Metal frame backend rather than the
-current ONNX CPU path.
+This confirms that the trait and backend split did not change the neural
+runtime. Apple-native performance still needs an MLX/Metal frame backend. The
+current ONNX CPU path is not sufficient.
 
 ### MLX Archive Comparison
 
-On the same frame models, the MLX archive export keeps only the
-initializers needed by the Swift/MLX runtime and the manifest needed to rebuild
-the graph:
+For the same frame models, the MLX archive export keeps only required files. It
+keeps the initializers for the Swift/MLX runtime. It also keeps the manifest
+that rebuilds the graph:
 
 | Bundle | Model | Initializers | Parameters | ONNX file | MLX safetensors |
 |---|---|---:|---:|---:|---:|
@@ -496,13 +494,13 @@ the graph:
 
 The exported graphs still contain the same neural work as the ONNX benchmark:
 convolutions, transposed convolutions, instance normalization, LSTMs, and RVQ
-math. The Apple MLX runtime now loads these archives, evaluates native
-`encode_frame` and `decode_frame`, and bridges q8 LM-assisted `.ecdc`
-encode/decode through Rust with Swift/MLX frame callbacks.
+math. The Apple MLX runtime loads these archives. It evaluates native
+`encode_frame` and `decode_frame`. Swift/MLX frame callbacks bridge q8
+LM-assisted `.ecdc` encoding and decoding through Rust.
 
-On the same Apple M1 host as the ONNX CPU check above, the full `Lori Asha -
-Westside` fixture (`208.509s`, 48 kHz stereo) was measured through the Release
-Apple test bundle with q8 LM entropy coding:
+The release Apple test bundle measured the full `Lori Asha - Westside` fixture.
+The test used the same Apple M1 host as the ONNX CPU check. The fixture was
+`208.509s`, 48 kHz stereo. The test used q8 LM entropy coding:
 
 | Runtime | Mode | Bitrate | Encode | Decode | `.ecdc` size |
 |---|---|---:|---:|---:|---:|
@@ -545,10 +543,10 @@ The observed result was that this current local implementation does not fit
 within a `128 MiB` process budget. The peak sampled RSS was `396.453 MiB`
 (`415711232` raw bytes from `/usr/bin/time -l`), or roughly `268.453 MiB` over
 that limit. Repeated encodes did not show ongoing memory growth after warm-up:
-RSS fell after the first encode and then stayed effectively flat from 5 to 20
-segments (`318.688 MiB` to `319.047 MiB`). Even after encoder release and GC,
-the final settled RSS was still `319.141 MiB`, and a Cloudflare Worker would
-also need additional memory for the Workers runtime and request handling.
+RSS fell after the first encode. It then stayed effectively flat from 5 to 20
+segments (`318.688 MiB` to `319.047 MiB`). After encoder release and GC, the
+final RSS was still `319.141 MiB`. A Cloudflare Worker also needs memory for the
+Workers runtime and request handling.
 
 Full timed-run output:
 
@@ -585,7 +583,7 @@ Checkpoints:
   heapUsed: 4.117 MiB (4316528 bytes, +0.378 MiB from baseline)
   external: 1.909 MiB (2001512 bytes, +0.257 MiB from baseline)
   arrayBuffers: 0.010 MiB (10475 bytes, +0.000 MiB from baseline)
-3. WASM runtime initialised
+3. WASM runtime initialized
   rss: 50.813 MiB (53280768 bytes, +8.359 MiB from baseline)
   heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
   heapUsed: 4.196 MiB (4400192 bytes, +0.458 MiB from baseline)
