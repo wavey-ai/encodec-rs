@@ -1,0 +1,7 @@
+{
+  "bundle_dir": "onnx-bundles/encodec_48khz_6kbps_1333ms",
+  "decoded_samples": 7104000,
+  "input_ecdc": "/opt/encodec-xarch/cases/confirmation-i-want-her-v1--encodec_48khz_6kbps_1333ms/output.ecdc",
+  "output_wav": "/opt/encodec-xarch/cases/confirmation-i-want-her-v1--encodec_48khz_6kbps_1333ms/decoded.wav",
+  "sample_rate": 48000
+}

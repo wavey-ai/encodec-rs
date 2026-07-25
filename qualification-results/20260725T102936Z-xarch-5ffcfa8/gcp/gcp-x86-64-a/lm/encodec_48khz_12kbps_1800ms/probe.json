@@ -1,0 +1,13 @@
+{
+  "arch": "x86_64",
+  "bandwidth_kbps": 12.0,
+  "bitstream_version": 2,
+  "bundle_dir": "onnx-bundles/encodec_48khz_12kbps_1800ms",
+  "cardinality": 1024,
+  "cdf_sequence_hash": "d312fc04b4d3a5df2fbb1b169dabeeaddd8e6c3ce219e801fbcf8cd56b0291c3",
+  "lm_hash": "b8c21d6650b62a0b8cd210c6e624dfbb30c3a3989466544b1f5e1df963eca517",
+  "model_name": "encodec_48khz",
+  "num_codebooks": 8,
+  "os": "linux",
+  "steps": 273
+}

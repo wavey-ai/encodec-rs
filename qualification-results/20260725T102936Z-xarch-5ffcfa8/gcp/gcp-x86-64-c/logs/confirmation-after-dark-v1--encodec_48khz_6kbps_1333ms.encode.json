@@ -1,0 +1,13 @@
+{
+  "bandwidth_kbps": 6.0,
+  "batch_size": 4,
+  "bundle_dir": "onnx-bundles/encodec_48khz_6kbps_1333ms",
+  "chunk_crc": true,
+  "chunk_ms": null,
+  "input_wav": "/opt/encodec-xarch/repo/canonical-wav/confirmation-after-dark-v1.wav",
+  "language_model": "q8",
+  "model_name": "encodec_48khz",
+  "output_ecdc": "/opt/encodec-xarch/cases/confirmation-after-dark-v1--encodec_48khz_6kbps_1333ms/output.ecdc",
+  "payload_bytes": 124554,
+  "sample_rate": 48000
+}

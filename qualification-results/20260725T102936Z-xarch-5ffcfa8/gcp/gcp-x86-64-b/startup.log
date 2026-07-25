@@ -1,0 +1,1192 @@
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:5 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Hit:2 https://deb.debian.org/debian bookworm InRelease
+Get:3 https://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+Get:4 https://deb.debian.org/debian bookworm-backports InRelease [59.4 kB]
+Get:7 https://packages.cloud.google.com/apt google-compute-engine-bookworm-stable InRelease [1321 B]
+Get:6 https://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+Get:8 https://packages.cloud.google.com/apt cloud-sdk-bookworm InRelease [1656 B]
+Get:9 https://deb.debian.org/debian bookworm-backports/main Sources.diff/Index [63.3 kB]
+Get:10 https://deb.debian.org/debian bookworm-backports/main Sources T-2026-07-24-0205.54-F-2026-07-24-0205.54.pdiff [935 B]
+Get:10 https://deb.debian.org/debian bookworm-backports/main Sources T-2026-07-24-0205.54-F-2026-07-24-0205.54.pdiff [935 B]
+Get:11 https://deb.debian.org/debian-security bookworm-security/main Sources [221 kB]
+Get:12 https://deb.debian.org/debian-security bookworm-security/main amd64 Packages [319 kB]
+Get:13 https://deb.debian.org/debian-security bookworm-security/main Translation-en [195 kB]
+Get:14 https://packages.cloud.google.com/apt cloud-sdk-bookworm/main amd64 Packages [4991 kB]
+Get:15 https://packages.cloud.google.com/apt cloud-sdk-bookworm/main all Packages [2096 kB]
+Fetched 8039 kB in 1s (9012 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+ca-certificates is already the newest version (20230311+deb12u1).
+curl is already the newest version (7.88.1-10+deb12u15).
+jq is already the newest version (1.6-2.1+deb12u2).
+jq set to manually installed.
+The following additional packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu bzip2 cpp cpp-12 dpkg-dev
+  fakeroot fontconfig-config fonts-dejavu-core g++ g++-12 gcc gcc-12
+  libabsl20220623 libalgorithm-diff-perl libalgorithm-diff-xs-perl
+  libalgorithm-merge-perl libaom3 libasan8 libatomic1 libavif15 libbinutils
+  libc-dev-bin libc-devtools libc6-dev libcc1-0 libcrypt-dev libctf-nobfd0
+  libctf0 libdav1d6 libde265-0 libdeflate0 libdpkg-perl libfakeroot
+  libfile-fcntllock-perl libfontconfig1 libgav1-1 libgcc-12-dev libgd3
+  libgdbm-compat4 libgomp1 libgprofng0 libheif1 libisl23 libitm1 libjansson4
+  libjbig0 libjpeg62-turbo liblerc4 liblocale-gettext-perl liblsan0 libmpc3
+  libmpfr6 libnsl-dev libnuma1 libperl5.36 libpkgconf3 libquadmath0 librav1e0
+  libstdc++-12-dev libsvtav1enc1 libtiff6 libtirpc-dev libtsan2 libubsan1
+  libwebp7 libx11-6 libx11-data libx265-199 libxau6 libxcb1 libxdmcp6 libxpm4
+  libyuv0 linux-libc-dev make manpages-dev patch perl perl-modules-5.36
+  pkgconf pkgconf-bin rpcsvc-proto
+Suggested packages:
+  binutils-doc bzip2-doc cpp-doc gcc-12-locales cpp-12-doc debian-keyring
+  g++-multilib g++-12-multilib gcc-12-doc gcc-multilib autoconf automake
+  libtool flex bison gdb gcc-doc gcc-12-multilib glibc-doc git bzr libgd-tools
+  libssl-doc libstdc++-12-doc make-doc ed diffutils-doc perl-doc
+  libterm-readline-gnu-perl | libterm-readline-perl-perl
+  libtap-harness-archive-perl zip
+The following NEW packages will be installed:
+  binutils binutils-common binutils-x86-64-linux-gnu build-essential bzip2 cpp
+  cpp-12 dpkg-dev fakeroot fontconfig-config fonts-dejavu-core g++ g++-12 gcc
+  gcc-12 libabsl20220623 libalgorithm-diff-perl libalgorithm-diff-xs-perl
+  libalgorithm-merge-perl libaom3 libasan8 libatomic1 libavif15 libbinutils
+  libc-dev-bin libc-devtools libc6-dev libcc1-0 libcrypt-dev libctf-nobfd0
+  libctf0 libdav1d6 libde265-0 libdeflate0 libdpkg-perl libfakeroot
+  libfile-fcntllock-perl libfontconfig1 libgav1-1 libgcc-12-dev libgd3
+  libgdbm-compat4 libgomp1 libgprofng0 libheif1 libisl23 libitm1 libjansson4
+  libjbig0 libjpeg62-turbo liblerc4 liblocale-gettext-perl liblsan0 libmpc3
+  libmpfr6 libnsl-dev libnuma1 libperl5.36 libpkgconf3 libquadmath0 librav1e0
+  libssl-dev libstdc++-12-dev libsvtav1enc1 libtiff6 libtirpc-dev libtsan2
+  libubsan1 libwebp7 libx11-6 libx11-data libx265-199 libxau6 libxcb1
+  libxdmcp6 libxpm4 libyuv0 linux-libc-dev make manpages-dev patch perl
+  perl-modules-5.36 pkg-config pkgconf pkgconf-bin rpcsvc-proto unzip
+0 upgraded, 88 newly installed, 0 to remove and 1 not upgraded.
+Need to get 90.3 MB of archives.
+After this operation, 380 MB of additional disk space will be used.
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:25 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Get:2 https://deb.debian.org/debian bookworm/main amd64 perl-modules-5.36 all 5.36.0-7+deb12u3 [2815 kB]
+Get:3 https://deb.debian.org/debian bookworm/main amd64 libgdbm-compat4 amd64 1.23-3 [48.2 kB]
+Get:4 https://deb.debian.org/debian bookworm/main amd64 libperl5.36 amd64 5.36.0-7+deb12u3 [4196 kB]
+Get:5 https://deb.debian.org/debian bookworm/main amd64 perl amd64 5.36.0-7+deb12u3 [239 kB]
+Get:6 https://deb.debian.org/debian bookworm/main amd64 liblocale-gettext-perl amd64 1.07-5 [15.4 kB]
+Get:7 https://deb.debian.org/debian bookworm/main amd64 bzip2 amd64 1.0.8-5+b1 [49.8 kB]
+Get:8 https://deb.debian.org/debian bookworm/main amd64 binutils-common amd64 2.40-2 [2487 kB]
+Get:9 https://deb.debian.org/debian bookworm/main amd64 libbinutils amd64 2.40-2 [572 kB]
+Get:10 https://deb.debian.org/debian bookworm/main amd64 libctf-nobfd0 amd64 2.40-2 [153 kB]
+Get:11 https://deb.debian.org/debian bookworm/main amd64 libctf0 amd64 2.40-2 [89.8 kB]
+Get:12 https://deb.debian.org/debian bookworm/main amd64 libgprofng0 amd64 2.40-2 [812 kB]
+Get:13 https://deb.debian.org/debian bookworm/main amd64 libjansson4 amd64 2.14-2 [40.8 kB]
+Get:14 https://deb.debian.org/debian bookworm/main amd64 binutils-x86-64-linux-gnu amd64 2.40-2 [2246 kB]
+Get:15 https://deb.debian.org/debian bookworm/main amd64 binutils amd64 2.40-2 [65.0 kB]
+Get:16 https://deb.debian.org/debian bookworm/main amd64 libc-dev-bin amd64 2.36-9+deb12u14 [48.1 kB]
+Get:17 https://deb.debian.org/debian bookworm/main amd64 libcrypt-dev amd64 1:4.4.33-2 [118 kB]
+Get:18 https://deb.debian.org/debian bookworm/main amd64 libtirpc-dev amd64 1.3.3+ds-1 [191 kB]
+Get:19 https://deb.debian.org/debian bookworm/main amd64 libnsl-dev amd64 1.3.0-2 [66.4 kB]
+Get:20 https://deb.debian.org/debian bookworm/main amd64 rpcsvc-proto amd64 1.4.3-1 [63.3 kB]
+Get:21 https://deb.debian.org/debian bookworm/main amd64 libc6-dev amd64 2.36-9+deb12u14 [1904 kB]
+Get:22 https://deb.debian.org/debian bookworm/main amd64 libisl23 amd64 0.25-1.1 [683 kB]
+Get:23 https://deb.debian.org/debian bookworm/main amd64 libmpfr6 amd64 4.2.0-1 [701 kB]
+Get:24 https://deb.debian.org/debian bookworm/main amd64 libmpc3 amd64 1.3.1-1 [51.5 kB]
+Get:26 https://deb.debian.org/debian bookworm/main amd64 cpp-12 amd64 12.2.0-14+deb12u1 [9768 kB]
+Get:27 https://deb.debian.org/debian bookworm/main amd64 cpp amd64 4:12.2.0-3 [6836 B]
+Get:28 https://deb.debian.org/debian bookworm/main amd64 libcc1-0 amd64 12.2.0-14+deb12u1 [41.7 kB]
+Get:29 https://deb.debian.org/debian bookworm/main amd64 libgomp1 amd64 12.2.0-14+deb12u1 [116 kB]
+Get:30 https://deb.debian.org/debian bookworm/main amd64 libitm1 amd64 12.2.0-14+deb12u1 [26.1 kB]
+Get:31 https://deb.debian.org/debian bookworm/main amd64 libatomic1 amd64 12.2.0-14+deb12u1 [9376 B]
+Get:32 https://deb.debian.org/debian bookworm/main amd64 libasan8 amd64 12.2.0-14+deb12u1 [2193 kB]
+Get:33 https://deb.debian.org/debian bookworm/main amd64 liblsan0 amd64 12.2.0-14+deb12u1 [969 kB]
+Get:34 https://deb.debian.org/debian bookworm/main amd64 libtsan2 amd64 12.2.0-14+deb12u1 [2197 kB]
+Get:35 https://deb.debian.org/debian-security bookworm-security/main amd64 linux-libc-dev amd64 6.1.177-1 [2307 kB]
+Get:36 https://deb.debian.org/debian bookworm/main amd64 libubsan1 amd64 12.2.0-14+deb12u1 [883 kB]
+Get:37 https://deb.debian.org/debian bookworm/main amd64 libquadmath0 amd64 12.2.0-14+deb12u1 [145 kB]
+Get:38 https://deb.debian.org/debian bookworm/main amd64 libgcc-12-dev amd64 12.2.0-14+deb12u1 [2437 kB]
+Get:39 https://deb.debian.org/debian bookworm/main amd64 gcc-12 amd64 12.2.0-14+deb12u1 [19.3 MB]
+Get:40 https://deb.debian.org/debian bookworm/main amd64 gcc amd64 4:12.2.0-3 [5216 B]
+Get:41 https://deb.debian.org/debian bookworm/main amd64 libstdc++-12-dev amd64 12.2.0-14+deb12u1 [2047 kB]
+Get:42 https://deb.debian.org/debian bookworm/main amd64 g++-12 amd64 12.2.0-14+deb12u1 [10.7 MB]
+Get:43 https://deb.debian.org/debian bookworm/main amd64 g++ amd64 4:12.2.0-3 [1356 B]
+Get:44 https://deb.debian.org/debian bookworm/main amd64 make amd64 4.3-4.1 [396 kB]
+Get:45 https://deb.debian.org/debian bookworm/main amd64 libdpkg-perl all 1.21.23 [604 kB]
+Get:46 https://deb.debian.org/debian bookworm/main amd64 patch amd64 2.7.6-7 [128 kB]
+Get:47 https://deb.debian.org/debian bookworm/main amd64 dpkg-dev all 1.21.23 [1354 kB]
+Get:48 https://deb.debian.org/debian bookworm/main amd64 build-essential amd64 12.9 [7704 B]
+Get:49 https://deb.debian.org/debian bookworm/main amd64 libfakeroot amd64 1.31-1.2 [28.3 kB]
+Get:50 https://deb.debian.org/debian bookworm/main amd64 fakeroot amd64 1.31-1.2 [66.9 kB]
+Get:51 https://deb.debian.org/debian bookworm/main amd64 fonts-dejavu-core all 2.37-6 [1068 kB]
+Get:52 https://deb.debian.org/debian bookworm/main amd64 fontconfig-config amd64 2.14.1-4 [315 kB]
+Get:53 https://deb.debian.org/debian bookworm/main amd64 libabsl20220623 amd64 20220623.1-1+deb12u2 [391 kB]
+Get:54 https://deb.debian.org/debian bookworm/main amd64 libalgorithm-diff-perl all 1.201-1 [43.3 kB]
+Get:55 https://deb.debian.org/debian bookworm/main amd64 libalgorithm-diff-xs-perl amd64 0.04-8+b1 [11.4 kB]
+Get:56 https://deb.debian.org/debian bookworm/main amd64 libalgorithm-merge-perl all 0.08-5 [11.8 kB]
+Get:57 https://deb.debian.org/debian bookworm/main amd64 libaom3 amd64 3.6.0-1+deb12u2 [1850 kB]
+Get:58 https://deb.debian.org/debian bookworm/main amd64 libdav1d6 amd64 1.0.0-2+deb12u1 [513 kB]
+Get:59 https://deb.debian.org/debian bookworm/main amd64 libgav1-1 amd64 0.18.0-1+b1 [332 kB]
+Get:60 https://deb.debian.org/debian bookworm/main amd64 librav1e0 amd64 0.5.1-6 [763 kB]
+Get:61 https://deb.debian.org/debian bookworm/main amd64 libsvtav1enc1 amd64 1.4.1+dfsg-1 [2121 kB]
+Get:62 https://deb.debian.org/debian bookworm/main amd64 libjpeg62-turbo amd64 1:2.1.5-2 [166 kB]
+Get:63 https://deb.debian.org/debian bookworm/main amd64 libyuv0 amd64 0.0~git20230123.b2528b0-1 [168 kB]
+Get:64 https://deb.debian.org/debian bookworm/main amd64 libavif15 amd64 0.11.1-1+deb12u1 [94.4 kB]
+Get:65 https://deb.debian.org/debian bookworm/main amd64 libfontconfig1 amd64 2.14.1-4 [386 kB]
+Get:66 https://deb.debian.org/debian bookworm/main amd64 libde265-0 amd64 1.0.11-1+deb12u2 [185 kB]
+Get:67 https://deb.debian.org/debian bookworm/main amd64 libnuma1 amd64 2.0.16-1 [21.0 kB]
+Get:68 https://deb.debian.org/debian bookworm/main amd64 libx265-199 amd64 3.5-2+b1 [1150 kB]
+Get:69 https://deb.debian.org/debian bookworm/main amd64 libheif1 amd64 1.15.1-1+deb12u1 [215 kB]
+Get:70 https://deb.debian.org/debian bookworm/main amd64 libdeflate0 amd64 1.14-1 [61.4 kB]
+Get:71 https://deb.debian.org/debian bookworm/main amd64 libjbig0 amd64 2.1-6.1 [31.7 kB]
+Get:72 https://deb.debian.org/debian bookworm/main amd64 liblerc4 amd64 4.0.0+ds-2 [170 kB]
+Get:73 https://deb.debian.org/debian bookworm/main amd64 libwebp7 amd64 1.2.4-0.2+deb12u1 [286 kB]
+Get:74 https://deb.debian.org/debian bookworm/main amd64 libtiff6 amd64 4.5.0-6+deb12u4 [316 kB]
+Get:75 https://deb.debian.org/debian bookworm/main amd64 libxau6 amd64 1:1.0.9-1 [19.7 kB]
+Get:76 https://deb.debian.org/debian bookworm/main amd64 libxdmcp6 amd64 1:1.1.2-3 [26.3 kB]
+Get:77 https://deb.debian.org/debian bookworm/main amd64 libxcb1 amd64 1.15-1 [144 kB]
+Get:78 https://deb.debian.org/debian bookworm/main amd64 libx11-data all 2:1.8.4-2+deb12u2 [292 kB]
+Get:79 https://deb.debian.org/debian bookworm/main amd64 libx11-6 amd64 2:1.8.4-2+deb12u2 [760 kB]
+Get:80 https://deb.debian.org/debian bookworm/main amd64 libxpm4 amd64 1:3.5.12-1.1+deb12u1 [48.6 kB]
+Get:81 https://deb.debian.org/debian bookworm/main amd64 libgd3 amd64 2.3.3-9 [124 kB]
+Get:82 https://deb.debian.org/debian bookworm/main amd64 libc-devtools amd64 2.36-9+deb12u14 [55.7 kB]
+Get:83 https://deb.debian.org/debian bookworm/main amd64 libfile-fcntllock-perl amd64 0.22-4+b1 [34.8 kB]
+Get:84 https://deb.debian.org/debian bookworm/main amd64 libpkgconf3 amd64 1.8.1-1 [36.1 kB]
+Get:85 https://deb.debian.org/debian bookworm/main amd64 libssl-dev amd64 3.0.20-1~deb12u2 [2443 kB]
+Get:86 https://deb.debian.org/debian bookworm/main amd64 manpages-dev all 6.03-2 [2030 kB]
+Get:87 https://deb.debian.org/debian bookworm/main amd64 pkgconf-bin amd64 1.8.1-1 [29.5 kB]
+Get:88 https://deb.debian.org/debian bookworm/main amd64 pkgconf amd64 1.8.1-1 [25.9 kB]
+Get:89 https://deb.debian.org/debian bookworm/main amd64 pkg-config amd64 1.8.1-1 [13.7 kB]
+Get:90 https://deb.debian.org/debian bookworm/main amd64 unzip amd64 6.0-28 [166 kB]
+Preconfiguring packages ...
+Fetched 90.3 MB in 1s (148 MB/s)
+Selecting previously unselected package perl-modules-5.36.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 59142 files and directories currently installed.)
+Preparing to unpack .../00-perl-modules-5.36_5.36.0-7+deb12u3_all.deb ...
+Unpacking perl-modules-5.36 (5.36.0-7+deb12u3) ...
+Selecting previously unselected package libgdbm-compat4:amd64.
+Preparing to unpack .../01-libgdbm-compat4_1.23-3_amd64.deb ...
+Unpacking libgdbm-compat4:amd64 (1.23-3) ...
+Selecting previously unselected package libperl5.36:amd64.
+Preparing to unpack .../02-libperl5.36_5.36.0-7+deb12u3_amd64.deb ...
+Unpacking libperl5.36:amd64 (5.36.0-7+deb12u3) ...
+Selecting previously unselected package perl.
+Preparing to unpack .../03-perl_5.36.0-7+deb12u3_amd64.deb ...
+Unpacking perl (5.36.0-7+deb12u3) ...
+Selecting previously unselected package liblocale-gettext-perl.
+Preparing to unpack .../04-liblocale-gettext-perl_1.07-5_amd64.deb ...
+Unpacking liblocale-gettext-perl (1.07-5) ...
+Selecting previously unselected package bzip2.
+Preparing to unpack .../05-bzip2_1.0.8-5+b1_amd64.deb ...
+Unpacking bzip2 (1.0.8-5+b1) ...
+Selecting previously unselected package binutils-common:amd64.
+Preparing to unpack .../06-binutils-common_2.40-2_amd64.deb ...
+Unpacking binutils-common:amd64 (2.40-2) ...
+Selecting previously unselected package libbinutils:amd64.
+Preparing to unpack .../07-libbinutils_2.40-2_amd64.deb ...
+Unpacking libbinutils:amd64 (2.40-2) ...
+Selecting previously unselected package libctf-nobfd0:amd64.
+Preparing to unpack .../08-libctf-nobfd0_2.40-2_amd64.deb ...
+Unpacking libctf-nobfd0:amd64 (2.40-2) ...
+Selecting previously unselected package libctf0:amd64.
+Preparing to unpack .../09-libctf0_2.40-2_amd64.deb ...
+Unpacking libctf0:amd64 (2.40-2) ...
+Selecting previously unselected package libgprofng0:amd64.
+Preparing to unpack .../10-libgprofng0_2.40-2_amd64.deb ...
+Unpacking libgprofng0:amd64 (2.40-2) ...
+Selecting previously unselected package libjansson4:amd64.
+Preparing to unpack .../11-libjansson4_2.14-2_amd64.deb ...
+Unpacking libjansson4:amd64 (2.14-2) ...
+Selecting previously unselected package binutils-x86-64-linux-gnu.
+Preparing to unpack .../12-binutils-x86-64-linux-gnu_2.40-2_amd64.deb ...
+Unpacking binutils-x86-64-linux-gnu (2.40-2) ...
+Selecting previously unselected package binutils.
+Preparing to unpack .../13-binutils_2.40-2_amd64.deb ...
+Unpacking binutils (2.40-2) ...
+Selecting previously unselected package libc-dev-bin.
+Preparing to unpack .../14-libc-dev-bin_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc-dev-bin (2.36-9+deb12u14) ...
+Selecting previously unselected package linux-libc-dev:amd64.
+Preparing to unpack .../15-linux-libc-dev_6.1.177-1_amd64.deb ...
+Unpacking linux-libc-dev:amd64 (6.1.177-1) ...
+Selecting previously unselected package libcrypt-dev:amd64.
+Preparing to unpack .../16-libcrypt-dev_1%3a4.4.33-2_amd64.deb ...
+Unpacking libcrypt-dev:amd64 (1:4.4.33-2) ...
+Selecting previously unselected package libtirpc-dev:amd64.
+Preparing to unpack .../17-libtirpc-dev_1.3.3+ds-1_amd64.deb ...
+Unpacking libtirpc-dev:amd64 (1.3.3+ds-1) ...
+Selecting previously unselected package libnsl-dev:amd64.
+Preparing to unpack .../18-libnsl-dev_1.3.0-2_amd64.deb ...
+Unpacking libnsl-dev:amd64 (1.3.0-2) ...
+Selecting previously unselected package rpcsvc-proto.
+Preparing to unpack .../19-rpcsvc-proto_1.4.3-1_amd64.deb ...
+Unpacking rpcsvc-proto (1.4.3-1) ...
+Selecting previously unselected package libc6-dev:amd64.
+Preparing to unpack .../20-libc6-dev_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc6-dev:amd64 (2.36-9+deb12u14) ...
+Selecting previously unselected package libisl23:amd64.
+Preparing to unpack .../21-libisl23_0.25-1.1_amd64.deb ...
+Unpacking libisl23:amd64 (0.25-1.1) ...
+Selecting previously unselected package libmpfr6:amd64.
+Preparing to unpack .../22-libmpfr6_4.2.0-1_amd64.deb ...
+Unpacking libmpfr6:amd64 (4.2.0-1) ...
+Selecting previously unselected package libmpc3:amd64.
+Preparing to unpack .../23-libmpc3_1.3.1-1_amd64.deb ...
+Unpacking libmpc3:amd64 (1.3.1-1) ...
+Selecting previously unselected package cpp-12.
+Preparing to unpack .../24-cpp-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking cpp-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package cpp.
+Preparing to unpack .../25-cpp_4%3a12.2.0-3_amd64.deb ...
+Unpacking cpp (4:12.2.0-3) ...
+Selecting previously unselected package libcc1-0:amd64.
+Preparing to unpack .../26-libcc1-0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libgomp1:amd64.
+Preparing to unpack .../27-libgomp1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libgomp1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libitm1:amd64.
+Preparing to unpack .../28-libitm1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libitm1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libatomic1:amd64.
+Preparing to unpack .../29-libatomic1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libatomic1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libasan8:amd64.
+Preparing to unpack .../30-libasan8_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libasan8:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package liblsan0:amd64.
+Preparing to unpack .../31-liblsan0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking liblsan0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libtsan2:amd64.
+Preparing to unpack .../32-libtsan2_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libtsan2:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libubsan1:amd64.
+Preparing to unpack .../33-libubsan1_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libubsan1:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libquadmath0:amd64.
+Preparing to unpack .../34-libquadmath0_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package libgcc-12-dev:amd64.
+Preparing to unpack .../35-libgcc-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package gcc-12.
+Preparing to unpack .../36-gcc-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking gcc-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package gcc.
+Preparing to unpack .../37-gcc_4%3a12.2.0-3_amd64.deb ...
+Unpacking gcc (4:12.2.0-3) ...
+Selecting previously unselected package libstdc++-12-dev:amd64.
+Preparing to unpack .../38-libstdc++-12-dev_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package g++-12.
+Preparing to unpack .../39-g++-12_12.2.0-14+deb12u1_amd64.deb ...
+Unpacking g++-12 (12.2.0-14+deb12u1) ...
+Selecting previously unselected package g++.
+Preparing to unpack .../40-g++_4%3a12.2.0-3_amd64.deb ...
+Unpacking g++ (4:12.2.0-3) ...
+Selecting previously unselected package make.
+Preparing to unpack .../41-make_4.3-4.1_amd64.deb ...
+Unpacking make (4.3-4.1) ...
+Selecting previously unselected package libdpkg-perl.
+Preparing to unpack .../42-libdpkg-perl_1.21.23_all.deb ...
+Unpacking libdpkg-perl (1.21.23) ...
+Selecting previously unselected package patch.
+Preparing to unpack .../43-patch_2.7.6-7_amd64.deb ...
+Unpacking patch (2.7.6-7) ...
+Selecting previously unselected package dpkg-dev.
+Preparing to unpack .../44-dpkg-dev_1.21.23_all.deb ...
+Unpacking dpkg-dev (1.21.23) ...
+Selecting previously unselected package build-essential.
+Preparing to unpack .../45-build-essential_12.9_amd64.deb ...
+Unpacking build-essential (12.9) ...
+Selecting previously unselected package libfakeroot:amd64.
+Preparing to unpack .../46-libfakeroot_1.31-1.2_amd64.deb ...
+Unpacking libfakeroot:amd64 (1.31-1.2) ...
+Selecting previously unselected package fakeroot.
+Preparing to unpack .../47-fakeroot_1.31-1.2_amd64.deb ...
+Unpacking fakeroot (1.31-1.2) ...
+Selecting previously unselected package fonts-dejavu-core.
+Preparing to unpack .../48-fonts-dejavu-core_2.37-6_all.deb ...
+Unpacking fonts-dejavu-core (2.37-6) ...
+Selecting previously unselected package fontconfig-config.
+Preparing to unpack .../49-fontconfig-config_2.14.1-4_amd64.deb ...
+Unpacking fontconfig-config (2.14.1-4) ...
+Selecting previously unselected package libabsl20220623:amd64.
+Preparing to unpack .../50-libabsl20220623_20220623.1-1+deb12u2_amd64.deb ...
+Unpacking libabsl20220623:amd64 (20220623.1-1+deb12u2) ...
+Selecting previously unselected package libalgorithm-diff-perl.
+Preparing to unpack .../51-libalgorithm-diff-perl_1.201-1_all.deb ...
+Unpacking libalgorithm-diff-perl (1.201-1) ...
+Selecting previously unselected package libalgorithm-diff-xs-perl:amd64.
+Preparing to unpack .../52-libalgorithm-diff-xs-perl_0.04-8+b1_amd64.deb ...
+Unpacking libalgorithm-diff-xs-perl:amd64 (0.04-8+b1) ...
+Selecting previously unselected package libalgorithm-merge-perl.
+Preparing to unpack .../53-libalgorithm-merge-perl_0.08-5_all.deb ...
+Unpacking libalgorithm-merge-perl (0.08-5) ...
+Selecting previously unselected package libaom3:amd64.
+Preparing to unpack .../54-libaom3_3.6.0-1+deb12u2_amd64.deb ...
+Unpacking libaom3:amd64 (3.6.0-1+deb12u2) ...
+Selecting previously unselected package libdav1d6:amd64.
+Preparing to unpack .../55-libdav1d6_1.0.0-2+deb12u1_amd64.deb ...
+Unpacking libdav1d6:amd64 (1.0.0-2+deb12u1) ...
+Selecting previously unselected package libgav1-1:amd64.
+Preparing to unpack .../56-libgav1-1_0.18.0-1+b1_amd64.deb ...
+Unpacking libgav1-1:amd64 (0.18.0-1+b1) ...
+Selecting previously unselected package librav1e0:amd64.
+Preparing to unpack .../57-librav1e0_0.5.1-6_amd64.deb ...
+Unpacking librav1e0:amd64 (0.5.1-6) ...
+Selecting previously unselected package libsvtav1enc1:amd64.
+Preparing to unpack .../58-libsvtav1enc1_1.4.1+dfsg-1_amd64.deb ...
+Unpacking libsvtav1enc1:amd64 (1.4.1+dfsg-1) ...
+Selecting previously unselected package libjpeg62-turbo:amd64.
+Preparing to unpack .../59-libjpeg62-turbo_1%3a2.1.5-2_amd64.deb ...
+Unpacking libjpeg62-turbo:amd64 (1:2.1.5-2) ...
+Selecting previously unselected package libyuv0:amd64.
+Preparing to unpack .../60-libyuv0_0.0~git20230123.b2528b0-1_amd64.deb ...
+Unpacking libyuv0:amd64 (0.0~git20230123.b2528b0-1) ...
+Selecting previously unselected package libavif15:amd64.
+Preparing to unpack .../61-libavif15_0.11.1-1+deb12u1_amd64.deb ...
+Unpacking libavif15:amd64 (0.11.1-1+deb12u1) ...
+Selecting previously unselected package libfontconfig1:amd64.
+Preparing to unpack .../62-libfontconfig1_2.14.1-4_amd64.deb ...
+Unpacking libfontconfig1:amd64 (2.14.1-4) ...
+Selecting previously unselected package libde265-0:amd64.
+Preparing to unpack .../63-libde265-0_1.0.11-1+deb12u2_amd64.deb ...
+Unpacking libde265-0:amd64 (1.0.11-1+deb12u2) ...
+Selecting previously unselected package libnuma1:amd64.
+Preparing to unpack .../64-libnuma1_2.0.16-1_amd64.deb ...
+Unpacking libnuma1:amd64 (2.0.16-1) ...
+Selecting previously unselected package libx265-199:amd64.
+Preparing to unpack .../65-libx265-199_3.5-2+b1_amd64.deb ...
+Unpacking libx265-199:amd64 (3.5-2+b1) ...
+Selecting previously unselected package libheif1:amd64.
+Preparing to unpack .../66-libheif1_1.15.1-1+deb12u1_amd64.deb ...
+Unpacking libheif1:amd64 (1.15.1-1+deb12u1) ...
+Selecting previously unselected package libdeflate0:amd64.
+Preparing to unpack .../67-libdeflate0_1.14-1_amd64.deb ...
+Unpacking libdeflate0:amd64 (1.14-1) ...
+Selecting previously unselected package libjbig0:amd64.
+Preparing to unpack .../68-libjbig0_2.1-6.1_amd64.deb ...
+Unpacking libjbig0:amd64 (2.1-6.1) ...
+Selecting previously unselected package liblerc4:amd64.
+Preparing to unpack .../69-liblerc4_4.0.0+ds-2_amd64.deb ...
+Unpacking liblerc4:amd64 (4.0.0+ds-2) ...
+Selecting previously unselected package libwebp7:amd64.
+Preparing to unpack .../70-libwebp7_1.2.4-0.2+deb12u1_amd64.deb ...
+Unpacking libwebp7:amd64 (1.2.4-0.2+deb12u1) ...
+Selecting previously unselected package libtiff6:amd64.
+Preparing to unpack .../71-libtiff6_4.5.0-6+deb12u4_amd64.deb ...
+Unpacking libtiff6:amd64 (4.5.0-6+deb12u4) ...
+Selecting previously unselected package libxau6:amd64.
+Preparing to unpack .../72-libxau6_1%3a1.0.9-1_amd64.deb ...
+Unpacking libxau6:amd64 (1:1.0.9-1) ...
+Selecting previously unselected package libxdmcp6:amd64.
+Preparing to unpack .../73-libxdmcp6_1%3a1.1.2-3_amd64.deb ...
+Unpacking libxdmcp6:amd64 (1:1.1.2-3) ...
+Selecting previously unselected package libxcb1:amd64.
+Preparing to unpack .../74-libxcb1_1.15-1_amd64.deb ...
+Unpacking libxcb1:amd64 (1.15-1) ...
+Selecting previously unselected package libx11-data.
+Preparing to unpack .../75-libx11-data_2%3a1.8.4-2+deb12u2_all.deb ...
+Unpacking libx11-data (2:1.8.4-2+deb12u2) ...
+Selecting previously unselected package libx11-6:amd64.
+Preparing to unpack .../76-libx11-6_2%3a1.8.4-2+deb12u2_amd64.deb ...
+Unpacking libx11-6:amd64 (2:1.8.4-2+deb12u2) ...
+Selecting previously unselected package libxpm4:amd64.
+Preparing to unpack .../77-libxpm4_1%3a3.5.12-1.1+deb12u1_amd64.deb ...
+Unpacking libxpm4:amd64 (1:3.5.12-1.1+deb12u1) ...
+Selecting previously unselected package libgd3:amd64.
+Preparing to unpack .../78-libgd3_2.3.3-9_amd64.deb ...
+Unpacking libgd3:amd64 (2.3.3-9) ...
+Selecting previously unselected package libc-devtools.
+Preparing to unpack .../79-libc-devtools_2.36-9+deb12u14_amd64.deb ...
+Unpacking libc-devtools (2.36-9+deb12u14) ...
+Selecting previously unselected package libfile-fcntllock-perl.
+Preparing to unpack .../80-libfile-fcntllock-perl_0.22-4+b1_amd64.deb ...
+Unpacking libfile-fcntllock-perl (0.22-4+b1) ...
+Selecting previously unselected package libpkgconf3:amd64.
+Preparing to unpack .../81-libpkgconf3_1.8.1-1_amd64.deb ...
+Unpacking libpkgconf3:amd64 (1.8.1-1) ...
+Selecting previously unselected package libssl-dev:amd64.
+Preparing to unpack .../82-libssl-dev_3.0.20-1~deb12u2_amd64.deb ...
+Unpacking libssl-dev:amd64 (3.0.20-1~deb12u2) ...
+Selecting previously unselected package manpages-dev.
+Preparing to unpack .../83-manpages-dev_6.03-2_all.deb ...
+Unpacking manpages-dev (6.03-2) ...
+Selecting previously unselected package pkgconf-bin.
+Preparing to unpack .../84-pkgconf-bin_1.8.1-1_amd64.deb ...
+Unpacking pkgconf-bin (1.8.1-1) ...
+Selecting previously unselected package pkgconf:amd64.
+Preparing to unpack .../85-pkgconf_1.8.1-1_amd64.deb ...
+Unpacking pkgconf:amd64 (1.8.1-1) ...
+Selecting previously unselected package pkg-config:amd64.
+Preparing to unpack .../86-pkg-config_1.8.1-1_amd64.deb ...
+Unpacking pkg-config:amd64 (1.8.1-1) ...
+Selecting previously unselected package unzip.
+Preparing to unpack .../87-unzip_6.0-28_amd64.deb ...
+Unpacking unzip (6.0-28) ...
+Setting up libaom3:amd64 (3.6.0-1+deb12u2) ...
+Setting up manpages-dev (6.03-2) ...
+Setting up libabsl20220623:amd64 (20220623.1-1+deb12u2) ...
+Setting up libxau6:amd64 (1:1.0.9-1) ...
+Setting up libxdmcp6:amd64 (1:1.1.2-3) ...
+Setting up libxcb1:amd64 (1.15-1) ...
+Setting up liblerc4:amd64 (4.0.0+ds-2) ...
+Setting up unzip (6.0-28) ...
+Setting up binutils-common:amd64 (2.40-2) ...
+Setting up libdeflate0:amd64 (1.14-1) ...
+Setting up linux-libc-dev:amd64 (6.1.177-1) ...
+Setting up libctf-nobfd0:amd64 (2.40-2) ...
+Setting up libsvtav1enc1:amd64 (1.4.1+dfsg-1) ...
+Setting up libgomp1:amd64 (12.2.0-14+deb12u1) ...
+Setting up bzip2 (1.0.8-5+b1) ...
+Setting up libjbig0:amd64 (2.1-6.1) ...
+Setting up librav1e0:amd64 (0.5.1-6) ...
+Setting up libfakeroot:amd64 (1.31-1.2) ...
+Setting up libjansson4:amd64 (2.14-2) ...
+Setting up fakeroot (1.31-1.2) ...
+update-alternatives: using /usr/bin/fakeroot-sysv to provide /usr/bin/fakeroot (fakeroot) in auto mode
+Setting up perl-modules-5.36 (5.36.0-7+deb12u3) ...
+Setting up libtirpc-dev:amd64 (1.3.3+ds-1) ...
+Setting up libpkgconf3:amd64 (1.8.1-1) ...
+Setting up rpcsvc-proto (1.4.3-1) ...
+Setting up libjpeg62-turbo:amd64 (1:2.1.5-2) ...
+Setting up libx11-data (2:1.8.4-2+deb12u2) ...
+Setting up make (4.3-4.1) ...
+Setting up libmpfr6:amd64 (4.2.0-1) ...
+Setting up libquadmath0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libssl-dev:amd64 (3.0.20-1~deb12u2) ...
+Setting up libmpc3:amd64 (1.3.1-1) ...
+Setting up libatomic1:amd64 (12.2.0-14+deb12u1) ...
+Setting up patch (2.7.6-7) ...
+Setting up fonts-dejavu-core (2.37-6) ...
+Setting up libgdbm-compat4:amd64 (1.23-3) ...
+Setting up libgav1-1:amd64 (0.18.0-1+b1) ...
+Setting up pkgconf-bin (1.8.1-1) ...
+Setting up libdav1d6:amd64 (1.0.0-2+deb12u1) ...
+Setting up libwebp7:amd64 (1.2.4-0.2+deb12u1) ...
+Setting up libubsan1:amd64 (12.2.0-14+deb12u1) ...
+Setting up libnuma1:amd64 (2.0.16-1) ...
+Setting up libnsl-dev:amd64 (1.3.0-2) ...
+Setting up libcrypt-dev:amd64 (1:4.4.33-2) ...
+Setting up libtiff6:amd64 (4.5.0-6+deb12u4) ...
+Setting up libasan8:amd64 (12.2.0-14+deb12u1) ...
+Setting up libx11-6:amd64 (2:1.8.4-2+deb12u2) ...
+Setting up libtsan2:amd64 (12.2.0-14+deb12u1) ...
+Setting up libbinutils:amd64 (2.40-2) ...
+Setting up libisl23:amd64 (0.25-1.1) ...
+Setting up libde265-0:amd64 (1.0.11-1+deb12u2) ...
+Setting up libc-dev-bin (2.36-9+deb12u14) ...
+Setting up libyuv0:amd64 (0.0~git20230123.b2528b0-1) ...
+Setting up libcc1-0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libperl5.36:amd64 (5.36.0-7+deb12u3) ...
+Setting up liblocale-gettext-perl (1.07-5) ...
+Setting up liblsan0:amd64 (12.2.0-14+deb12u1) ...
+Setting up libitm1:amd64 (12.2.0-14+deb12u1) ...
+Setting up libctf0:amd64 (2.40-2) ...
+Setting up cpp-12 (12.2.0-14+deb12u1) ...
+Setting up libxpm4:amd64 (1:3.5.12-1.1+deb12u1) ...
+Setting up libavif15:amd64 (0.11.1-1+deb12u1) ...
+Setting up fontconfig-config (2.14.1-4) ...
+Setting up pkgconf:amd64 (1.8.1-1) ...
+Setting up perl (5.36.0-7+deb12u3) ...
+Setting up libgprofng0:amd64 (2.40-2) ...
+Setting up libgcc-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Setting up pkg-config:amd64 (1.8.1-1) ...
+Setting up libdpkg-perl (1.21.23) ...
+Setting up libx265-199:amd64 (3.5-2+b1) ...
+Setting up cpp (4:12.2.0-3) ...
+Setting up libc6-dev:amd64 (2.36-9+deb12u14) ...
+Setting up binutils-x86-64-linux-gnu (2.40-2) ...
+Setting up libstdc++-12-dev:amd64 (12.2.0-14+deb12u1) ...
+Setting up libfile-fcntllock-perl (0.22-4+b1) ...
+Setting up libalgorithm-diff-perl (1.201-1) ...
+Setting up libheif1:amd64 (1.15.1-1+deb12u1) ...
+Setting up binutils (2.40-2) ...
+Setting up dpkg-dev (1.21.23) ...
+Setting up gcc-12 (12.2.0-14+deb12u1) ...
+Setting up libalgorithm-diff-xs-perl:amd64 (0.04-8+b1) ...
+Setting up libalgorithm-merge-perl (0.08-5) ...
+Setting up g++-12 (12.2.0-14+deb12u1) ...
+Setting up gcc (4:12.2.0-3) ...
+Setting up g++ (4:12.2.0-3) ...
+update-alternatives: using /usr/bin/g++ to provide /usr/bin/c++ (c++) in auto mode
+Setting up build-essential (12.9) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+Processing triggers for man-db (2.11.2-2) ...
+Processing triggers for sgml-base (1.31) ...
+Setting up libfontconfig1:amd64 (2.14.1-4) ...
+Setting up libgd3:amd64 (2.3.3-9) ...
+Setting up libc-devtools (2.36-9+deb12u14) ...
+Processing triggers for libc-bin (2.36-9+deb12u14) ...
+info: downloading installer
+warn: It looks like you have an existing rustup settings file at:
+warn: /root/.rustup/settings.toml
+warn: Rustup will install the default toolchain as specified in the settings file,
+warn: instead of the one inferred from the default host triple.
+info: profile set to default
+info: default host triple is x86_64-unknown-linux-gnu
+info: syncing channel updates for 1.96.0-x86_64-unknown-linux-gnu
+info: latest update on 2026-05-28 for version 1.96.0 (ac68faa20 2026-05-25)
+info: downloading 6 components
+info: default toolchain set to 1.96.0-x86_64-unknown-linux-gnu
+
+  1.96.0-x86_64-unknown-linux-gnu installed - rustc 1.96.0 (ac68faa20 2026-05-25)
+
+
+Rust is installed now. Great!
+
+To get started you may need to restart your current shell.
+This would reload your PATH environment variable to include
+Cargo's bin directory ($HOME/.cargo/bin).
+
+To configure your current shell, you need to source
+the corresponding env file under $HOME/.cargo.
+
+This is usually done by running one of the following (note the leading DOT):
+. "$HOME/.cargo/env"            # For sh/bash/zsh/ash/dash/pdksh
+source "$HOME/.cargo/env.fish"  # For fish
+source "~/.cargo/env.nu"  # For nushell
+source "$HOME/.cargo/env.tcsh"  # For tcsh
+. "$HOME/.cargo/env.ps1"        # For pwsh
+source "$HOME/.cargo/env.xsh"   # For xonsh
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz to file:///opt/encodec-xarch/package/source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz
+
+..........
+
+Average throughput: 199.3MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/onnx-bundles.tar.gz to file:///opt/encodec-xarch/package/onnx-bundles.tar.gz
+
+...........
+
+Average throughput: 214.5MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/pcm_metrics.py to file:///opt/encodec-xarch/package/pcm_metrics.py
+
+.
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/stage_corpus.py to file:///opt/encodec-xarch/package/stage_corpus.py
+
+.
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/files.sha256 to file:///opt/encodec-xarch/package/files.sha256
+
+.
+source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz: OK
+onnx-bundles.tar.gz: OK
+pcm_metrics.py: OK
+stage_corpus.py: OK
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+
+
+ERROR: (gcloud.storage.cp) The following URLs matched no objects or files:
+gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY to file:///opt/encodec-xarch/READY
+
+
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-1979-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-1979-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-after-dark-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-after-dark-v1.wav
+
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-i-want-her-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-i-want-her-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-pray-4-me-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-pray-4-me-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-westside-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-westside-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-westside-v2.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-westside-v2.wav
+............
+
+Average throughput: 184.0MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/manifest.json to file:///opt/encodec-xarch/repo/canonical-wav/manifest.json
+
+...
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded serde_json v1.0.149
+  Downloaded typenum v1.20.0
+  Downloaded version_check v0.9.5
+  Downloaded zmij v1.0.21
+  Downloaded num-integer v0.1.46
+  Downloaded num-complex v0.4.6
+  Downloaded serde_core v1.0.228
+  Downloaded memchr v2.8.0
+  Downloaded clap v4.6.0
+  Downloaded num-traits v0.2.19
+  Downloaded clap_derive v4.6.0
+  Downloaded autocfg v1.5.0
+  Downloaded anstyle-query v1.1.5
+  Downloaded clap_builder v4.6.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded strsim v0.11.1
+  Downloaded crc32fast v1.5.0
+  Downloaded ndarray v0.17.2
+  Downloaded syn v2.0.117
+  Downloaded colorchoice v1.0.5
+  Downloaded anstream v1.0.0
+  Downloaded utf8parse v0.2.2
+  Downloaded thiserror-impl v1.0.69
+  Downloaded serde_derive v1.0.228
+  Downloaded serde v1.0.228
+  Downloaded quote v1.0.45
+  Downloaded proc-macro2 v1.0.106
+  Downloaded matrixmultiply v0.3.10
+  Downloaded itoa v1.0.18
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded digest v0.10.7
+  Downloaded cpufeatures v0.2.17
+  Downloaded clap_lex v1.1.0
+  Downloaded cfg-if v1.0.4
+  Downloaded block-buffer v0.10.4
+  Downloaded anyhow v1.0.102
+  Downloaded anstyle-parse v1.0.0
+  Downloaded thiserror v1.0.69
+  Downloaded sha2 v0.10.9
+  Downloaded rawpointer v0.2.1
+  Downloaded libm v0.2.16
+  Downloaded heck v0.5.0
+  Downloaded generic-array v0.14.7
+  Downloaded anstyle v1.0.14
+  Downloaded crypto-common v0.1.7
+   Compiling proc-macro2 v1.0.106
+   Compiling autocfg v1.5.0
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling version_check v0.9.5
+   Compiling typenum v1.20.0
+   Compiling generic-array v0.14.7
+   Compiling num-traits v0.2.19
+   Compiling serde_core v1.0.228
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling syn v2.0.117
+   Compiling matrixmultiply v0.3.10
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling zmij v1.0.21
+   Compiling colorchoice v1.0.5
+   Compiling anstyle v1.0.14
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling anstream v1.0.0
+   Compiling crc32fast v1.5.0
+   Compiling rawpointer v0.2.1
+   Compiling anyhow v1.0.102
+   Compiling thiserror v1.0.69
+   Compiling cfg-if v1.0.4
+   Compiling strsim v0.11.1
+   Compiling serde_json v1.0.149
+   Compiling heck v0.5.0
+   Compiling clap_lex v1.1.0
+   Compiling serde v1.0.228
+   Compiling libm v0.2.16
+   Compiling clap_builder v4.6.0
+   Compiling digest v0.10.7
+   Compiling num-integer v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling memchr v2.8.0
+   Compiling itoa v1.0.18
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling thiserror-impl v1.0.69
+   Compiling serde_derive v1.0.228
+   Compiling clap_derive v4.6.0
+   Compiling clap v4.6.0
+   Compiling ndarray v0.17.2
+   Compiling encodec-rs v0.1.4 (/opt/encodec-xarch/repo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.29s
+     Running unittests src/lib.rs (target/debug/deps/encodec_rs-9c4036d35a88735a)
+
+running 35 tests
+test binary::tests::bitpack_roundtrip_matches_python_layout ... ok
+test binary::tests::chunk_roundtrip_without_crc ... ok
+test binary::tests::header_roundtrip ... ok
+test arithmetic::tests::arithmetic_roundtrip_matches_symbols ... ok
+test binary::tests::split_and_prepend_ecdc_header_round_trip ... ok
+test ecdc::tests::frame_evidence_pads_tail_when_variable_tail_is_disabled ... ok
+test binary::tests::split_ecdc_header_rejects_bad_magic ... ok
+test ecdc::tests::frame_evidence_preserves_true_variable_tail_input ... ok
+test binary::tests::chunk_roundtrip ... ok
+test ecdc::tests::lm_chunk_rejects_internal_reset_instead_of_inserting_bos ... ok
+test ecdc::tests::lm_chunk_evidence_recovers_codes_scale_and_entropy ... ok
+test ecdc::tests::lm_mapping_uses_bos_then_previous_codes_plus_one ... ok
+test ecdc::tests::owned_segment_copy_rejects_short_decoded_output ... ok
+test ecdc_presets::tests::recognizes_known_fixed_context_geometries ... ok
+test ecdc_presets::tests::does_not_recognize_unrelated_strides ... ok
+test ecdc_presets::tests::rejects_odd_context_excess ... ok
+test ecdc_presets::tests::rejects_context_not_equal_to_480_samples_per_side ... ok
+test ecdc_presets::tests::rejects_samples_smaller_than_stride ... ok
+test entropy::tests::columns_use_time_major_codebook_minor_order ... ok
+test entropy::tests::rejects_invalid_probability_parameters ... ok
+test format::tests::chunk_layout_from_bundle_preserves_fixed_context_geometry ... ok
+test format::tests::chunk_ms_preserves_fixed_model_geometry ... ok
+test format::tests::chunk_ms_uses_sample_rate_and_rounds_to_samples ... ok
+test format::tests::frame_length_matches_python_formula ... ok
+test format::tests::metadata_serde_roundtrip_preserves_unknown_source_fields ... ok
+test format::tests::metadata_version_is_q8_only ... ok
+test pcm::tests::integer_input_scales_include_negative_full_scale ... ok
+test pcm::tests::non_finite_output_samples_become_zero ... ok
+test pcm::tests::s16_conversion_uses_the_full_asymmetric_range ... ok
+test portable_lm::tests::downloaded_lm_weights_run_without_onnx ... ok
+test seam::tests::repair_is_deterministic_and_preserves_length ... ok
+test seam::tests::repair_rejects_invalid_geometry ... ok
+test seam::tests::repair_uses_the_same_curve_for_each_channel ... ok
+test ecdc::tests::owned_segments_copy_directly_without_overlap ... ok
+test ecdc::tests::encode_segment_batches_builds_context_window_for_every_chunk ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src/main.rs (target/debug/deps/encodec_rs-ecc9d1d01c84447d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests encodec_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+ Downloading crates ...
+  Downloaded hmac-sha256 v1.1.14
+  Downloaded bitflags v2.11.0
+  Downloaded utf8-zero v0.8.1
+  Downloaded foreign-types v0.3.2
+  Downloaded vcpkg v0.2.15
+  Downloaded zeroize v1.8.2
+  Downloaded openssl-probe v0.2.1
+  Downloaded webpki-root-certs v1.0.6
+  Downloaded smallvec v1.15.1
+  Downloaded pin-project-lite v0.2.17
+  Downloaded ureq v3.3.0
+  Downloaded pem-rfc7468 v1.0.0
+  Downloaded openssl-macros v0.1.1
+  Downloaded ort-sys v2.0.0-rc.12
+  Downloaded libc v0.2.184
+  Downloaded native-tls v0.2.18
+  Downloaded pkg-config v0.3.33
+  Downloaded libloading v0.9.0
+  Downloaded tracing v0.1.44
+  Downloaded httparse v1.10.1
+  Downloaded ort v2.0.0-rc.12
+  Downloaded openssl-sys v0.9.112
+  Downloaded base64ct v1.8.3
+  Downloaded shlex v1.3.0
+  Downloaded openssl v0.10.76
+  Downloaded log v0.4.29
+  Downloaded lzma-rust2 v0.15.7
+  Downloaded foreign-types-shared v0.1.1
+  Downloaded base64 v0.22.1
+  Downloaded ureq-proto v0.6.0
+  Downloaded percent-encoding v2.3.2
+  Downloaded http v1.4.0
+  Downloaded cc v1.2.60
+  Downloaded bytes v1.11.1
+  Downloaded rustls-pki-types v1.14.0
+  Downloaded hound v3.5.1
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded der v0.8.0
+  Downloaded byteorder v1.5.0
+  Downloaded tracing-core v0.1.36
+  Downloaded socks v0.3.4
+  Downloaded once_cell v1.21.4
+  Downloaded gpu-worker-ort v0.1.1
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling vcpkg v0.2.15
+   Compiling cc v1.2.60
+   Compiling pkg-config v0.3.33
+   Compiling libc v0.2.184
+   Compiling syn v2.0.117
+   Compiling autocfg v1.5.0
+   Compiling httparse v1.10.1
+   Compiling zeroize v1.8.2
+   Compiling openssl v0.10.76
+   Compiling openssl-sys v0.9.112
+   Compiling foreign-types-shared v0.1.1
+   Compiling foreign-types v0.3.2
+   Compiling base64ct v1.8.3
+   Compiling itoa v1.0.18
+   Compiling cfg-if v1.0.4
+   Compiling native-tls v0.2.18
+   Compiling bytes v1.11.1
+   Compiling bitflags v2.11.0
+   Compiling log v0.4.29
+   Compiling once_cell v1.21.4
+   Compiling pem-rfc7468 v1.0.0
+   Compiling http v1.4.0
+   Compiling rustls-pki-types v1.14.0
+   Compiling num-traits v0.2.19
+   Compiling openssl-probe v0.2.1
+   Compiling version_check v0.9.5
+   Compiling base64 v0.22.1
+   Compiling byteorder v1.5.0
+   Compiling ureq-proto v0.6.0
+   Compiling generic-array v0.14.7
+   Compiling socks v0.3.4
+   Compiling webpki-root-certs v1.0.6
+   Compiling der v0.8.0
+   Compiling utf8-zero v0.8.1
+   Compiling percent-encoding v2.3.2
+   Compiling matrixmultiply v0.3.10
+   Compiling hmac-sha256 v1.1.14
+   Compiling lzma-rust2 v0.15.7
+   Compiling openssl-macros v0.1.1
+   Compiling typenum v1.20.0
+   Compiling utf8parse v0.2.2
+   Compiling serde_core v1.0.228
+   Compiling rawpointer v0.2.1
+   Compiling tracing-core v0.1.36
+   Compiling anstyle-parse v1.0.0
+   Compiling num-complex v0.4.6
+   Compiling num-integer v0.1.46
+   Compiling anyhow v1.0.102
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling pin-project-lite v0.2.17
+   Compiling zmij v1.0.21
+   Compiling anstyle-query v1.1.5
+   Compiling colorchoice v1.0.5
+   Compiling anstyle v1.0.14
+   Compiling tracing v0.1.44
+   Compiling anstream v1.0.0
+   Compiling ureq v3.3.0
+   Compiling ndarray v0.17.2
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling libloading v0.9.0
+   Compiling ort-sys v2.0.0-rc.12
+   Compiling heck v0.5.0
+   Compiling serde_json v1.0.149
+   Compiling libm v0.2.16
+   Compiling smallvec v1.15.1
+   Compiling strsim v0.11.1
+   Compiling clap_lex v1.1.0
+   Compiling serde v1.0.228
+   Compiling crc32fast v1.5.0
+   Compiling thiserror v1.0.69
+   Compiling clap_builder v4.6.0
+   Compiling clap_derive v4.6.0
+   Compiling digest v0.10.7
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v1.0.69
+   Compiling ort v2.0.0-rc.12
+   Compiling cpufeatures v0.2.17
+   Compiling memchr v2.8.0
+   Compiling sha2 v0.10.9
+   Compiling gpu-worker-ort v0.1.1
+   Compiling clap v4.6.0
+   Compiling hound v3.5.1
+   Compiling encodec-rs v0.1.4 (/opt/encodec-xarch/repo)
+    Finished `release` profile [optimized] target(s) in 36.35s
+find: ‘/root/.cache’: No such file or directory
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:5 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Hit:2 https://deb.debian.org/debian bookworm InRelease
+Hit:3 https://deb.debian.org/debian bookworm-updates InRelease
+Hit:4 https://deb.debian.org/debian bookworm-backports InRelease
+Hit:6 https://deb.debian.org/debian-security bookworm-security InRelease
+Hit:7 https://packages.cloud.google.com/apt google-compute-engine-bookworm-stable InRelease
+Hit:8 https://packages.cloud.google.com/apt cloud-sdk-bookworm InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+build-essential is already the newest version (12.9).
+ca-certificates is already the newest version (20230311+deb12u1).
+curl is already the newest version (7.88.1-10+deb12u15).
+jq is already the newest version (1.6-2.1+deb12u2).
+pkg-config is already the newest version (1.8.1-1).
+libssl-dev is already the newest version (3.0.20-1~deb12u2).
+unzip is already the newest version (6.0-28).
+0 upgraded, 0 newly installed, 0 to remove and 1 not upgraded.
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz to file:///opt/encodec-xarch/package/source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz
+
+..............
+
+Average throughput: 186.1MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/onnx-bundles.tar.gz to file:///opt/encodec-xarch/package/onnx-bundles.tar.gz
+
+.............
+
+Average throughput: 211.8MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/onnxruntime-linux-x64-1.25.1.tgz to file:///opt/encodec-xarch/package/onnxruntime-linux-x64-1.25.1.tgz
+
+.........
+
+Average throughput: 24.3MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/pcm_metrics.py to file:///opt/encodec-xarch/package/pcm_metrics.py
+
+...
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/stage_corpus.py to file:///opt/encodec-xarch/package/stage_corpus.py
+
+...
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/package/files.sha256 to file:///opt/encodec-xarch/package/files.sha256
+
+...
+source-5ffcfa864cd3476b90de16d2aa3360b0775e03c9.tar.gz: OK
+onnx-bundles.tar.gz: OK
+onnxruntime-linux-x64-1.25.1.tgz: OK
+pcm_metrics.py: OK
+stage_corpus.py: OK
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/READY to file:///opt/encodec-xarch/READY
+
+..
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-1979-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-1979-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-after-dark-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-after-dark-v1.wav
+
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-i-want-her-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-i-want-her-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-pray-4-me-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-pray-4-me-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-westside-v1.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-westside-v1.wav
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/confirmation-westside-v2.wav to file:///opt/encodec-xarch/repo/canonical-wav/confirmation-westside-v2.wav
+.............
+
+Average throughput: 200.4MiB/s
+Copying gs://steadfast-slate-498623-r2_cloudbuild/encodec-qualification/20260725T102936Z-xarch-5ffcfa8/corpus/manifest.json to file:///opt/encodec-xarch/repo/canonical-wav/manifest.json
+
+...
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
+     Running unittests src/lib.rs (target/debug/deps/encodec_rs-9c4036d35a88735a)
+
+running 35 tests
+test binary::tests::chunk_roundtrip ... ok
+test binary::tests::chunk_roundtrip_without_crc ... ok
+test binary::tests::bitpack_roundtrip_matches_python_layout ... ok
+test arithmetic::tests::arithmetic_roundtrip_matches_symbols ... ok
+test binary::tests::split_ecdc_header_rejects_bad_magic ... ok
+test binary::tests::split_and_prepend_ecdc_header_round_trip ... ok
+test binary::tests::header_roundtrip ... ok
+test ecdc::tests::frame_evidence_preserves_true_variable_tail_input ... ok
+test ecdc::tests::lm_chunk_rejects_internal_reset_instead_of_inserting_bos ... ok
+test ecdc::tests::frame_evidence_pads_tail_when_variable_tail_is_disabled ... ok
+test ecdc::tests::lm_mapping_uses_bos_then_previous_codes_plus_one ... ok
+test ecdc::tests::owned_segment_copy_rejects_short_decoded_output ... ok
+test ecdc::tests::lm_chunk_evidence_recovers_codes_scale_and_entropy ... ok
+test ecdc_presets::tests::recognizes_known_fixed_context_geometries ... ok
+test ecdc_presets::tests::rejects_context_not_equal_to_480_samples_per_side ... ok
+test ecdc_presets::tests::rejects_odd_context_excess ... ok
+test ecdc_presets::tests::rejects_samples_smaller_than_stride ... ok
+test entropy::tests::columns_use_time_major_codebook_minor_order ... ok
+test entropy::tests::rejects_invalid_probability_parameters ... ok
+test format::tests::chunk_layout_from_bundle_preserves_fixed_context_geometry ... ok
+test format::tests::chunk_ms_preserves_fixed_model_geometry ... ok
+test format::tests::chunk_ms_uses_sample_rate_and_rounds_to_samples ... ok
+test format::tests::frame_length_matches_python_formula ... ok
+test format::tests::metadata_serde_roundtrip_preserves_unknown_source_fields ... ok
+test format::tests::metadata_version_is_q8_only ... ok
+test pcm::tests::integer_input_scales_include_negative_full_scale ... ok
+test pcm::tests::non_finite_output_samples_become_zero ... ok
+test pcm::tests::s16_conversion_uses_the_full_asymmetric_range ... ok
+test portable_lm::tests::downloaded_lm_weights_run_without_onnx ... ok
+test seam::tests::repair_is_deterministic_and_preserves_length ... ok
+test seam::tests::repair_rejects_invalid_geometry ... ok
+test seam::tests::repair_uses_the_same_curve_for_each_channel ... ok
+test ecdc_presets::tests::does_not_recognize_unrelated_strides ... ok
+test ecdc::tests::owned_segments_copy_directly_without_overlap ... ok
+test ecdc::tests::encode_segment_batches_builds_context_window_for_every_chunk ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running unittests src/main.rs (target/debug/deps/encodec_rs-ecc9d1d01c84447d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests encodec_rs
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `release` profile [optimized] target(s) in 0.34s
+{"architecture": "x86_64", "bundle": "encodec_48khz_12kbps_1333ms", "candidate_sha256": "0ba5633abc4136008e20a4dbfb0080ad0724b5d97115124ade55cfec18e7a838", "container_bytes": 258069, "container_sha256": "5613192cf0d1c5e6aeae1f172d77e577bc345b13922abb1a099a01ea38c41238", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.0038316965277825805, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.00026507636037961915, "candidate_rms_dbfs": -15.911426364841063, "candidate_rms_f32": 0.16011376938127234, "candidate_samples_per_channel": 9389979, "channel_correlation_candidate": 0.8861123664929388, "channel_correlation_reference": 0.808617869977927, "compared_samples_per_channel": 9389979, "error_rms_dbfs": -23.561408746451562, "error_rms_f32": 0.06636354280173432, "length_match": true, "max_abs_error_f32": 0.8272606134414673, "max_seam_residual": 0.0042572021484375, "reference_clipped_sample_count": 0, "reference_inter_channel_balance_db": -0.02153133538367068, "reference_non_finite_count": 0, "reference_peak_dbfs": -0.6041876726306297, "reference_rms_dbfs": -15.718666534115, "reference_rms_f32": 0.16370678263178365, "reference_samples_per_channel": 9389979, "rms_seam_residual": 0.0006673377236167435, "scale_invariant_sdr_db": 7.185151660361662, "seam_count": 146, "snr_db": 7.842742212336563}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v1", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_12kbps_1800ms", "candidate_sha256": "500a19e5c8025f5eb1f2724e892117231b196183f0bc1764e34fe967d1a585d0", "container_bytes": 256226, "container_sha256": "576d21df3f2b5a767762c886b735801e1ebab0afbd1a8881199a0d96d00f021b", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.0011690764239470582, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.00026507636037961915, "candidate_rms_dbfs": -15.911839395208684, "candidate_rms_f32": 0.1601061558518053, "candidate_samples_per_channel": 9389979, "channel_correlation_candidate": 0.8856963629846989, "channel_correlation_reference": 0.808617869977927, "compared_samples_per_channel": 9389979, "error_rms_dbfs": -23.56423160931279, "error_rms_f32": 0.06634197854637268, "length_match": true, "max_abs_error_f32": 0.8128539323806763, "max_seam_residual": 0.003143310546875, "reference_clipped_sample_count": 0, "reference_inter_channel_balance_db": -0.02153133538367068, "reference_non_finite_count": 0, "reference_peak_dbfs": -0.6041876726306297, "reference_rms_dbfs": -15.718666534115, "reference_rms_f32": 0.16370678263178365, "reference_samples_per_channel": 9389979, "rms_seam_residual": 0.0005925705614522082, "scale_invariant_sdr_db": 7.188178224489624, "seam_count": 108, "snr_db": 7.845565075197793}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v1", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_6kbps_1333ms", "candidate_sha256": "6851527ed0fd309d2a94c0ad96a5843e1573e56d0d047a3f68c10b8644d2712b", "container_bytes": 125971, "container_sha256": "683cffdcd092414a777f0aadc44241c8a0ba33ae9b1c7faff4517e6c34f75e54", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": -0.007748474505670478, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -1.0013416702259927, "candidate_rms_dbfs": -16.05227545881391, "candidate_rms_f32": 0.15753832625698516, "candidate_samples_per_channel": 9389979, "channel_correlation_candidate": 0.918062265784875, "channel_correlation_reference": 0.808617869977927, "compared_samples_per_channel": 9389979, "error_rms_dbfs": -21.993076884793716, "error_rms_f32": 0.07949616088839509, "length_match": true, "max_abs_error_f32": 0.8933829069137573, "max_seam_residual": 0.002685546875, "reference_clipped_sample_count": 0, "reference_inter_channel_balance_db": -0.02153133538367068, "reference_non_finite_count": 0, "reference_peak_dbfs": -0.6041876726306297, "reference_rms_dbfs": -15.718666534115, "reference_rms_f32": 0.16370678263178365, "reference_samples_per_channel": 9389979, "rms_seam_residual": 0.0005325984243034037, "scale_invariant_sdr_db": 5.278726631829582, "seam_count": 146, "snr_db": 6.27441035067871}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v1", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_6kbps_1800ms", "candidate_sha256": "38bc83dda2e2301353f9d8d2d3c23fc9fdaaf446829fd3557f517e96b778eeb7", "container_bytes": 124426, "container_sha256": "877a562c7394155edb766d82111794752ed875fdb29fb88bbd58f4a68bd02072", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": -0.01386132068556729, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.6661109864461484, "candidate_rms_dbfs": -16.052563734984247, "candidate_rms_f32": 0.15753309780099004, "candidate_samples_per_channel": 9389979, "channel_correlation_candidate": 0.9177568075723421, "channel_correlation_reference": 0.808617869977927, "compared_samples_per_channel": 9389979, "error_rms_dbfs": -21.996201960076625, "error_rms_f32": 0.07946756430106722, "length_match": true, "max_abs_error_f32": 0.9655766487121582, "max_seam_residual": 0.00286865234375, "reference_clipped_sample_count": 0, "reference_inter_channel_balance_db": -0.02153133538367068, "reference_non_finite_count": 0, "reference_peak_dbfs": -0.6041876726306297, "reference_rms_dbfs": -15.718666534115, "reference_rms_f32": 0.16370678263178365, "reference_samples_per_channel": 9389979, "rms_seam_residual": 0.000650799891824914, "scale_invariant_sdr_db": 5.282411734572223, "seam_count": 108, "snr_db": 6.277535425961622}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v1", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_12kbps_1333ms", "candidate_sha256": "d0e1574e03cbf51adf131f0834831fafef94b2bd995b0a630664cfc0c9df310f", "container_bytes": 257388, "container_sha256": "885fcd995d3dd4f13087c9a125d47492ed7574481cadbd5fb03e45fa67b70499", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.027344328424760728, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.7396889965690836, "candidate_rms_dbfs": -16.08428624820794, "candidate_rms_f32": 0.15695880645502677, "candidate_samples_per_channel": 9260919, "channel_correlation_candidate": 0.9314843923792206, "channel_correlation_reference": 0.8499547819471391, "compared_samples_per_channel": 9260919, "error_rms_dbfs": -23.870595501944294, "error_rms_f32": 0.06404278725245609, "length_match": true, "max_abs_error_f32": 0.883968710899353, "max_seam_residual": 0.003265380859375, "reference_clipped_sample_count": 3, "reference_inter_channel_balance_db": -0.013791531472411033, "reference_non_finite_count": 0, "reference_peak_dbfs": 0.0, "reference_rms_dbfs": -15.864385363878679, "reference_rms_f32": 0.16098326517396125, "reference_samples_per_channel": 9260919, "rms_seam_residual": 0.0006096590935294997, "scale_invariant_sdr_db": 7.360610173688314, "seam_count": 144, "snr_db": 8.006210138065617}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v2", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_12kbps_1800ms", "candidate_sha256": "3630952b55db70dfc57fd086052365c27602bb788f8b1be8c4cfd94677d389b8", "container_bytes": 255140, "container_sha256": "cffe7f67e011b673922e9f139a279408778b98e94ef3df4b4d45f448944ff455", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.0308682328494498, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.5106724418928585, "candidate_rms_dbfs": -16.083758889476382, "candidate_rms_f32": 0.15696833640686297, "candidate_samples_per_channel": 9260919, "channel_correlation_candidate": 0.9308836712408038, "channel_correlation_reference": 0.8499547819471391, "compared_samples_per_channel": 9260919, "error_rms_dbfs": -23.882436245705094, "error_rms_f32": 0.06395554258013111, "length_match": true, "max_abs_error_f32": 0.7788828611373901, "max_seam_residual": 0.0015106201171875, "reference_clipped_sample_count": 3, "reference_inter_channel_balance_db": -0.013791531472411033, "reference_non_finite_count": 0, "reference_peak_dbfs": 0.0, "reference_rms_dbfs": -15.864385363878679, "reference_rms_f32": 0.16098326517396125, "reference_samples_per_channel": 9260919, "rms_seam_residual": 0.00047058614295759097, "scale_invariant_sdr_db": 7.3743195643554404, "seam_count": 107, "snr_db": 8.018050881826413}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v2", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_6kbps_1333ms", "candidate_sha256": "abee04fe21da74cd92cd0e324099af11a61e5b506da7b39ab563fd41ce624b79", "container_bytes": 125003, "container_sha256": "f7bcd4bc13b22723b3258d702254ee0f4fe861c1ca5358952dc7a1a700302e8e", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.0032926254178932374, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.00026507636037961915, "candidate_rms_dbfs": -16.205124230059816, "candidate_rms_f32": 0.15479031658979292, "candidate_samples_per_channel": 9260919, "channel_correlation_candidate": 0.9513248995338235, "channel_correlation_reference": 0.8499547819471391, "compared_samples_per_channel": 9260919, "error_rms_dbfs": -22.266606660815444, "error_rms_f32": 0.07703173274613397, "length_match": true, "max_abs_error_f32": 0.8304604291915894, "max_seam_residual": 0.00201416015625, "reference_clipped_sample_count": 3, "reference_inter_channel_balance_db": -0.013791531472411033, "reference_non_finite_count": 0, "reference_peak_dbfs": 0.0, "reference_rms_dbfs": -15.864385363878679, "reference_rms_f32": 0.16098326517396125, "reference_samples_per_channel": 9260919, "rms_seam_residual": 0.0005309179143072925, "scale_invariant_sdr_db": 5.4312764178227955, "seam_count": 144, "snr_db": 6.402221296936764}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v2", "worker_id": "gcp-x86-64-b"}
+{"architecture": "x86_64", "bundle": "encodec_48khz_6kbps_1800ms", "candidate_sha256": "211166d0d809d9ed8b94c30a3c73181dcfa4386cbd5b012222840811cdea521e", "container_bytes": 123469, "container_sha256": "96840fb0f0424b4898c57e0ff3a88c992638142085ccbb1ddad3e5cb65d92796", "metrics": {"candidate_clipped_sample_count": 0, "candidate_inter_channel_balance_db": 0.0030675674317304897, "candidate_non_finite_count": 0, "candidate_peak_dbfs": -0.6632494559339837, "candidate_rms_dbfs": -16.204190000394824, "candidate_rms_f32": 0.1548069662927965, "candidate_samples_per_channel": 9260919, "channel_correlation_candidate": 0.9511395040131065, "channel_correlation_reference": 0.8499547819471391, "compared_samples_per_channel": 9260919, "error_rms_dbfs": -22.277126358311353, "error_rms_f32": 0.07693849416724276, "length_match": true, "max_abs_error_f32": 0.8729299306869507, "max_seam_residual": 0.00238037109375, "reference_clipped_sample_count": 3, "reference_inter_channel_balance_db": -0.013791531472411033, "reference_non_finite_count": 0, "reference_peak_dbfs": 0.0, "reference_rms_dbfs": -15.864385363878679, "reference_rms_f32": 0.16098326517396125, "reference_samples_per_channel": 9260919, "rms_seam_residual": 0.0006154294773457928, "scale_invariant_sdr_db": 5.444417103312041, "seam_count": 107, "snr_db": 6.412740994432672}, "platform": "Linux-6.1.0-51-cloud-amd64-x86_64-with-glibc2.36", "reference_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b", "schema": "wavey.encodec.xarch-quality", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "track": "confirmation-westside-v2", "worker_id": "gcp-x86-64-b"}

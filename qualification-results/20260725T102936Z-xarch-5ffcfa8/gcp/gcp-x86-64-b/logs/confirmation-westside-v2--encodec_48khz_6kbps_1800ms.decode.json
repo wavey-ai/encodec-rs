@@ -1,0 +1,7 @@
+{
+  "bundle_dir": "onnx-bundles/encodec_48khz_6kbps_1800ms",
+  "decoded_samples": 9260919,
+  "input_ecdc": "/opt/encodec-xarch/cases/confirmation-westside-v2--encodec_48khz_6kbps_1800ms/output.ecdc",
+  "output_wav": "/opt/encodec-xarch/cases/confirmation-westside-v2--encodec_48khz_6kbps_1800ms/decoded.wav",
+  "sample_rate": 48000
+}

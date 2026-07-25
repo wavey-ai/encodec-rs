@@ -1,0 +1,13 @@
+{
+  "bandwidth_kbps": 12.0,
+  "batch_size": 4,
+  "bundle_dir": "onnx-bundles/encodec_48khz_12kbps_1333ms",
+  "chunk_crc": true,
+  "chunk_ms": null,
+  "input_wav": "/opt/encodec-xarch/repo/canonical-wav/confirmation-i-want-her-v1.wav",
+  "language_model": "q8",
+  "model_name": "encodec_48khz",
+  "output_ecdc": "/opt/encodec-xarch/cases/confirmation-i-want-her-v1--encodec_48khz_12kbps_1333ms/output.ecdc",
+  "payload_bytes": 189309,
+  "sample_rate": 48000
+}

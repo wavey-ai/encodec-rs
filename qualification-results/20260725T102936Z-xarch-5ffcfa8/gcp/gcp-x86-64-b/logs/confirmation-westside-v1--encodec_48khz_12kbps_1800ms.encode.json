@@ -1,0 +1,13 @@
+{
+  "bandwidth_kbps": 12.0,
+  "batch_size": 4,
+  "bundle_dir": "onnx-bundles/encodec_48khz_12kbps_1800ms",
+  "chunk_crc": true,
+  "chunk_ms": null,
+  "input_wav": "/opt/encodec-xarch/repo/canonical-wav/confirmation-westside-v1.wav",
+  "language_model": "q8",
+  "model_name": "encodec_48khz",
+  "output_ecdc": "/opt/encodec-xarch/cases/confirmation-westside-v1--encodec_48khz_12kbps_1800ms/output.ecdc",
+  "payload_bytes": 256226,
+  "sample_rate": 48000
+}

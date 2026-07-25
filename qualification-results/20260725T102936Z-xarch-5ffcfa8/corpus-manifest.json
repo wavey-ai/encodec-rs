@@ -1,0 +1,44 @@
+{
+  "files": {
+    "confirmation-1979-v1.wav": {
+      "bytes": 65973618,
+      "match_rule": "whole-file-sha256",
+      "sha256": "ed1db8e4a35679be511b12be32fcd0945582f9623a088247431862a884311679",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/Lori Asha - Lori Asha Album Premix/1979_MIX 4 CONFIRMATION_130323.wav"
+    },
+    "confirmation-after-dark-v1.wav": {
+      "bytes": 57492794,
+      "match_rule": "whole-file-sha256",
+      "sha256": "1812df5e6062549a4947a78b5bb08474b6d11026292c019c2da9b5b1950bc655",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/AFTER DARK_MIX 4 CONFIRMATION_130323.wav"
+    },
+    "confirmation-i-want-her-v1.wav": {
+      "bytes": 42851402,
+      "match_rule": "pcm-data-sha256",
+      "sha256": "6382c2a20d279b41fe944ac7df03b5a38b4b5ca4c85082aef64d9206c51d91eb",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/I WANT HER_MIX 4 CONFIRMATION_130323.wav"
+    },
+    "confirmation-pray-4-me-v1.wav": {
+      "bytes": 64430066,
+      "match_rule": "whole-file-sha256",
+      "sha256": "742d36fd78b1263f0c91f76127f3ea77e4cf7ce781c37715c2a7c890549ecf59",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/PRAY 4 ME_MIX 4 CONFIRMATION_130323.wav"
+    },
+    "confirmation-westside-v1.wav": {
+      "bytes": 56713212,
+      "match_rule": "whole-file-sha256",
+      "sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/WESTSIDE_MIX 4 CONFIRMATION_130323.wav"
+    },
+    "confirmation-westside-v2.wav": {
+      "bytes": 55861380,
+      "match_rule": "whole-file-sha256",
+      "sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b",
+      "source_path": "/opt/encodec-xarch/dropbox/Lori EP/WESTSIDE_V2_MIX 4 CONFIRMATION_140323.wav"
+    }
+  },
+  "inspected_wav_files": 25,
+  "schema": "wavey.encodec.xarch-corpus",
+  "schema_version": 1,
+  "status": "pass"
+}

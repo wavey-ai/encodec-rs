@@ -1,0 +1,13 @@
+{
+  "arch": "aarch64",
+  "bandwidth_kbps": 12.0,
+  "bitstream_version": 2,
+  "bundle_dir": "onnx-bundles/encodec_48khz_12kbps_1333ms",
+  "cardinality": 1024,
+  "cdf_sequence_hash": "10261b7f0ec351dec0fd62c67967d3bc8c125a9aae710e2c0f4dc37d93ea36d2",
+  "lm_hash": "b8c21d6650b62a0b8cd210c6e624dfbb30c3a3989466544b1f5e1df963eca517",
+  "model_name": "encodec_48khz",
+  "num_codebooks": 8,
+  "os": "macos",
+  "steps": 203
+}

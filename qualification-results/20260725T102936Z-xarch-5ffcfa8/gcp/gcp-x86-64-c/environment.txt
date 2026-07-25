@@ -1,0 +1,12 @@
+Linux yl-encodec-xarch-c 6.1.0-51-cloud-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.177-1 (2026-07-16) x86_64 GNU/Linux
+rustc 1.96.0 (ac68faa20 2026-05-25)
+binary: rustc
+commit-hash: ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96
+commit-date: 2026-05-25
+host: x86_64-unknown-linux-gnu
+release: 1.96.0
+LLVM version: 22.1.2
+cargo 1.96.0 (30a34c682 2026-05-25)
+6450580328ce837e5e380a8e20b7efad6eaaa9f4d5996913e84418709c498c98  Cargo.lock
+8a81c9a932ea9a152e4a7bfa02a500e2fdbd7d7a5628ded39e4f5df754891a9b  target/release/encodec-rs
+7a7c63fec274e9577477a0158a03a205e3ed9320b032a2df2b2a01b6ae1d3b94  /opt/encodec-xarch/onnxruntime/lib/libonnxruntime.so

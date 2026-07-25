@@ -1,0 +1,1 @@
+{"architecture": "x86_64", "schema": "wavey.encodec.xarch-worker", "schema_version": 1, "source_commit": "5ffcfa864cd3476b90de16d2aa3360b0775e03c9", "status": "pass", "worker_id": "gcp-x86-64-c"}
