@@ -414,26 +414,35 @@ function decodeWav(bytes) {
 
 function buildSegmentBatch(audio, audioLength, meta) {
   const starts = segmentStarts(audioLength, meta.segment_stride);
+  const context = fixedContextSamples(meta);
   return {
     audio,
     audioLength,
     starts,
-    frameLengths: starts.map((offset) =>
-      segmentFrameLength(Math.min(audioLength - offset, meta.segment_samples), meta.segment_samples, meta.frame_length),
-    ),
+    context,
+    frameLengths: starts.map((offset) => context === null
+      ? segmentFrameLength(Math.min(audioLength - offset, meta.segment_samples), meta.segment_samples, meta.frame_length)
+      : meta.frame_length),
     count: starts.length,
   };
 }
 
 function buildSingleSegment(audio, audioLength, segments, index, meta) {
   const offset = segments.starts[index];
-  const samples = Math.min(audioLength - offset, meta.segment_samples);
+  const context = segments.context ?? 0;
+  const samples = Math.min(
+    audioLength - offset,
+    segments.context === null ? meta.segment_samples : meta.segment_stride,
+  );
   const segment = new Float32Array(meta.channels * meta.segment_samples);
   for (let channel = 0; channel < meta.channels; channel += 1) {
-    const sourceBase = channel * audioLength + offset;
+    const sourceBase = channel * audioLength;
     const targetBase = channel * meta.segment_samples;
-    for (let t = 0; t < samples; t += 1) {
-      segment[targetBase + t] = audio[sourceBase + t];
+    for (let modelIndex = 0; modelIndex < meta.segment_samples; modelIndex += 1) {
+      const sourceIndex = offset - context + modelIndex;
+      if (sourceIndex >= 0 && sourceIndex < audioLength) {
+        segment[targetBase + modelIndex] = audio[sourceBase + sourceIndex];
+      }
     }
   }
   return {
@@ -462,7 +471,7 @@ async function encodeLmFrame(lmRuntime, bundleJson, frame, meta) {
     }
 
     return {
-      payload: encoder.finishPadded(meta.frame_length),
+      payload: encoder.finish(),
       lmOnnxMs,
       lmDeterministicMs,
       arithmeticMs,
@@ -644,6 +653,18 @@ function segmentFrameLength(samples, segmentSamples, frameLength) {
   return Math.ceil((samples * frameLength) / segmentSamples);
 }
 
+function fixedContextSamples(meta) {
+  const samples = Number(meta.segment_samples);
+  const stride = Number(meta.segment_stride);
+  if (
+    (samples === 64_960 && stride === 64_000)
+    || (samples === 87_360 && stride === 86_400)
+  ) {
+    return 480;
+  }
+  return null;
+}
+
 function segmentStarts(totalSamples, stride) {
   const starts = [];
   for (let offset = 0; offset < totalSamples; offset += Math.max(1, stride)) {
@@ -681,8 +702,11 @@ function writeWav(outputPath, planar, channels, sampleRate) {
   let cursor = 44;
   for (let frame = 0; frame < frames; frame += 1) {
     for (let channel = 0; channel < channels; channel += 1) {
-      const value = Math.max(-0.99, Math.min(0.99, planar[channel * frames + frame]));
-      out.writeInt16LE(Math.round(value * 32767), cursor);
+      const value = Math.max(-1, Math.min(1, planar[channel * frames + frame]));
+      out.writeInt16LE(
+        value < 0 ? Math.round(value * 32768) : Math.round(value * 32767),
+        cursor,
+      );
       cursor += bytesPerSample;
     }
   }

@@ -24,7 +24,10 @@ const FIXED_CONTEXT_STRIDES: &[usize] = &[64_000, 86_400];
 /// [`FIXED_CONTEXT_SAMPLES_PER_SIDE`] per side; any other relationship is a
 /// malformed fixed-profile bundle and is rejected rather than silently
 /// falling back to non-context behaviour.
-pub fn fixed_context_samples(segment_samples: usize, segment_stride: usize) -> Result<Option<usize>> {
+pub fn fixed_context_samples(
+    segment_samples: usize,
+    segment_stride: usize,
+) -> Result<Option<usize>> {
     if !FIXED_CONTEXT_STRIDES.contains(&segment_stride) {
         return Ok(None);
     }
@@ -56,28 +59,18 @@ pub fn fixed_context_samples(segment_samples: usize, segment_stride: usize) -> R
     Ok(Some(context))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum EcdcBandwidthPreset {
+    #[default]
     Kbps6,
     Kbps12,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum EcdcChunkPreset {
+    #[default]
     Ms1333,
     Ms1800,
-}
-
-impl Default for EcdcBandwidthPreset {
-    fn default() -> Self {
-        Self::Kbps6
-    }
-}
-
-impl Default for EcdcChunkPreset {
-    fn default() -> Self {
-        Self::Ms1333
-    }
 }
 
 pub fn bandwidth_preset_from_kbps(value: Option<f64>) -> Result<EcdcBandwidthPreset> {

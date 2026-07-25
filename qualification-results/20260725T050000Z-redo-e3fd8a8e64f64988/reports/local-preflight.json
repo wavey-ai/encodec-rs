@@ -1,0 +1,123 @@
+{
+  "schema": "wavey.encodec.qualification.local-preflight",
+  "schema_version": 1,
+  "run_id": "20260725T050000Z-redo-e3fd8a8e64f64988",
+  "python_environment": "encodec-export",
+  "status": "pass",
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 261,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--features",
+        "onnx"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 270,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "5604fc8f0c276397a55db4bd7008236712075c0ad37d3b3a0f1fe362b1b85a36"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--features",
+        "ecdc",
+        "--no-fail-fast"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 1456,
+      "stdout_sha256": "7f2099eb4ad5969e5d015bca0dd4dbfd4e812b73aadda6e1e50d954cad54252d",
+      "stderr_sha256": "ce554c382381cfa92fe778f2d65b2004a8391e2c8d479042ebdbbb67aa9610a9"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--features",
+        "wasm",
+        "--no-fail-fast"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 2435,
+      "stdout_sha256": "a67517771d79b23ee0e0824a67793901838a7a585c39455e8e99e2de60e365ef",
+      "stderr_sha256": "4ca72ce2bd5cbc5e21683fc847227c3ecf3f54d283a2aedd8269f7f2c35bdddd"
+    },
+    {
+      "command": [
+        "cargo",
+        "check",
+        "--locked",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--no-default-features",
+        "--features",
+        "wasm"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 94,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "8c233a54790c4800d3dd585436af679aa838da259bfdb129412e2d51cdb75cdc"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "browser-smoke/webgpu-matrix.js"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 30,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "scripts/wasm-encode-fixture.mjs"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 32,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "scripts/westside-chunk-wasm-roundtrip.mjs"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 29,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "/opt/anaconda3/envs/encodec-export/bin/python",
+        "-c",
+        "import numpy, torch, onnx, torchaudio; print(numpy.__version__, torch.__version__, onnx.__version__, torchaudio.__version__)"
+      ],
+      "exit_status": 0,
+      "elapsed_ms": 1295,
+      "stdout_sha256": "f61b72f52a43c46ab44b84377b84c7a37b2b0dd99daae720dc59526da9a67b1d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

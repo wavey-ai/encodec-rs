@@ -187,7 +187,7 @@ function encodeQ8LmFrame(bundleJson, weights, frame, meta) {
     for (let step = 0; step < frame.frameLength; step += 1) {
       encoder.push(frameStepCodes(frame, meta, step));
     }
-    return encoder.finishPadded(meta.frame_length);
+    return encoder.finish();
   } finally {
     encoder.free();
   }
@@ -340,8 +340,12 @@ function writeWavBytes(planar, channels, sampleRate) {
   let cursor = 44;
   for (let frame = 0; frame < frames; frame += 1) {
     for (let channel = 0; channel < channels; channel += 1) {
-      const value = Math.max(-0.99, Math.min(0.99, planar[channel * frames + frame]));
-      view.setInt16(cursor, Math.round(value * 32767), true);
+      const value = Math.max(-1, Math.min(1, planar[channel * frames + frame]));
+      view.setInt16(
+        cursor,
+        value < 0 ? Math.round(value * 32768) : Math.round(value * 32767),
+        true,
+      );
       cursor += bytesPerSample;
     }
   }
@@ -349,28 +353,38 @@ function writeWavBytes(planar, channels, sampleRate) {
 }
 
 function buildSegmentBatch(audio, audioLength, meta) {
+  const context = fixedContextSamples(meta);
+  const stride = Math.max(1, meta.segment_stride);
   const starts = [];
-  for (let offset = 0; offset < audioLength; offset += Math.max(1, meta.segment_stride)) {
+  for (let offset = 0; offset < audioLength; offset += stride) {
     starts.push(offset);
   }
   return {
     starts,
-    frameLengths: starts.map((offset) =>
-      Math.ceil((Math.min(audioLength - offset, meta.segment_samples) * meta.frame_length) / meta.segment_samples),
-    ),
+    context,
+    frameLengths: starts.map((offset) => context === null
+      ? Math.ceil((Math.min(audioLength - offset, meta.segment_samples) * meta.frame_length) / meta.segment_samples)
+      : meta.frame_length),
     count: starts.length,
   };
 }
 
 function buildSingleSegment(audio, audioLength, segments, index, meta) {
   const offset = segments.starts[index];
-  const samples = Math.min(audioLength - offset, meta.segment_samples);
+  const context = segments.context ?? 0;
+  const samples = Math.min(
+    audioLength - offset,
+    segments.context === null ? meta.segment_samples : meta.segment_stride,
+  );
   const segment = new Float32Array(meta.channels * meta.segment_samples);
   for (let channel = 0; channel < meta.channels; channel += 1) {
-    const sourceBase = channel * audioLength + offset;
+    const sourceBase = channel * audioLength;
     const targetBase = channel * meta.segment_samples;
-    for (let t = 0; t < samples; t += 1) {
-      segment[targetBase + t] = audio[sourceBase + t];
+    for (let modelIndex = 0; modelIndex < meta.segment_samples; modelIndex += 1) {
+      const sourceIndex = offset - context + modelIndex;
+      if (sourceIndex >= 0 && sourceIndex < audioLength) {
+        segment[targetBase + modelIndex] = audio[sourceBase + sourceIndex];
+      }
     }
   }
   return {
@@ -379,6 +393,18 @@ function buildSingleSegment(audio, audioLength, segments, index, meta) {
     samples,
     frameLength: segments.frameLengths[index],
   };
+}
+
+function fixedContextSamples(meta) {
+  const samples = Number(meta.segment_samples);
+  const stride = Number(meta.segment_stride);
+  if (
+    (samples === 64_960 && stride === 64_000)
+    || (samples === 87_360 && stride === 86_400)
+  ) {
+    return 480;
+  }
+  return null;
 }
 
 function buildRawFrame(codes, scales, segment, meta, segmentIndex) {

@@ -1,5 +1,7 @@
 target/
 build/
+__pycache__/
+*.pyc
 .wrangler/
 /pkg/
 browser-smoke/node_modules/

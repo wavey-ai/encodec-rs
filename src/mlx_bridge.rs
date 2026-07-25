@@ -259,6 +259,11 @@ fn audio_error(error: impl std::fmt::Display) -> EncodecRsMlxAudioResult {
     }
 }
 
+/// Releases a string that an MLX bridge function returned.
+///
+/// # Safety
+///
+/// `value` must be null or a live string pointer from this library.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_free_string(value: *mut c_char) {
     if value.is_null() {
@@ -267,6 +272,11 @@ pub unsafe extern "C" fn encodec_rs_mlx_free_string(value: *mut c_char) {
     drop(CString::from_raw(value));
 }
 
+/// Releases a byte buffer that an MLX bridge function returned.
+///
+/// # Safety
+///
+/// `ptr` and `len` must identify one live byte buffer from this library.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_free_bytes(ptr: *mut u8, len: usize) {
     if ptr.is_null() {
@@ -275,6 +285,11 @@ pub unsafe extern "C" fn encodec_rs_mlx_free_bytes(ptr: *mut u8, len: usize) {
     drop(Box::from_raw(ptr::slice_from_raw_parts_mut(ptr, len)));
 }
 
+/// Releases an audio buffer that an MLX bridge function returned.
+///
+/// # Safety
+///
+/// `ptr` and `len` must identify one live audio buffer from this library.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_free_audio(ptr: *mut f32, len: usize) {
     if ptr.is_null() {
@@ -283,6 +298,13 @@ pub unsafe extern "C" fn encodec_rs_mlx_free_audio(ptr: *mut f32, len: usize) {
     drop(Box::from_raw(ptr::slice_from_raw_parts_mut(ptr, len)));
 }
 
+/// Encodes planar audio through caller-supplied MLX frame callbacks.
+///
+/// # Safety
+///
+/// C string pointers must be valid and terminated.
+/// `audio` must contain `channels * samples` readable values.
+/// The callback pointers must remain valid during this call.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc(
     bundle_dir: *const c_char,
@@ -325,7 +347,7 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc(
             None,
             frame_batch_size.max(1),
             chunk_crc,
-            has_chunk_ms.then_some(chunk_ms as f64),
+            has_chunk_ms.then_some(chunk_ms),
         )
     })();
 
@@ -335,6 +357,13 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc(
     }
 }
 
+/// Encodes planar audio and streams the output to a file.
+///
+/// # Safety
+///
+/// C string pointers must be valid and terminated.
+/// `audio` must contain `channels * samples` readable values.
+/// The callback pointers must remain valid during this call.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
     bundle_dir: *const c_char,
@@ -397,7 +426,7 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
             None,
             frame_batch_size.max(1),
             chunk_crc,
-            has_chunk_ms.then_some(chunk_ms as f64),
+            has_chunk_ms.then_some(chunk_ms),
             |bytes| {
                 output.write_all(bytes)?;
                 bytes_written += bytes.len();
@@ -421,6 +450,13 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_stream_to_path(
     }
 }
 
+/// Decodes an ECDC payload through caller-supplied MLX frame callbacks.
+///
+/// # Safety
+///
+/// `bundle_dir` must be a valid terminated C string.
+/// `payload` must contain `payload_len` readable bytes.
+/// The callback pointers must remain valid during this call.
 #[no_mangle]
 pub unsafe extern "C" fn encodec_rs_mlx_decode_ecdc(
     bundle_dir: *const c_char,

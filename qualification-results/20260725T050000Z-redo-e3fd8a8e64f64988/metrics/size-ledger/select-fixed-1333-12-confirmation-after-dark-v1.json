@@ -1,0 +1,21 @@
+{
+  "schema": "wavey.encodec.current-acv2-ledger",
+  "format": "ECDC-v0-acv2-unpublished",
+  "file_size_bytes": 259111,
+  "object_accounted_bytes": 259111,
+  "chunk_count": 149,
+  "magic_version_bytes": 5,
+  "metadata_header_bytes": 168,
+  "profile_descriptor_bytes": 0,
+  "index_bytes": 0,
+  "segment_header_bytes": 596,
+  "normalization_scale_bytes": 596,
+  "arithmetic_payload_bytes": 257146,
+  "crc_bytes": 596,
+  "recovery_bytes": 0,
+  "trailer_bytes": 0,
+  "proposed_profile1_structural_bytes": 3080,
+  "proposed_profile1_estimated_without_manifest_bytes": 260822,
+  "object_sha256": "3f4166015eefae25baef645419af6e684567bad1bb07cfcc65c6beddb801b54a",
+  "profile1_complete": false
+}

@@ -1,0 +1,21 @@
+{
+  "blocked": 0,
+  "fail": 0,
+  "metrics": [
+    "snr_db",
+    "scale_invariant_sdr_db",
+    "log_spectral_distance_db",
+    "integrated_loudness_difference_lu",
+    "true_peak_difference_db",
+    "channel_correlation_candidate",
+    "inter_channel_balance_db",
+    "max_seam_residual",
+    "rms_seam_residual",
+    "clipped_sample_count",
+    "non_finite_count"
+  ],
+  "pass": 24,
+  "rows": 24,
+  "run_id": "20260725T050000Z-redo-e3fd8a8e64f64988",
+  "schema": "wavey.encodec.qualification.quality-summary"
+}

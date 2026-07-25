@@ -1,0 +1,14 @@
+{
+  "G00-selection": "blocked",
+  "G01-input": "pass",
+  "G02-lock": "blocked",
+  "G03-preflight": "pass",
+  "G04-model-input": "blocked",
+  "G05-entropy": "blocked",
+  "G06-tail": "blocked",
+  "G07-cross-decode": "blocked",
+  "G13-size": "blocked",
+  "G18-mutation": "blocked",
+  "G19-listening": "blocked",
+  "G20-artifacts": "blocked"
+}

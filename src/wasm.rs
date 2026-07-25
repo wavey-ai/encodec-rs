@@ -5,6 +5,9 @@ use crate::binary::{
 use crate::ecdc_presets::{
     bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name, fixed_context_samples,
 };
+use crate::entropy::{
+    probability_columns_from_flat_logits, ProbabilityParameters, ProbabilityScratch,
+};
 use crate::format::{
     ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, ecdc_lm_frame_length,
     segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata,
@@ -13,6 +16,7 @@ use crate::format::{
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
+use crate::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
 use crate::stable_hash::stable_hash_hex;
 use serde::Serialize;
 use std::io::Cursor;
@@ -219,17 +223,17 @@ pub fn lm_ecdc_chunk_from_frame(
         )));
     }
 
-    let target_frame_length = meta.frame_length.max(1);
-    let encoded_frame_length = frame_length.max(1).min(target_frame_length);
+    validate_encoded_frame_length(&meta, frame_length).map_err(to_js_error)?;
+
     let mut encoder = QuantizedLmChunkEncoder::new(bundle_json, weights, scale)?;
-    for step in 0..encoded_frame_length {
+    for step in 0..frame_length {
         let mut step_codes = Vec::with_capacity(meta.num_codebooks);
         for codebook in 0..meta.num_codebooks {
             step_codes.push(codes[codebook * meta.frame_length + step]);
         }
         encoder.push(&step_codes)?;
     }
-    let payload = encoder.finish_padded(target_frame_length)?;
+    let payload = encoder.finish();
     lm_ecdc_chunk(&payload)
 }
 
@@ -292,6 +296,7 @@ pub struct QuantizedLmChunkEncoder {
     lm_window_frame_length: usize,
     input_symbols: Vec<usize>,
     encoder: ArithmeticEncoder,
+    probability_scratch: ProbabilityScratch,
     prefix: Vec<u8>,
     pushed_steps: usize,
 }
@@ -307,9 +312,7 @@ impl QuantizedLmChunkEncoder {
         let meta = parse_bundle(bundle_json)?;
         validate_lm_metadata(&meta).map_err(to_js_error)?;
         let weights = QuantizedLmWeights::from_bytes(weights).map_err(to_js_error)?;
-        weights
-            .validate_for_codebooks(meta.num_codebooks)
-            .map_err(to_js_error)?;
+        weights.validate_for_metadata(&meta).map_err(to_js_error)?;
         let lm_window_frame_length = weights.frame_length.max(1);
         let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
@@ -324,6 +327,7 @@ impl QuantizedLmChunkEncoder {
             state,
             lm_window_frame_length,
             encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
+            probability_scratch: ProbabilityScratch::default(),
             prefix,
             pushed_steps: 0,
         })
@@ -356,24 +360,40 @@ impl QuantizedLmChunkEncoder {
                 self.meta.frame_length
             )));
         }
-        while self.pushed_steps < target {
-            self.push_zero_step().map_err(to_js_error)?;
+        if self.pushed_steps != target {
+            return Err(to_js_error(format!(
+                "zero-code padding is not permitted: pushed {} of {target} required steps",
+                self.pushed_steps
+            )));
         }
         Ok(self.finish())
     }
 
     fn push_symbols(&mut self, symbols: &[usize]) -> anyhow::Result<()> {
-        if self.pushed_steps > 0 && self.pushed_steps % self.lm_window_frame_length == 0 {
-            self.state = self.lm.initial_state();
-            self.input_symbols.fill(0);
+        if self.pushed_steps >= self.lm_window_frame_length {
+            anyhow::bail!(
+                "chunk exceeds LM positional capacity {}",
+                self.lm_window_frame_length
+            );
         }
         let logits = self.lm.forward_step(&mut self.state, &self.input_symbols)?;
-        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0)?;
-        self.encoder.push_pdf_symbols(
-            &pdf,
+        let pdf = probability_columns_from_flat_logits(
+            &logits,
             self.meta.lm_cardinality(),
             self.meta.num_codebooks,
-            &symbols,
+            1,
+            ProbabilityParameters {
+                tau: 1.0,
+                logit_step: self.meta.lm_entropy_logit_step(),
+                fp_scale: DEFAULT_FP_SCALE,
+            },
+            &mut self.probability_scratch,
+        )?;
+        self.encoder.push_pdf_symbols(
+            pdf,
+            self.meta.lm_cardinality(),
+            self.meta.num_codebooks,
+            symbols,
             DEFAULT_FP_SCALE,
             DEFAULT_MIN_RANGE,
         )?;
@@ -382,11 +402,6 @@ impl QuantizedLmChunkEncoder {
         }
         self.pushed_steps += 1;
         Ok(())
-    }
-
-    fn push_zero_step(&mut self) -> anyhow::Result<()> {
-        let symbols = vec![0; self.meta.num_codebooks];
-        self.push_symbols(&symbols)
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
@@ -404,6 +419,7 @@ pub struct QuantizedLmChunkDecoder {
     lm_window_frame_length: usize,
     input_symbols: Vec<usize>,
     decoder: ArithmeticDecoder,
+    probability_scratch: ProbabilityScratch,
     scale: f32,
     pulled_steps: usize,
 }
@@ -419,9 +435,7 @@ impl QuantizedLmChunkDecoder {
         let meta = parse_bundle(bundle_json)?;
         validate_lm_metadata(&meta).map_err(to_js_error)?;
         let weights = QuantizedLmWeights::from_bytes(weights).map_err(to_js_error)?;
-        weights
-            .validate_for_codebooks(meta.num_codebooks)
-            .map_err(to_js_error)?;
+        weights.validate_for_metadata(&meta).map_err(to_js_error)?;
         let lm_window_frame_length = weights.frame_length.max(1);
         let lm = QuantizedLm::new(weights);
         let state = lm.initial_state();
@@ -442,6 +456,7 @@ impl QuantizedLmChunkDecoder {
             lm_window_frame_length,
             decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
                 .map_err(to_js_error)?,
+            probability_scratch: ProbabilityScratch::default(),
             scale,
             pulled_steps: 0,
         })
@@ -461,19 +476,33 @@ impl QuantizedLmChunkDecoder {
     }
 
     pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> {
-        if self.pulled_steps > 0 && self.pulled_steps % self.lm_window_frame_length == 0 {
-            self.state = self.lm.initial_state();
-            self.input_symbols.fill(0);
+        if self.pulled_steps >= self.lm_window_frame_length {
+            return Err(to_js_error(format!(
+                "chunk exceeds LM positional capacity {}",
+                self.lm_window_frame_length
+            )));
         }
         let logits = self
             .lm
             .forward_step(&mut self.state, &self.input_symbols)
             .map_err(to_js_error)?;
-        let pdf = probability_columns_from_logits(&logits, &self.meta, 1.0).map_err(to_js_error)?;
+        let pdf = probability_columns_from_flat_logits(
+            &logits,
+            self.meta.lm_cardinality(),
+            self.meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: 1.0,
+                logit_step: self.meta.lm_entropy_logit_step(),
+                fp_scale: DEFAULT_FP_SCALE,
+            },
+            &mut self.probability_scratch,
+        )
+        .map_err(to_js_error)?;
         let symbols = self
             .decoder
             .pull_symbols(
-                &pdf,
+                pdf,
                 self.meta.lm_cardinality(),
                 self.meta.num_codebooks,
                 DEFAULT_FP_SCALE,
@@ -495,15 +524,33 @@ impl QuantizedLmChunkDecoder {
 }
 
 fn parse_bundle(bundle_json: &str) -> Result<OnnxFrameBundleMetadata, JsValue> {
-    serde_json::from_str(bundle_json).map_err(to_js_error)
+    let metadata: OnnxFrameBundleMetadata =
+        serde_json::from_str(bundle_json).map_err(to_js_error)?;
+    metadata.validate().map_err(to_js_error)?;
+    Ok(metadata)
 }
 
 fn validate_lm_metadata(meta: &OnnxFrameBundleMetadata) -> anyhow::Result<()> {
-    meta.lm_dim()?;
-    meta.lm_num_layers()?;
-    meta.lm_past_context()?;
-    if meta.lm_cardinality() == 0 {
-        anyhow::bail!("LM cardinality must be non-zero");
+    meta.validate_lm()
+}
+
+fn validate_encoded_frame_length(
+    meta: &OnnxFrameBundleMetadata,
+    frame_length: usize,
+) -> anyhow::Result<()> {
+    if frame_length == 0 || frame_length > meta.frame_length {
+        anyhow::bail!(
+            "ECDC frame length {frame_length} is outside 1..={}",
+            meta.frame_length
+        );
+    }
+    if fixed_context_samples(meta.segment_samples, meta.segment_stride)?.is_some()
+        && frame_length != meta.frame_length
+    {
+        anyhow::bail!(
+            "fixed-context ECDC requires all {} model-code frames; got {frame_length}",
+            meta.frame_length
+        );
     }
     Ok(())
 }
@@ -534,82 +581,10 @@ fn symbols_from_codes(codes: &[u16], meta: &OnnxFrameBundleMetadata) -> anyhow::
         .collect()
 }
 
-fn probability_columns_from_logits(
-    logits: &[f32],
-    meta: &OnnxFrameBundleMetadata,
-    lm_tau: f64,
-) -> anyhow::Result<Vec<f64>> {
-    let card = meta.lm_cardinality();
-    let codebooks = meta.num_codebooks;
-    if logits.len() != card * codebooks {
-        anyhow::bail!(
-            "LM logits length {} does not match cardinality {} * codebooks {}",
-            logits.len(),
-            card,
-            codebooks
-        );
-    }
-
-    let mut pdf = vec![0.0_f64; card * codebooks];
-    let mut quantized = vec![0.0_f64; card];
-    let mut probs = vec![0.0_f64; card];
-    let uniform = 1.0 / card as f64;
-    let near_pdf_threshold = 0.25 / DEFAULT_FP_SCALE as f64;
-    let logit_step = meta.lm_entropy_logit_step();
-
-    for codebook in 0..codebooks {
-        let mut max_value = f64::NEG_INFINITY;
-        let mut min_value = f64::INFINITY;
-        for bin in 0..card {
-            let raw = logits[bin * codebooks + codebook] as f64 / lm_tau;
-            let quantized_value = quantize_logit(raw, logit_step);
-            quantized[bin] = quantized_value;
-            max_value = max_value.max(quantized_value);
-            min_value = min_value.min(quantized_value);
-        }
-
-        let mut denom = 0.0_f64;
-        for bin in 0..card {
-            let value = (quantized[bin] - max_value).exp();
-            probs[bin] = value;
-            denom += value;
-        }
-        if !denom.is_finite() || denom <= 0.0 {
-            for bin in 0..card {
-                pdf[bin * codebooks + codebook] = uniform;
-            }
-            continue;
-        }
-
-        let mut max_pdf = 0.0_f64;
-        let mut min_pdf = f64::INFINITY;
-        for prob in probs.iter_mut() {
-            *prob /= denom;
-            max_pdf = max_pdf.max(*prob);
-            min_pdf = min_pdf.min(*prob);
-        }
-        let near_uniform = (max_value - min_value) <= (2.0 * logit_step)
-            || (max_pdf - min_pdf) <= near_pdf_threshold;
-        for bin in 0..card {
-            pdf[bin * codebooks + codebook] = if near_uniform { uniform } else { probs[bin] };
-        }
-    }
-
-    Ok(pdf)
-}
-
-fn quantize_logit(value: f64, step: f64) -> f64 {
-    let eps = 2_f64.powi(-40);
-    let y = value / step;
-    (y + 0.5 - eps).floor() * step
-}
-
 /// Crops each fully-decoded fixed model window (`segment_samples` long, the
 /// same layout the native decoder produces) down to its owned region and
-/// concatenates the results directly at logical stride positions. No
-/// crossfade/triangle weighting happens here: that's only valid for legacy
-/// overlap-add bundles, never for recognised fixed-context bundles, where
-/// the discarded context is purely a private model-input/output detail.
+/// concatenates the results at logical stride positions. The fixed-context
+/// seam repair keeps the output length unchanged.
 fn fixed_context_crop_concat(
     meta: &OnnxFrameBundleMetadata,
     audio_length: usize,
@@ -625,7 +600,9 @@ fn fixed_context_crop_concat(
     let expected_total = frame_count
         .checked_mul(channels)
         .and_then(|value| value.checked_mul(segment_samples))
-        .ok_or_else(|| anyhow::anyhow!("decoded fixed-context frame buffer size overflows usize"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("decoded fixed-context frame buffer size overflows usize")
+        })?;
     if decoded_frames.len() != expected_total {
         anyhow::bail!(
             "decoded frame sample count {} does not match expected {} for {} fixed-context frames",
@@ -654,6 +631,13 @@ fn fixed_context_crop_concat(
                 .copy_from_slice(&decoded_frames[src_base..src_base + owned_len]);
         }
     }
+    repair_cubic_hermite_seams_planar(
+        &mut output,
+        channels,
+        audio_length,
+        stride,
+        FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
+    )?;
     Ok(output)
 }
 
@@ -704,7 +688,7 @@ fn overlap_add_decoded_frames(
         chunk_samples.clone()
     } else {
         let frame_channel_count = frame_count * meta.channels;
-        if decoded_frames.len() % frame_channel_count != 0 {
+        if !decoded_frames.len().is_multiple_of(frame_channel_count) {
             anyhow::bail!(
                 "decoded frame sample count {} is not divisible by {} frame channels for {} frames",
                 decoded_frames.len(),
@@ -796,6 +780,11 @@ fn to_js_error(error: impl std::fmt::Display) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecdc::encode_lm_chunk_payload;
+    use crate::portable_lm::PortableLmCodec;
+    use ndarray::{Array2, Array3};
+    use std::fs;
+    use std::path::Path;
 
     fn test_bundle_json() -> String {
         serde_json::to_string(&OnnxFrameBundleMetadata {
@@ -977,7 +966,16 @@ mod tests {
     }
 
     #[test]
-    fn fixed_context_crop_concat_strips_context_and_returns_owned_audio() {
+    fn fixed_context_entropy_rejects_partial_model_codes() {
+        let meta: OnnxFrameBundleMetadata =
+            serde_json::from_str(&fixed_block_bundle_json()).unwrap();
+        assert!(validate_encoded_frame_length(&meta, meta.frame_length).is_ok());
+        assert!(validate_encoded_frame_length(&meta, meta.frame_length - 1).is_err());
+        assert!(validate_encoded_frame_length(&meta, 0).is_err());
+    }
+
+    #[test]
+    fn fixed_context_crop_concat_repairs_seams_and_returns_owned_audio() {
         let meta: OnnxFrameBundleMetadata =
             serde_json::from_str(&fixed_block_bundle_json()).unwrap();
         let stride = meta.segment_stride;
@@ -989,7 +987,8 @@ mod tests {
         let mut decoded = vec![0.0_f32; frame_count * meta.channels * meta.segment_samples];
         for frame in 0..frame_count {
             for channel in 0..meta.channels {
-                let base = frame * meta.channels * meta.segment_samples + channel * meta.segment_samples;
+                let base =
+                    frame * meta.channels * meta.segment_samples + channel * meta.segment_samples;
                 for index in 0..meta.segment_samples {
                     // Encode a value that lets us check exactly which
                     // window position (and therefore which logical sample)
@@ -1004,13 +1003,15 @@ mod tests {
         assert_eq!(output.len(), meta.channels * audio_length);
 
         // First owned sample of chunk 0 comes from model index `context`.
-        assert_eq!(output[0], (0 * 1_000_000 + 480) as f32);
-        // Last owned sample of chunk 0 comes from model index context + stride - 1.
-        assert_eq!(output[stride - 1], (context + stride - 1) as f32);
-        // First owned sample of chunk 1 (logical offset = stride).
-        assert_eq!(output[stride], (1_000_000 + 480) as f32);
-        // Final partial chunk only contributes its true owned length (2,000).
-        assert_eq!(output[2 * stride], (2_000_000 + 480) as f32);
+        assert_eq!(output[0], 480.0);
+        // Samples outside the 24-sample repair remain exact crop results.
+        assert_eq!(output[stride - 13], (context + stride - 13) as f32);
+        assert_eq!(output[stride + 12], (1_000_000 + context + 12) as f32);
+        // Twelve samples on each side of the join use the Hermite repair.
+        assert_ne!(output[stride - 1], (context + stride - 1) as f32);
+        assert_ne!(output[stride], (1_000_000 + context) as f32);
+        // The final partial chunk contributes only its true owned length.
+        assert_eq!(output[2 * stride + 12], (2_000_000 + context + 12) as f32);
         assert_eq!(output[audio_length - 1], (2_000_000 + 480 + 1_999) as f32);
     }
 
@@ -1024,5 +1025,65 @@ mod tests {
         // Too short: missing the full segment_samples length per channel.
         let decoded = vec![0.0_f32; meta.channels * (context + stride - 1)];
         assert!(fixed_context_crop_concat(&meta, audio_length, &decoded, stride, context).is_err());
+    }
+
+    #[test]
+    fn native_and_wasm_entropy_paths_preserve_codebook_time_order() {
+        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_12kbps_1333ms");
+        let bundle_path = bundle_dir.join("bundle.json");
+        let weights_path = bundle_dir.join("lm_weights_q8.bin");
+        if !bundle_path.exists() || !weights_path.exists() {
+            eprintln!("skipping entropy parity test; fixed q8 bundle is unavailable");
+            return;
+        }
+
+        let bundle_json = fs::read_to_string(bundle_path).unwrap();
+        let metadata: OnnxFrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
+        let weights = fs::read(weights_path).unwrap();
+        let steps = 4;
+        let scale = f32::from_bits(0x3f12_3456);
+        let mut codes = Array3::<i64>::zeros((1, metadata.num_codebooks, steps));
+        for time in 0..steps {
+            for codebook in 0..metadata.num_codebooks {
+                codes[[0, codebook, time]] =
+                    ((time * 257 + codebook * 73 + 19) % metadata.lm_cardinality()) as i64;
+            }
+        }
+
+        let mut native_lm =
+            PortableLmCodec::from_quantized_weights(metadata.clone(), &weights).unwrap();
+        let scales = Array2::from_elem((1, 1), scale);
+        let native_payload = encode_lm_chunk_payload(
+            &mut native_lm,
+            &codes,
+            &scales,
+            0,
+            steps,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+        )
+        .unwrap();
+
+        let mut wasm_encoder = QuantizedLmChunkEncoder::new(&bundle_json, &weights, scale).unwrap();
+        for time in 0..steps {
+            let step_codes: Vec<u16> = (0..metadata.num_codebooks)
+                .map(|codebook| codes[[0, codebook, time]] as u16)
+                .collect();
+            wasm_encoder.push(&step_codes).unwrap();
+        }
+        let wasm_payload = wasm_encoder.finish();
+        assert_eq!(wasm_payload, native_payload);
+
+        let mut wasm_decoder =
+            QuantizedLmChunkDecoder::new(&bundle_json, &weights, &native_payload).unwrap();
+        assert_eq!(wasm_decoder.scale().to_bits(), scale.to_bits());
+        for time in 0..steps {
+            let decoded = wasm_decoder.pull().unwrap();
+            let expected: Vec<u16> = (0..metadata.num_codebooks)
+                .map(|codebook| codes[[0, codebook, time]] as u16)
+                .collect();
+            assert_eq!(decoded, expected);
+        }
     }
 }

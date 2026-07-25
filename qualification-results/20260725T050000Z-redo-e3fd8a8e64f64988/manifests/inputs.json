@@ -1,0 +1,32 @@
+[
+  {
+    "id": "confirmation-i-want-her-v1",
+    "source_sha256": "4e984cdae6e57fc85b3fd316bd14edd5700de07ee8c5e94abba783e31bde53d4",
+    "canonical_pcm_sha256": "d0c1d8207afa29d8086b01f6e56a8f6c6f30e82aae41ac431b2a326ecf5abe12"
+  },
+  {
+    "id": "confirmation-pray-4-me-v1",
+    "source_sha256": "742d36fd78b1263f0c91f76127f3ea77e4cf7ce781c37715c2a7c890549ecf59",
+    "canonical_pcm_sha256": "0845e1e842f5a18269266e8027e0a6ad23256c351daa0f7204ad8aa7ca6e330f"
+  },
+  {
+    "id": "confirmation-westside-v1",
+    "source_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9",
+    "canonical_pcm_sha256": "c2967a05cf0b0c8accee1be55052dbcf1ef09a58f618eae8b6d1852fc5513e6c"
+  },
+  {
+    "id": "confirmation-westside-v2",
+    "source_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b",
+    "canonical_pcm_sha256": "67514c6e4b49cdf1919caf04c3887140a251500346b2a10a0c678417a059f28c"
+  },
+  {
+    "id": "confirmation-after-dark-v1",
+    "source_sha256": "1812df5e6062549a4947a78b5bb08474b6d11026292c019c2da9b5b1950bc655",
+    "canonical_pcm_sha256": "7eb63b31e40ddab71e028473864578e2939aebc9e79a7afd56e8808ed3158cab"
+  },
+  {
+    "id": "confirmation-1979-v1",
+    "source_sha256": "ed1db8e4a35679be511b12be32fcd0945582f9623a088247431862a884311679",
+    "canonical_pcm_sha256": "3dc6116f24a5f29aa544393dfb1b9efbea2536ac91fc38427f47ad37611f8364"
+  }
+]

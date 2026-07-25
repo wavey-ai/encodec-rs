@@ -9,6 +9,9 @@ use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
 use crate::ecdc_presets::fixed_context_samples;
+use crate::entropy::{
+    probability_columns_from_flat_logits, ProbabilityParameters, ProbabilityScratch,
+};
 use crate::format::{
     ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_ms, ecdc_lm_frame_length,
     segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout,
@@ -18,6 +21,7 @@ pub use crate::format::{
     DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
+use crate::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
 
 pub trait FrameCodec {
     fn metadata(&self) -> &OnnxFrameBundleMetadata;
@@ -69,19 +73,162 @@ pub struct DecodedEcdcAudio {
     pub audio: Array3<f32>,
 }
 
-#[derive(Default)]
-struct ProbabilityScratch {
-    pdf: Vec<f64>,
-    quantized: Vec<f64>,
-    probs: Vec<f64>,
+#[derive(Debug, Clone)]
+pub struct EncodedFrameEvidence {
+    pub offset_samples: usize,
+    pub owned_samples: usize,
+    pub model_input: Array3<f32>,
+    pub codes: Array3<i64>,
+    pub scale: Array2<f32>,
 }
 
-impl ProbabilityScratch {
-    fn prepare(&mut self, card: usize, columns: usize) {
-        self.pdf.resize(card * columns, 0.0);
-        self.quantized.resize(card, 0.0);
-        self.probs.resize(card, 0.0);
+#[derive(Debug, Clone)]
+pub struct LmChunkEvidence {
+    pub payload: Vec<u8>,
+    pub entropy: Vec<u8>,
+    pub recovered_codes: Array3<i64>,
+    pub recovered_scale: Array2<f32>,
+}
+
+/// Encodes each neural model input and retains the tensors needed for qualification.
+///
+/// Fixed-context bundles always use their complete model window. A non-fixed
+/// bundle can use its actual final input length when `true_variable_tail` is
+/// enabled. Variable-length batches contain only inputs with the same length.
+pub fn encode_audio_frame_evidence(
+    codec: &mut dyn FrameCodec,
+    audio: &Array3<f32>,
+    frame_batch_size: usize,
+    true_variable_tail: bool,
+) -> Result<Vec<EncodedFrameEvidence>> {
+    let meta = codec.metadata().clone();
+    let shape = audio.shape();
+    if shape.len() != 3 || shape[0] != 1 || shape[1] != meta.channels {
+        bail!(
+            "audio must have shape [1, {}, samples], got {:?}",
+            meta.channels,
+            shape,
+        );
     }
+    let total_samples = shape[2];
+    if total_samples == 0 {
+        bail!("audio must contain at least one sample");
+    }
+
+    let context = fixed_context_samples(meta.segment_samples, meta.segment_stride)?;
+    if true_variable_tail && context.is_some() {
+        bail!("true variable tails are not valid for a fixed-context bundle");
+    }
+
+    #[derive(Clone, Copy)]
+    struct SegmentPlan {
+        offset: usize,
+        owned_samples: usize,
+        model_samples: usize,
+    }
+
+    let plans: Vec<_> = segment_starts(total_samples, meta.segment_stride)
+        .into_iter()
+        .map(|offset| SegmentPlan {
+            offset,
+            owned_samples: (total_samples - offset).min(meta.segment_stride),
+            model_samples: if true_variable_tail {
+                (total_samples - offset).min(meta.segment_samples)
+            } else {
+                meta.segment_samples
+            },
+        })
+        .collect();
+
+    let batch_limit = frame_batch_size.max(1);
+    let mut evidence = Vec::with_capacity(plans.len());
+    let mut plan_index = 0;
+    while plan_index < plans.len() {
+        let model_samples = plans[plan_index].model_samples;
+        let mut batch_end = plan_index + 1;
+        while batch_end < plans.len()
+            && batch_end - plan_index < batch_limit
+            && plans[batch_end].model_samples == model_samples
+        {
+            batch_end += 1;
+        }
+        let batch_plans = &plans[plan_index..batch_end];
+        let mut batch = Array3::<f32>::zeros((batch_plans.len(), meta.channels, model_samples));
+        let context = context.unwrap_or(0);
+        for (batch_index, plan) in batch_plans.iter().enumerate() {
+            for channel in 0..meta.channels {
+                for model_index in 0..model_samples {
+                    let source_index =
+                        plan.offset as isize - context as isize + model_index as isize;
+                    if source_index >= 0 && (source_index as usize) < total_samples {
+                        batch[[batch_index, channel, model_index]] =
+                            audio[[0, channel, source_index as usize]];
+                    }
+                }
+            }
+        }
+
+        let (batch_codes, batch_scales) = codec.encode_frame(&batch)?;
+        let code_shape = batch_codes.shape();
+        if code_shape.len() != 3
+            || code_shape[0] != batch_plans.len()
+            || code_shape[1] != meta.num_codebooks
+        {
+            bail!(
+                "encoded code shape mismatch, expected [{}, {}, frames], got {:?}",
+                batch_plans.len(),
+                meta.num_codebooks,
+                code_shape,
+            );
+        }
+        let expected_frame_length = if true_variable_tail {
+            segment_frame_length(model_samples, meta.segment_samples, meta.frame_length)
+        } else {
+            meta.frame_length
+        };
+        if code_shape[2] != expected_frame_length {
+            bail!(
+                "encoded frame length {} does not match expected length {} for {} model samples",
+                code_shape[2],
+                expected_frame_length,
+                model_samples,
+            );
+        }
+        if batch_scales.shape() != [batch_plans.len(), 1] {
+            bail!(
+                "encoded scale shape mismatch, expected [{}, 1], got {:?}",
+                batch_plans.len(),
+                batch_scales.shape(),
+            );
+        }
+
+        for (batch_index, plan) in batch_plans.iter().enumerate() {
+            let mut model_input = Array3::<f32>::zeros((1, meta.channels, model_samples));
+            let mut codes = Array3::<i64>::zeros((1, meta.num_codebooks, expected_frame_length));
+            let mut scale = Array2::<f32>::zeros((1, 1));
+            for channel in 0..meta.channels {
+                for sample in 0..model_samples {
+                    model_input[[0, channel, sample]] = batch[[batch_index, channel, sample]];
+                }
+            }
+            for codebook in 0..meta.num_codebooks {
+                for frame in 0..expected_frame_length {
+                    codes[[0, codebook, frame]] = batch_codes[[batch_index, codebook, frame]];
+                }
+            }
+            scale[[0, 0]] = batch_scales[[batch_index, 0]];
+            evidence.push(EncodedFrameEvidence {
+                offset_samples: plan.offset,
+                owned_samples: plan.owned_samples,
+                model_input,
+                codes,
+                scale,
+            });
+        }
+        plan_index = batch_end;
+    }
+
+    Ok(evidence)
 }
 
 pub fn encode_audio_to_ecdc(
@@ -151,6 +298,7 @@ pub fn encode_audio_to_ecdc_with_options(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn encode_audio_to_ecdc_stream_with_options<F>(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
@@ -242,6 +390,7 @@ where
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_audio_to_ecdc_impl(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
@@ -422,7 +571,28 @@ fn decode_ecdc_impl(
         ecdc_chunk_layout_for_chunk_count(&bundle_meta, &metadata, raw_chunks.len())?;
     let context = fixed_context_samples(chunk_layout.samples, chunk_layout.stride)?;
 
-    let mut frames = Vec::new();
+    let lm_version = lm_codec.bitstream_version();
+    if lm_version != metadata.bitstream_version {
+        bail!(
+            "payload requires LM bitstream acv={}, but bundle/runtime provides acv={}",
+            metadata.bitstream_version,
+            lm_version,
+        );
+    }
+    let Some(expected_hash) = metadata.lm_hash.as_deref() else {
+        bail!("q8 LM payload is missing required LM hash");
+    };
+    let Some(actual_hash) = lm_codec.bitstream_lm_hash() else {
+        bail!("q8 LM runtime does not expose an LM hash");
+    };
+    if actual_hash != expected_hash {
+        bail!(
+            "payload requires q8 LM hash {}, but bundle/runtime provides {}",
+            expected_hash,
+            actual_hash,
+        );
+    }
+
     let starts = segment_starts(metadata.audio_length, chunk_layout.stride);
     if starts.len() != raw_chunks.len() {
         bail!(
@@ -431,6 +601,13 @@ fn decode_ecdc_impl(
             starts.len()
         );
     }
+    let mut fixed_audio =
+        context.map(|_| Array3::<f32>::zeros((1, bundle_meta.channels, metadata.audio_length)));
+    let mut frames = Vec::with_capacity(if context.is_none() {
+        raw_chunks.len()
+    } else {
+        0
+    });
     for (offset, chunk) in starts.into_iter().zip(raw_chunks) {
         let owned_len = (metadata.audio_length - offset).min(chunk_layout.stride);
         let decode_len = if context.is_some() {
@@ -451,27 +628,6 @@ fn decode_ecdc_impl(
                 bundle_meta.frame_length,
             )
         };
-        let lm_version = lm_codec.bitstream_version();
-        if lm_version != metadata.bitstream_version {
-            bail!(
-                "payload requires LM bitstream acv={}, but bundle/runtime provides acv={}",
-                metadata.bitstream_version,
-                lm_version,
-            );
-        }
-        let Some(expected_hash) = metadata.lm_hash.as_deref() else {
-            bail!("q8 LM payload is missing required LM hash");
-        };
-        let Some(actual_hash) = lm_codec.bitstream_lm_hash() else {
-            bail!("q8 LM runtime does not expose an LM hash");
-        };
-        if actual_hash != expected_hash {
-            bail!(
-                "payload requires q8 LM hash {}, but bundle/runtime provides {}",
-                expected_hash,
-                actual_hash,
-            );
-        }
         let frame = decode_lm_chunk_payload(
             codec,
             lm_codec,
@@ -481,38 +637,36 @@ fn decode_ecdc_impl(
             decode_len,
             frame_length,
         )?;
-        let frame = if let Some(context) = context {
-            crop_owned_segment(&frame, context, owned_len)?
+        if let Some(context) = context {
+            let output = fixed_audio
+                .as_mut()
+                .expect("fixed-context output must be initialized");
+            copy_owned_segment_into(&frame, context, owned_len, output, offset)?;
         } else {
-            frame
-        };
-        frames.push(frame);
-    }
-
-    let reconstructed = if context.is_some() {
-        concat_owned_frames(&frames)
-    } else if frames.len() <= 1 {
-        frames
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| Array3::<f32>::zeros((1, bundle_meta.channels, 0)))
-    } else {
-        linear_overlap_add(&frames, chunk_layout.stride)
-    };
-    let mut trimmed = Array3::<f32>::zeros((1, bundle_meta.channels, metadata.audio_length));
-    for channel in 0..bundle_meta.channels {
-        for index in 0..metadata.audio_length {
-            trimmed[[0, channel, index]] = reconstructed[[0, channel, index]];
+            frames.push(frame);
         }
     }
 
-    Ok(DecodedEcdcAudio {
-        metadata,
-        audio: trimmed,
-    })
+    let audio = if let Some(mut output) = fixed_audio {
+        repair_owned_output(&mut output, chunk_layout.stride)?;
+        output
+    } else {
+        let reconstructed = if frames.len() <= 1 {
+            frames
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Array3::<f32>::zeros((1, bundle_meta.channels, 0)))
+        } else {
+            linear_overlap_add(&frames, chunk_layout.stride)
+        };
+        trim_audio_to_length(reconstructed, bundle_meta.channels, metadata.audio_length)?
+    };
+
+    Ok(DecodedEcdcAudio { metadata, audio })
 }
 
-fn encode_lm_chunk_payload(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_lm_chunk_payload(
     lm_codec: &mut dyn LmCodec,
     codes: &Array3<i64>,
     scales: &Array2<f32>,
@@ -536,16 +690,18 @@ fn encode_lm_chunk_payload(
     let mut symbols = vec![0_usize; meta.num_codebooks];
     let mut scratch = ProbabilityScratch::default();
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
+    if frame_length > lm_window_frame_length {
+        bail!(
+            "chunk frame length {} exceeds LM positional capacity {}",
+            frame_length,
+            lm_window_frame_length,
+        );
+    }
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
-        if t > 0 && t % lm_window_frame_length == 0 {
-            states = lm_codec.initial_states(1)?;
-            offset = 0;
-            input.fill(0);
-        }
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
             lm_codec.forward_logits(&input, offset, &states)?;
@@ -606,6 +762,80 @@ fn encode_lm_chunk_payload(
     Ok(payload)
 }
 
+/// Encodes and decodes one LM chunk without container framing.
+///
+/// This interface exists for qualification. The returned entropy bytes exclude
+/// the optional four-byte normalization scale at the start of the payload.
+pub fn encode_lm_chunk_evidence(
+    lm_codec: &mut dyn LmCodec,
+    codes: &Array3<i64>,
+    scale: &Array2<f32>,
+) -> Result<LmChunkEvidence> {
+    let shape = codes.shape();
+    if shape.len() != 3 || shape[0] != 1 {
+        bail!(
+            "qualification codes must have shape [1, codebooks, frames], got {:?}",
+            shape,
+        );
+    }
+    let frame_length = shape[2];
+    if frame_length == 0 {
+        bail!("qualification codes must contain at least one frame");
+    }
+    let meta = lm_codec.metadata().clone();
+    if shape[1] != meta.num_codebooks {
+        bail!(
+            "qualification codebook count {} does not match LM count {}",
+            shape[1],
+            meta.num_codebooks,
+        );
+    }
+    if scale.shape() != [1, 1] {
+        bail!(
+            "qualification scale must have shape [1, 1], got {:?}",
+            scale.shape(),
+        );
+    }
+
+    let payload = encode_lm_chunk_payload(
+        lm_codec,
+        codes,
+        scale,
+        0,
+        frame_length,
+        DEFAULT_FP_SCALE,
+        DEFAULT_MIN_RANGE,
+        1.0,
+    )?;
+    let entropy_offset = if meta.normalize { 4 } else { 0 };
+    if payload.len() < entropy_offset {
+        bail!("LM payload is shorter than its normalization scale");
+    }
+    let entropy = payload[entropy_offset..].to_vec();
+    let (recovered_codes, recovered_scale) = decode_lm_chunk_codes(
+        lm_codec,
+        &meta,
+        &payload,
+        frame_length,
+        DEFAULT_FP_SCALE,
+        DEFAULT_MIN_RANGE,
+        1.0,
+    )?;
+    if recovered_codes != *codes {
+        bail!("LM qualification round trip changed one or more code symbols");
+    }
+    if meta.normalize && recovered_scale[[0, 0]].to_bits() != scale[[0, 0]].to_bits() {
+        bail!("LM qualification round trip changed the normalization scale bits");
+    }
+
+    Ok(LmChunkEvidence {
+        payload,
+        entropy,
+        recovered_codes,
+        recovered_scale,
+    })
+}
+
 fn decode_lm_chunk_payload(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
@@ -617,6 +847,36 @@ fn decode_lm_chunk_payload(
 ) -> Result<Array3<f32>> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let started = profile_enabled.then(Instant::now);
+    let (codes, scale) = decode_lm_chunk_codes(
+        lm_codec,
+        model_meta,
+        payload,
+        frame_length,
+        metadata.fp_scale,
+        metadata.min_range,
+        metadata.lm_tau.unwrap_or(1.0) as f64,
+    )?;
+    let decoded = decode_codes(codec, &codes, &scale, this_len)?;
+    if let Some(started) = started {
+        eprintln!(
+            "decode_lm_chunk_payload frame_length={} total_ms={:.3}",
+            frame_length,
+            started.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+    Ok(decoded)
+}
+
+fn decode_lm_chunk_codes(
+    lm_codec: &mut dyn LmCodec,
+    model_meta: &OnnxFrameBundleMetadata,
+    payload: &[u8],
+    frame_length: usize,
+    fp_scale: i64,
+    min_range: i64,
+    lm_tau: f64,
+) -> Result<(Array3<i64>, Array2<f32>)> {
+    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let mut cursor = Cursor::new(payload);
     let scale = if model_meta.normalize {
         let bytes = read_exactly(&mut cursor, 4)?;
@@ -631,25 +891,25 @@ fn decode_lm_chunk_payload(
     let remaining = payload.len().saturating_sub(cursor.position() as usize);
     let encoded = read_exactly(&mut cursor, remaining)?;
     let mut decoder = ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)?;
-    let decode_frame_length = frame_length.max(model_meta.frame_length);
-    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, decode_frame_length));
+    let mut codes = Array3::<i64>::zeros((1, model_meta.num_codebooks, frame_length));
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
-    let lm_tau = metadata.lm_tau.unwrap_or(1.0) as f64;
     let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
+    if frame_length > lm_window_frame_length {
+        bail!(
+            "chunk frame length {} exceeds LM positional capacity {}",
+            frame_length,
+            lm_window_frame_length,
+        );
+    }
     let mut lm_elapsed = 0.0_f64;
     let mut pdf_elapsed = 0.0_f64;
     let mut arithmetic_elapsed = 0.0_f64;
 
     for t in 0..frame_length {
-        if t > 0 && t % lm_window_frame_length == 0 {
-            states = lm_codec.initial_states(1)?;
-            offset = 0;
-            input.fill(0);
-        }
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
             lm_codec.forward_logits(&input, offset, &states)?;
@@ -662,7 +922,7 @@ fn decode_lm_chunk_payload(
             &logits,
             lm_tau,
             lm_logit_step,
-            metadata.fp_scale,
+            fp_scale,
             &mut scratch,
         )?;
         if let Some(pdf_started) = pdf_started {
@@ -674,8 +934,8 @@ fn decode_lm_chunk_payload(
             pdf,
             lm_codec.metadata().lm_cardinality(),
             model_meta.num_codebooks,
-            metadata.fp_scale,
-            metadata.min_range,
+            fp_scale,
+            min_range,
         )?;
         if let Some(arithmetic_started) = arithmetic_started {
             arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
@@ -690,18 +950,13 @@ fn decode_lm_chunk_payload(
         offset = next_offset;
     }
 
-    let decoded = decode_codes(codec, &codes, &scale, this_len)?;
-    if let Some(started) = started {
+    if std::env::var_os("ENCODEC_RS_PROFILE").is_some() {
         eprintln!(
-            "decode_lm_chunk_payload frame_length={} lm_ms={:.3} pdf_ms={:.3} arithmetic_ms={:.3} total_ms={:.3}",
-            frame_length,
-            lm_elapsed,
-            pdf_elapsed,
-            arithmetic_elapsed,
-            started.elapsed().as_secs_f64() * 1000.0,
+            "decode_lm_chunk_codes frame_length={} lm_ms={:.3} pdf_ms={:.3} arithmetic_ms={:.3}",
+            frame_length, lm_elapsed, pdf_elapsed, arithmetic_elapsed,
         );
     }
-    Ok(decoded)
+    Ok((codes, scale))
 }
 
 fn decode_codes(
@@ -813,59 +1068,24 @@ fn probability_columns_from_logits<'a>(
             shape
         );
     }
-    let card = shape[1];
+    let cardinality = shape[1];
     let codebooks = shape[2];
     let steps = shape[3];
-    let columns = codebooks * steps;
-    scratch.prepare(card, columns);
-    let pdf = &mut scratch.pdf;
-    let quantized = &mut scratch.quantized;
-    let probs = &mut scratch.probs;
-    let uniform = 1.0 / card as f64;
-    let near_pdf_threshold = 0.25 / fp_scale as f64;
-
-    for step in 0..steps {
-        for codebook in 0..codebooks {
-            let mut max_value = f64::NEG_INFINITY;
-            let mut min_value = f64::INFINITY;
-            for bin in 0..card {
-                let raw = logits[[0, bin, codebook, step]] as f64 / lm_tau;
-                let quantized_value = quantize_logit(raw, logit_step);
-                quantized[bin] = quantized_value;
-                max_value = max_value.max(quantized_value);
-                min_value = min_value.min(quantized_value);
-            }
-
-            let mut denom = 0.0_f64;
-            for bin in 0..card {
-                let value = (quantized[bin] - max_value).exp();
-                probs[bin] = value;
-                denom += value;
-            }
-            if !denom.is_finite() || denom <= 0.0 {
-                let column = step * codebooks + codebook;
-                for bin in 0..card {
-                    pdf[bin * columns + column] = uniform;
-                }
-                continue;
-            }
-            let mut max_pdf = 0.0_f64;
-            let mut min_pdf = f64::INFINITY;
-            for prob in probs.iter_mut() {
-                *prob /= denom;
-                max_pdf = max_pdf.max(*prob);
-                min_pdf = min_pdf.min(*prob);
-            }
-            let near_uniform = (max_value - min_value) <= (2.0 * logit_step)
-                || (max_pdf - min_pdf) <= near_pdf_threshold;
-            let column = step * codebooks + codebook;
-            for bin in 0..card {
-                pdf[bin * columns + column] = if near_uniform { uniform } else { probs[bin] };
-            }
-        }
-    }
-
-    Ok(&pdf[..card * columns])
+    let logits = logits
+        .as_slice()
+        .ok_or_else(|| anyhow::anyhow!("LM logits must use contiguous storage"))?;
+    probability_columns_from_flat_logits(
+        logits,
+        cardinality,
+        codebooks,
+        steps,
+        ProbabilityParameters {
+            tau: lm_tau,
+            logit_step,
+            fp_scale,
+        },
+        scratch,
+    )
 }
 
 pub fn deterministic_pdf_from_logits(
@@ -875,27 +1095,35 @@ pub fn deterministic_pdf_from_logits(
     fp_scale: i64,
 ) -> Result<Vec<f64>> {
     let mut scratch = ProbabilityScratch::default();
-    probability_columns_from_logits(logits, lm_tau, logit_step, fp_scale, &mut scratch)?;
-    Ok(scratch.pdf)
+    Ok(
+        probability_columns_from_logits(logits, lm_tau, logit_step, fp_scale, &mut scratch)?
+            .to_vec(),
+    )
 }
 
-fn quantize_logit(value: f64, step: f64) -> f64 {
-    let eps = 2_f64.powi(-40);
-    let y = value / step;
-    (y + 0.5 - eps).floor() * step
-}
-
-/// Crops a fully-decoded fixed model window down to its owned audio region,
-/// discarding the symmetric codec-context samples on each side. No
-/// overlap-add/crossfade happens here: adjoining and seam repair are handled
-/// by the JS chunk-assembly layer.
-fn crop_owned_segment(
+/// Copies one decoded model window into its final owned sample range.
+fn copy_owned_segment_into(
     frame: &Array3<f32>,
     context: usize,
     owned_len: usize,
-) -> Result<Array3<f32>> {
+    output: &mut Array3<f32>,
+    output_offset: usize,
+) -> Result<()> {
+    if frame.shape()[0] != 1 || output.shape()[0] != 1 {
+        bail!("decoded audio must contain one batch");
+    }
+    if frame.shape()[1] != output.shape()[1] {
+        bail!(
+            "decoded channel count {} does not match output channel count {}",
+            frame.shape()[1],
+            output.shape()[1],
+        );
+    }
     let decoded_len = frame.shape()[2];
-    if context + owned_len > decoded_len {
+    let source_end = context
+        .checked_add(owned_len)
+        .ok_or_else(|| anyhow::anyhow!("decoded sample range overflow"))?;
+    if source_end > decoded_len {
         bail!(
             "decoded model output is too short: context={} owned_len={} decoded={}",
             context,
@@ -903,31 +1131,89 @@ fn crop_owned_segment(
             decoded_len,
         );
     }
-    let channels = frame.shape()[1];
-    let mut out = Array3::<f32>::zeros((1, channels, owned_len));
-    for channel in 0..channels {
-        for index in 0..owned_len {
-            out[[0, channel, index]] = frame[[0, channel, context + index]];
-        }
+    let output_len = output.shape()[2];
+    let output_end = output_offset
+        .checked_add(owned_len)
+        .ok_or_else(|| anyhow::anyhow!("output sample range overflow"))?;
+    if output_end > output_len {
+        bail!(
+            "decoded owned range exceeds output: offset={} owned_len={} output={}",
+            output_offset,
+            owned_len,
+            output_len,
+        );
     }
-    Ok(out)
+
+    let channels = frame.shape()[1];
+    let source = frame
+        .as_slice()
+        .ok_or_else(|| anyhow::anyhow!("decoded model output is not contiguous"))?;
+    let destination = output
+        .as_slice_mut()
+        .ok_or_else(|| anyhow::anyhow!("decoded audio output is not contiguous"))?;
+    for channel in 0..channels {
+        let source_start = channel * decoded_len + context;
+        let destination_start = channel * output_len + output_offset;
+        destination[destination_start..destination_start + owned_len]
+            .copy_from_slice(&source[source_start..source_start + owned_len]);
+    }
+    Ok(())
 }
 
-fn concat_owned_frames(frames: &[Array3<f32>]) -> Array3<f32> {
-    let channels = frames.first().map(|frame| frame.shape()[1]).unwrap_or(0);
-    let total_samples: usize = frames.iter().map(|frame| frame.shape()[2]).sum();
-    let mut output = Array3::<f32>::zeros((1, channels, total_samples));
-    let mut offset = 0usize;
-    for frame in frames {
-        let len = frame.shape()[2];
-        for channel in 0..channels {
-            for index in 0..len {
-                output[[0, channel, offset + index]] = frame[[0, channel, index]];
-            }
-        }
-        offset += len;
+fn repair_owned_output(output: &mut Array3<f32>, stride: usize) -> Result<()> {
+    let channels = output.shape()[1];
+    let audio_length = output.shape()[2];
+    let planar = output
+        .as_slice_mut()
+        .ok_or_else(|| anyhow::anyhow!("decoded audio is not contiguous"))?;
+    repair_cubic_hermite_seams_planar(
+        planar,
+        channels,
+        audio_length,
+        stride,
+        FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
+    )?;
+    Ok(())
+}
+
+fn trim_audio_to_length(
+    reconstructed: Array3<f32>,
+    channels: usize,
+    audio_length: usize,
+) -> Result<Array3<f32>> {
+    if reconstructed.shape()[0] != 1 || reconstructed.shape()[1] != channels {
+        bail!(
+            "decoded audio shape {:?} does not match one batch and {} channels",
+            reconstructed.shape(),
+            channels,
+        );
     }
-    output
+    let reconstructed_len = reconstructed.shape()[2];
+    if reconstructed_len < audio_length {
+        bail!(
+            "decoded audio is too short: expected {} samples, got {}",
+            audio_length,
+            reconstructed_len,
+        );
+    }
+    if reconstructed_len == audio_length {
+        return Ok(reconstructed);
+    }
+
+    let source = reconstructed
+        .as_slice()
+        .ok_or_else(|| anyhow::anyhow!("decoded audio is not contiguous"))?;
+    let mut trimmed = Array3::<f32>::zeros((1, channels, audio_length));
+    let destination = trimmed
+        .as_slice_mut()
+        .ok_or_else(|| anyhow::anyhow!("trimmed audio is not contiguous"))?;
+    for channel in 0..channels {
+        let source_start = channel * reconstructed_len;
+        let destination_start = channel * audio_length;
+        destination[destination_start..destination_start + audio_length]
+            .copy_from_slice(&source[source_start..source_start + audio_length]);
+    }
+    Ok(trimmed)
 }
 
 fn linear_overlap_add(frames: &[Array3<f32>], stride: usize) -> Array3<f32> {
@@ -979,6 +1265,114 @@ fn triangle_weight(frame_length: usize) -> Vec<f32> {
 mod tests {
     use super::*;
 
+    struct TracingLm {
+        meta: OnnxFrameBundleMetadata,
+        capacity: usize,
+        calls: Vec<(i64, Vec<i64>)>,
+    }
+
+    struct EvidenceFrameCodec {
+        meta: OnnxFrameBundleMetadata,
+    }
+
+    impl FrameCodec for EvidenceFrameCodec {
+        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+            &self.meta
+        }
+
+        fn encode_frame(&mut self, audio: &Array3<f32>) -> Result<(Array3<i64>, Array2<f32>)> {
+            let frame_length = segment_frame_length(
+                audio.shape()[2],
+                self.meta.segment_samples,
+                self.meta.frame_length,
+            );
+            let mut codes =
+                Array3::<i64>::zeros((audio.shape()[0], self.meta.num_codebooks, frame_length));
+            for batch in 0..audio.shape()[0] {
+                for codebook in 0..self.meta.num_codebooks {
+                    for frame in 0..frame_length {
+                        codes[[batch, codebook, frame]] =
+                            (batch * 100 + codebook * 10 + frame) as i64;
+                    }
+                }
+            }
+            Ok((codes, Array2::from_elem((audio.shape()[0], 1), 1.0)))
+        }
+
+        fn decode_frame(
+            &mut self,
+            _codes: &Array3<i64>,
+            _scale: &Array2<f32>,
+        ) -> Result<Array3<f32>> {
+            Ok(Array3::zeros((
+                1,
+                self.meta.channels,
+                self.meta.segment_samples,
+            )))
+        }
+    }
+
+    impl TracingLm {
+        fn new(capacity: usize) -> Self {
+            Self {
+                meta: OnnxFrameBundleMetadata {
+                    schema_version: 1,
+                    model_name: "trace_lm".into(),
+                    bandwidth_kbps: 1.0,
+                    sample_rate: 48_000,
+                    channels: 1,
+                    segment_samples: 4,
+                    segment_stride: 4,
+                    normalize: true,
+                    num_codebooks: 2,
+                    frame_length: 4,
+                    bits_per_codebook: Some(2),
+                    codebook_cardinality: Some(4),
+                    encode_model: "unused".into(),
+                    decode_model: "unused".into(),
+                    lm_quant_weight_model: None,
+                    lm_dim: Some(4),
+                    lm_num_layers: Some(1),
+                    lm_past_context: Some(0),
+                    lm_logit_step: Some(1.0),
+                    lm_entropy_logit_step: Some(1.0),
+                    lm_cardinality: Some(4),
+                    opset_version: 17,
+                },
+                capacity,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    impl LmCodec for TracingLm {
+        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+            &self.meta
+        }
+
+        fn lm_window_frame_length(&self) -> usize {
+            self.capacity
+        }
+
+        fn initial_states(&self, _batch: usize) -> Result<Vec<Array3<f32>>> {
+            Ok(Vec::new())
+        }
+
+        fn forward_logits(
+            &mut self,
+            indices: &Array3<i64>,
+            offset: i64,
+            _states: &[Array3<f32>],
+        ) -> Result<(Array4<f32>, i64, Vec<Array3<f32>>)> {
+            self.calls.push((offset, indices.iter().copied().collect()));
+            Ok((
+                Array4::zeros((1, self.meta.lm_cardinality(), self.meta.num_codebooks, 1)),
+                offset + 1,
+                Vec::new(),
+            ))
+        }
+    }
+
     fn fixed_1333ms_meta() -> OnnxFrameBundleMetadata {
         OnnxFrameBundleMetadata {
             schema_version: 1,
@@ -1004,6 +1398,18 @@ mod tests {
             lm_cardinality: Some(1024),
             opset_version: 17,
         }
+    }
+
+    fn variable_tail_meta() -> OnnxFrameBundleMetadata {
+        let mut meta = fixed_1333ms_meta();
+        meta.segment_samples = 10;
+        meta.segment_stride = 8;
+        meta.frame_length = 5;
+        meta.num_codebooks = 2;
+        meta.lm_cardinality = Some(4);
+        meta.codebook_cardinality = Some(4);
+        meta.bits_per_codebook = Some(2);
+        meta
     }
 
     /// 2 full owned chunks (64,000 each) plus a final partial chunk of
@@ -1045,7 +1451,10 @@ mod tests {
             assert_eq!(batch[[0, 0, context + index]], index as f32);
         }
         for index in 0..context {
-            assert_eq!(batch[[0, 0, context + stride + index]], (stride + index) as f32);
+            assert_eq!(
+                batch[[0, 0, context + stride + index]],
+                (stride + index) as f32
+            );
         }
 
         // Chunk 1: real source samples on both sides.
@@ -1067,10 +1476,7 @@ mod tests {
         // past the end of the track.
         let owned_len = total_samples - 2 * stride;
         for index in 0..context {
-            assert_eq!(
-                batch[[2, 0, index]],
-                (2 * stride - context + index) as f32
-            );
+            assert_eq!(batch[[2, 0, index]], (2 * stride - context + index) as f32);
         }
         for index in 0..owned_len {
             assert_eq!(batch[[2, 0, context + index]], (2 * stride + index) as f32);
@@ -1084,7 +1490,46 @@ mod tests {
     }
 
     #[test]
-    fn crop_and_concat_strip_context_and_concatenate_without_overlap() {
+    fn frame_evidence_preserves_true_variable_tail_input() {
+        let mut codec = EvidenceFrameCodec {
+            meta: variable_tail_meta(),
+        };
+        let audio = indexed_audio(18);
+        let evidence = encode_audio_frame_evidence(&mut codec, &audio, 8, true).unwrap();
+
+        assert_eq!(evidence.len(), 3);
+        assert_eq!(evidence[0].offset_samples, 0);
+        assert_eq!(evidence[0].owned_samples, 8);
+        assert_eq!(evidence[0].model_input.shape(), &[1, 1, 10]);
+        assert_eq!(evidence[0].codes.shape(), &[1, 2, 5]);
+        assert_eq!(evidence[1].offset_samples, 8);
+        assert_eq!(evidence[1].model_input[[0, 0, 0]], 8.0);
+        assert_eq!(evidence[1].model_input[[0, 0, 9]], 17.0);
+        assert_eq!(evidence[2].offset_samples, 16);
+        assert_eq!(evidence[2].owned_samples, 2);
+        assert_eq!(evidence[2].model_input.shape(), &[1, 1, 2]);
+        assert_eq!(evidence[2].model_input[[0, 0, 0]], 16.0);
+        assert_eq!(evidence[2].model_input[[0, 0, 1]], 17.0);
+        assert_eq!(evidence[2].codes.shape(), &[1, 2, 1]);
+    }
+
+    #[test]
+    fn frame_evidence_pads_tail_when_variable_tail_is_disabled() {
+        let mut codec = EvidenceFrameCodec {
+            meta: variable_tail_meta(),
+        };
+        let audio = indexed_audio(18);
+        let evidence = encode_audio_frame_evidence(&mut codec, &audio, 8, false).unwrap();
+
+        assert_eq!(evidence[2].model_input.shape(), &[1, 1, 10]);
+        assert_eq!(evidence[2].model_input[[0, 0, 0]], 16.0);
+        assert_eq!(evidence[2].model_input[[0, 0, 1]], 17.0);
+        assert_eq!(evidence[2].model_input[[0, 0, 2]], 0.0);
+        assert_eq!(evidence[2].codes.shape(), &[1, 2, 5]);
+    }
+
+    #[test]
+    fn owned_segments_copy_directly_without_overlap() {
         let context = 480usize;
         let stride = 64_000usize;
         let window = 64_960usize;
@@ -1102,31 +1547,23 @@ mod tests {
             })
             .collect();
 
-        let cropped: Vec<Array3<f32>> = frames
-            .iter()
-            .zip(owned_lens.iter())
-            .map(|(frame, owned_len)| crop_owned_segment(frame, context, *owned_len).unwrap())
-            .collect();
-
-        for (frame_index, (cropped_frame, owned_len)) in
-            cropped.iter().zip(owned_lens.iter()).enumerate()
-        {
-            assert_eq!(cropped_frame.shape(), &[1, 1, *owned_len]);
-            assert_eq!(cropped_frame[[0, 0, 0]], (frame_index * 1_000_000 + context) as f32);
-            assert_eq!(
-                cropped_frame[[0, 0, owned_len - 1]],
-                (frame_index * 1_000_000 + context + owned_len - 1) as f32
-            );
-        }
-
-        let concatenated = concat_owned_frames(&cropped);
         let audio_length: usize = owned_lens.iter().sum();
+        let mut concatenated = Array3::<f32>::zeros((1, 1, audio_length));
+        let mut output_offset = 0;
+        for (frame, owned_len) in frames.iter().zip(owned_lens) {
+            copy_owned_segment_into(frame, context, owned_len, &mut concatenated, output_offset)
+                .unwrap();
+            output_offset += owned_len;
+        }
         assert_eq!(concatenated.shape(), &[1, 1, audio_length]);
 
         // No overlap-add, no duplicated/missing samples: each owned region
         // lands exactly at its logical stride offset with no blending.
         assert_eq!(concatenated[[0, 0, 0]], context as f32);
-        assert_eq!(concatenated[[0, 0, stride - 1]], (context + stride - 1) as f32);
+        assert_eq!(
+            concatenated[[0, 0, stride - 1]],
+            (context + stride - 1) as f32
+        );
         assert_eq!(concatenated[[0, 0, stride]], (1_000_000 + context) as f32);
         assert_eq!(
             concatenated[[0, 0, 2 * stride]],
@@ -1136,11 +1573,124 @@ mod tests {
             concatenated[[0, 0, audio_length - 1]],
             (2_000_000 + context + 1_999) as f32
         );
+
+        let mut repaired = concatenated;
+        repair_owned_output(&mut repaired, stride).unwrap();
+        assert_eq!(repaired.shape(), &[1, 1, audio_length]);
+        assert_eq!(
+            repaired[[0, 0, stride - 13]],
+            (context + stride - 13) as f32
+        );
+        assert_eq!(
+            repaired[[0, 0, stride + 12]],
+            (1_000_000 + context + 12) as f32
+        );
+        assert_ne!(repaired[[0, 0, stride - 1]], (context + stride - 1) as f32);
+        assert_ne!(repaired[[0, 0, stride]], (1_000_000 + context) as f32);
     }
 
     #[test]
-    fn crop_owned_segment_rejects_decoded_output_shorter_than_context_plus_owned_len() {
+    fn owned_segment_copy_rejects_short_decoded_output() {
         let frame = Array3::<f32>::zeros((1, 1, 500));
-        assert!(crop_owned_segment(&frame, 480, 64_000).is_err());
+        let mut output = Array3::<f32>::zeros((1, 1, 64_000));
+        assert!(copy_owned_segment_into(&frame, 480, 64_000, &mut output, 0).is_err());
+    }
+
+    #[test]
+    fn lm_mapping_uses_bos_then_previous_codes_plus_one() {
+        let mut lm = TracingLm::new(4);
+        let mut codes = Array3::<i64>::zeros((1, 2, 4));
+        codes[[0, 0, 0]] = 0;
+        codes[[0, 1, 0]] = 3;
+        codes[[0, 0, 1]] = 2;
+        codes[[0, 1, 1]] = 1;
+        codes[[0, 0, 2]] = 1;
+        codes[[0, 1, 2]] = 2;
+        codes[[0, 0, 3]] = 3;
+        codes[[0, 1, 3]] = 0;
+        let scale = f32::from_bits(0x3f12_3456);
+        let scales = Array2::from_elem((1, 1), scale);
+
+        let payload = encode_lm_chunk_payload(
+            &mut lm,
+            &codes,
+            &scales,
+            0,
+            4,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+        )
+        .unwrap();
+
+        assert_eq!(&payload[..4], &scale.to_be_bytes());
+        assert_eq!(
+            lm.calls,
+            vec![
+                (0, vec![0, 0]),
+                (1, vec![1, 4]),
+                (2, vec![3, 2]),
+                (3, vec![2, 3]),
+            ]
+        );
+
+        encode_lm_chunk_payload(
+            &mut lm,
+            &codes,
+            &scales,
+            0,
+            1,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(lm.calls.last(), Some(&(0, vec![0, 0])));
+    }
+
+    #[test]
+    fn lm_chunk_evidence_recovers_codes_scale_and_entropy() {
+        let mut lm = TracingLm::new(4);
+        let mut codes = Array3::<i64>::zeros((1, 2, 4));
+        codes[[0, 0, 0]] = 0;
+        codes[[0, 1, 0]] = 3;
+        codes[[0, 0, 1]] = 2;
+        codes[[0, 1, 1]] = 1;
+        codes[[0, 0, 2]] = 1;
+        codes[[0, 1, 2]] = 2;
+        codes[[0, 0, 3]] = 3;
+        codes[[0, 1, 3]] = 0;
+        let scale = Array2::from_elem((1, 1), f32::from_bits(0x3f12_3456));
+
+        let evidence = encode_lm_chunk_evidence(&mut lm, &codes, &scale).unwrap();
+
+        assert_eq!(&evidence.payload[..4], &scale[[0, 0]].to_be_bytes());
+        assert_eq!(evidence.entropy, evidence.payload[4..]);
+        assert_eq!(evidence.recovered_codes, codes);
+        assert_eq!(
+            evidence.recovered_scale[[0, 0]].to_bits(),
+            scale[[0, 0]].to_bits(),
+        );
+    }
+
+    #[test]
+    fn lm_chunk_rejects_internal_reset_instead_of_inserting_bos() {
+        let mut lm = TracingLm::new(2);
+        let codes = Array3::<i64>::zeros((1, 2, 4));
+        let scales = Array2::from_elem((1, 1), 1.0);
+        let error = encode_lm_chunk_payload(
+            &mut lm,
+            &codes,
+            &scales,
+            0,
+            4,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("exceeds LM positional capacity"));
+        assert!(lm.calls.is_empty());
     }
 }

@@ -102,6 +102,23 @@ pub fn validate_metadata(
     if !metadata.use_lm {
         bail!("q8 ECDC payload unexpectedly advertises lm=false");
     }
+    if metadata.fp_scale != DEFAULT_FP_SCALE {
+        bail!(
+            "unsupported ECDC probability scale {}; expected {}",
+            metadata.fp_scale,
+            DEFAULT_FP_SCALE,
+        );
+    }
+    if metadata.min_range != DEFAULT_MIN_RANGE {
+        bail!(
+            "unsupported ECDC minimum range {}; expected {}",
+            metadata.min_range,
+            DEFAULT_MIN_RANGE,
+        );
+    }
+    if metadata.lm_tau != Some(1.0) {
+        bail!("unsupported ECDC LM temperature; expected binary32 value 1.0");
+    }
     if let Some(lm_frame_length) = metadata.lm_frame_length {
         if lm_frame_length == 0 {
             bail!("ECDC LM frame length must be positive");
@@ -114,6 +131,23 @@ pub fn ecdc_chunk_layout_from_ms(
     bundle_meta: &OnnxFrameBundleMetadata,
     chunk_ms: Option<f64>,
 ) -> Result<EcdcChunkLayout> {
+    if fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)?.is_some() {
+        if let Some(ms) = chunk_ms {
+            if !ms.is_finite() || ms <= 0.0 {
+                bail!("chunk_ms must be a positive finite value");
+            }
+            let bundle_ms =
+                bundle_meta.segment_stride as f64 * 1000.0 / bundle_meta.sample_rate as f64;
+            if (ms - bundle_ms).abs() > 5.0 {
+                bail!("fixed bundle owns {bundle_ms:.3}ms per chunk; requested chunk_ms was {ms}");
+            }
+        }
+        return Ok(EcdcChunkLayout {
+            samples: bundle_meta.segment_samples,
+            stride: bundle_meta.segment_stride,
+        });
+    }
+
     match chunk_ms {
         None => Ok(EcdcChunkLayout {
             samples: bundle_meta.segment_samples,
@@ -149,7 +183,9 @@ pub fn ecdc_chunk_layout_from_ms(
 /// separately tracked chunk counts rather than a single logical audio-length
 /// field from one ECDC header. Recognised fixed-context bundles preserve their
 /// private model-window/sample-domain split here.
-pub fn ecdc_chunk_layout_from_bundle(bundle_meta: &OnnxFrameBundleMetadata) -> Result<EcdcChunkLayout> {
+pub fn ecdc_chunk_layout_from_bundle(
+    bundle_meta: &OnnxFrameBundleMetadata,
+) -> Result<EcdcChunkLayout> {
     match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
         Some(_context) => Ok(EcdcChunkLayout {
             samples: bundle_meta.segment_samples,
@@ -190,10 +226,11 @@ pub fn ecdc_chunk_layout_for_chunk_count(
     // not model-window length, so the bundle's own geometry must be used
     // here rather than substituting audio_length for both samples and
     // stride.
-    let layout = match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
-        Some(_context) => ecdc_chunk_layout_from_bundle(bundle_meta)?,
-        None => ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?,
-    };
+    let layout =
+        match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
+            Some(_context) => ecdc_chunk_layout_from_bundle(bundle_meta)?,
+            None => ecdc_chunk_layout_from_metadata(bundle_meta, metadata)?,
+        };
     let implied = segment_starts(metadata.audio_length, layout.stride).len();
     if implied != chunk_count {
         bail!("ECDC payload has {chunk_count} chunks, but metadata implies {implied} chunks");
@@ -208,7 +245,10 @@ pub fn ecdc_chunk_layout_for_chunk_count(
 /// the payload, so try the 8-byte framing first and require it to land exactly
 /// on the payload end, else fall back to 4. This mirrors the JS port that used
 /// to live in apps/shared/ecdc-pcm-layout.js.
-pub fn ecdc_frame_ranges(bytes: &[u8], payload_start: usize) -> Result<Vec<std::ops::Range<usize>>> {
+pub fn ecdc_frame_ranges(
+    bytes: &[u8],
+    payload_start: usize,
+) -> Result<Vec<std::ops::Range<usize>>> {
     if let Ok((ranges, true)) = ecdc_frame_ranges_with_overhead(bytes, payload_start, 8) {
         return Ok(ranges);
     }
@@ -231,7 +271,8 @@ fn ecdc_frame_ranges_with_overhead(
         }
 
         let frame_len =
-            u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("slice length")) as usize;
+            u32::from_be_bytes(bytes[offset..offset + 4].try_into().expect("slice length"))
+                as usize;
 
         if frame_len < 4 {
             bail!("invalid ECDC packet length at byte {offset}: {frame_len}");
@@ -434,5 +475,38 @@ mod tests {
         let layout = ecdc_chunk_layout_from_bundle(&bundle).unwrap();
         assert_eq!(layout.samples, 64_960);
         assert_eq!(layout.stride, 64_000);
+    }
+
+    #[test]
+    fn chunk_ms_preserves_fixed_model_geometry() {
+        let bundle = OnnxFrameBundleMetadata {
+            schema_version: 1,
+            model_name: "encodec_48khz".into(),
+            bandwidth_kbps: 12.0,
+            sample_rate: 48_000,
+            channels: 2,
+            segment_samples: 64_960,
+            segment_stride: 64_000,
+            normalize: true,
+            num_codebooks: 8,
+            frame_length: 203,
+            bits_per_codebook: Some(10),
+            codebook_cardinality: Some(1024),
+            encode_model: "encode_frame.onnx".into(),
+            decode_model: "decode_frame.onnx".into(),
+            lm_quant_weight_model: Some("lm_weights_q8.bin".into()),
+            lm_dim: Some(128),
+            lm_num_layers: Some(1),
+            lm_past_context: Some(0),
+            lm_logit_step: Some(1.0 / 64.0),
+            lm_entropy_logit_step: Some(2.1),
+            lm_cardinality: Some(1024),
+            opset_version: 17,
+        };
+
+        let layout = ecdc_chunk_layout_from_ms(&bundle, Some(1333.0)).unwrap();
+        assert_eq!(layout.samples, 64_960);
+        assert_eq!(layout.stride, 64_000);
+        assert!(ecdc_chunk_layout_from_ms(&bundle, Some(250.0)).is_err());
     }
 }

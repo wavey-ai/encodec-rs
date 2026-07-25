@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use gpu_worker_ort::{
-    build_session_from_target, default_intra_threads, ort_error, GraphOptimizationLevel, LogLevel,
-    OrtTensor, Session, SessionConfig,
+    build_session_from_target, default_intra_threads, ensure_dynamic_runtime_from_env, ort_error,
+    GraphOptimizationLevel, LogLevel, OrtTensor, Session, SessionConfig,
 };
 pub use gpu_worker_ort::{CoreMlComputeUnits, ExecutionTarget};
 use ndarray::{Array2, Array3, Array4, Ix2, Ix3};
@@ -44,12 +44,7 @@ impl OnnxFrameCodec {
         )
         .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
 
-        if metadata.schema_version != 1 {
-            bail!(
-                "unsupported bundle schema_version {}",
-                metadata.schema_version
-            );
-        }
+        metadata.validate()?;
 
         let encoder_path = bundle_dir.join(&metadata.encode_model);
         let decoder_path = bundle_dir.join(&metadata.decode_model);
@@ -60,6 +55,10 @@ impl OnnxFrameCodec {
                 decoder_path.display()
             );
         }
+
+        ensure_dynamic_runtime_from_env(&["ENCODEC_RS_ORT_DYLIB_PATH", "ORT_DYLIB_PATH"]).context(
+            "failed to start ONNX Runtime; install ONNX Runtime or set ENCODEC_RS_ORT_DYLIB_PATH",
+        )?;
 
         let session_cfg = ort_session_config();
         let (encoder, decoder) = match target {
@@ -226,15 +225,7 @@ impl OnnxLmCodec {
         )
         .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
 
-        if metadata.schema_version != 1 {
-            bail!(
-                "unsupported bundle schema_version {}",
-                metadata.schema_version
-            );
-        }
-        metadata.lm_dim()?;
-        metadata.lm_num_layers()?;
-        metadata.lm_past_context()?;
+        metadata.validate_lm()?;
 
         let _ = target;
         let weight_model = metadata
@@ -247,7 +238,7 @@ impl OnnxLmCodec {
         let hash = stable_hash_hex(&weight_bytes);
         let weights = QuantizedLmWeights::from_bytes(&weight_bytes)
             .with_context(|| format!("failed to parse {}", weights_path.display()))?;
-        weights.validate_for_codebooks(metadata.num_codebooks)?;
+        weights.validate_for_metadata(&metadata)?;
         let lm_window_frame_length = weights.frame_length.max(1);
         let backend = OnnxLmBackend::Quantized {
             lm: QuantizedLm::new(weights),
@@ -289,9 +280,9 @@ impl OnnxLmCodec {
         if shape.len() != 3 {
             bail!("LM indices must have shape [batch, codebooks, steps]");
         }
-        if shape[1] > self.metadata.num_codebooks {
+        if shape[1] != self.metadata.num_codebooks {
             bail!(
-                "LM indices use {} codebooks, but bundle only supports {}",
+                "LM indices use {} codebooks, but bundle requires {}",
                 shape[1],
                 self.metadata.num_codebooks
             );
@@ -323,7 +314,8 @@ impl OnnxLmCodec {
         let logits = lm.forward_step(state, &input_symbols)?;
         let card = self.metadata.lm_cardinality();
         let codebooks = self.metadata.num_codebooks;
-        let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits).expect("shape");
+        let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits)
+            .map_err(|error| anyhow::anyhow!("invalid LM logit shape: {error}"))?;
         Ok((logits, offset + 1, self.initial_states(shape[0])?))
     }
 }

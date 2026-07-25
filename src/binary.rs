@@ -18,6 +18,7 @@ pub fn write_tagged_header(
 ) -> Result<()> {
     let metadata_json =
         serde_json::to_vec(metadata).context("failed to serialize header metadata")?;
+    let metadata_len = u32::try_from(metadata_json.len()).context("header metadata exceeds u32")?;
     writer
         .write_all(magic)
         .context("failed to write file magic")?;
@@ -25,7 +26,7 @@ pub fn write_tagged_header(
         .write_all(&[version])
         .context("failed to write file version")?;
     writer
-        .write_all(&(metadata_json.len() as u32).to_be_bytes())
+        .write_all(&metadata_len.to_be_bytes())
         .context("failed to write metadata size")?;
     writer
         .write_all(&metadata_json)
@@ -54,19 +55,22 @@ pub fn read_tagged_header<T: DeserializeOwned>(
 }
 
 pub fn read_exactly(reader: &mut impl Read, size: usize) -> Result<Vec<u8>> {
-    let mut remaining = size;
     let mut out = Vec::new();
+    out.try_reserve_exact(size)
+        .with_context(|| format!("failed to reserve {size} bytes for stream input"))?;
+    out.resize(size, 0);
+
+    let mut offset = 0;
     const MAX_READ_CHUNK: usize = 64 * 1024;
-    while remaining > 0 {
-        let mut buf = vec![0_u8; remaining.min(MAX_READ_CHUNK)];
+    while offset < size {
+        let end = offset.saturating_add(MAX_READ_CHUNK).min(size);
         let count = reader
-            .read(&mut buf)
-            .with_context(|| format!("failed to read {remaining} bytes from stream"))?;
+            .read(&mut out[offset..end])
+            .with_context(|| format!("failed to read {} bytes from stream", size - offset))?;
         if count == 0 {
-            bail!("stream ended early with {remaining} bytes remaining");
+            bail!("stream ended early with {} bytes remaining", size - offset);
         }
-        out.extend_from_slice(&buf[..count]);
-        remaining -= count;
+        offset += count;
     }
     Ok(out)
 }
@@ -126,7 +130,11 @@ pub fn split_ecdc_header<T: DeserializeOwned>(bytes: &[u8]) -> Result<EcdcStream
 /// bytes, the inverse of [`split_ecdc_header`].
 pub fn prepend_ecdc_header(header_json: &[u8], payload: &[u8]) -> Result<Vec<u8>> {
     let meta_len = u32::try_from(header_json.len()).context("ECDC header JSON exceeds u32")?;
-    let mut out = Vec::with_capacity(9 + header_json.len() + payload.len());
+    let capacity = 9_usize
+        .checked_add(header_json.len())
+        .and_then(|value| value.checked_add(payload.len()))
+        .context("ECDC stream length overflow")?;
+    let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(ECDC_MAGIC);
     out.push(ECDC_VERSION);
     out.extend_from_slice(&meta_len.to_be_bytes());
@@ -136,8 +144,9 @@ pub fn prepend_ecdc_header(header_json: &[u8], payload: &[u8]) -> Result<Vec<u8>
 }
 
 pub fn write_chunk(writer: &mut impl Write, payload: &[u8], with_crc: bool) -> Result<()> {
+    let payload_len = u32::try_from(payload.len()).context("chunk payload exceeds u32")?;
     writer
-        .write_all(&(payload.len() as u32).to_be_bytes())
+        .write_all(&payload_len.to_be_bytes())
         .context("failed to write chunk length")?;
     if with_crc {
         let mut hasher = Hasher::new();

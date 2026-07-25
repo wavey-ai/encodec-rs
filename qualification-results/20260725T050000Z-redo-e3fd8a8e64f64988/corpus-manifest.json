@@ -1,0 +1,981 @@
+{
+  "schema": "wavey.encodec.qualification.corpus",
+  "schema_version": 1,
+  "run_id": "20260725T050000Z-redo-e3fd8a8e64f64988",
+  "corpus_root": "/Users/jamie/Downloads/Lori EP",
+  "source_policy": "exact-relative-path-and-sha256; eMastered rejected",
+  "entries": [
+    {
+      "id": "confirmation-i-want-her-v1",
+      "relativePath": "I WANT HER_MIX 4 CONFIRMATION_130323.wav",
+      "class": "Original",
+      "sha256": "4e984cdae6e57fc85b3fd316bd14edd5700de07ee8c5e94abba783e31bde53d4",
+      "source_path": "/Users/jamie/Downloads/Lori EP/I WANT HER_MIX 4 CONFIRMATION_130323.wav",
+      "source_sha256": "4e984cdae6e57fc85b3fd316bd14edd5700de07ee8c5e94abba783e31bde53d4",
+      "source_bytes": 42906918,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-i-want-her-v1.wav",
+      "canonical_wav_sha256": "51dfed55c4b789d30d8625f888ac9b4215ebe3aecd9fe67b82348887044e61ba",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-i-want-her-v1.f32le",
+      "canonical_pcm_sha256": "d0c1d8207afa29d8086b01f6e56a8f6c6f30e82aae41ac431b2a326ecf5abe12",
+      "canonical_pcm_bytes": 56832000,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 7104000,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/I WANT HER_MIX 4 CONFIRMATION_130323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-i-want-her-v1.wav"
+        ],
+        "elapsed_ms": 82
+      }
+    },
+    {
+      "id": "confirmation-pray-4-me-v1",
+      "relativePath": "PRAY 4 ME_MIX 4 CONFIRMATION_130323.wav",
+      "class": "Original",
+      "sha256": "742d36fd78b1263f0c91f76127f3ea77e4cf7ce781c37715c2a7c890549ecf59",
+      "source_path": "/Users/jamie/Downloads/Lori EP/PRAY 4 ME_MIX 4 CONFIRMATION_130323.wav",
+      "source_sha256": "742d36fd78b1263f0c91f76127f3ea77e4cf7ce781c37715c2a7c890549ecf59",
+      "source_bytes": 64430066,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-pray-4-me-v1.wav",
+      "canonical_wav_sha256": "0a79a03715384f0d986951811f8f837950223094657792a91d02df84a1ed82d9",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-pray-4-me-v1.f32le",
+      "canonical_pcm_sha256": "0845e1e842f5a18269266e8027e0a6ad23256c351daa0f7204ad8aa7ca6e330f",
+      "canonical_pcm_bytes": 85452160,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 10681520,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/PRAY 4 ME_MIX 4 CONFIRMATION_130323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-pray-4-me-v1.wav"
+        ],
+        "elapsed_ms": 132
+      }
+    },
+    {
+      "id": "confirmation-westside-v1",
+      "relativePath": "WESTSIDE_MIX 4 CONFIRMATION_130323.wav",
+      "class": "Original",
+      "sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9",
+      "source_path": "/Users/jamie/Downloads/Lori EP/WESTSIDE_MIX 4 CONFIRMATION_130323.wav",
+      "source_sha256": "dec1b383d58aea9848728126efab169f42e54375b64ca55363d2f234696474c9",
+      "source_bytes": 56713212,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-westside-v1.wav",
+      "canonical_wav_sha256": "a1ace24cae905e3ec5befbf757dc0f4d650872b44eaef0819790bef031360009",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-westside-v1.f32le",
+      "canonical_pcm_sha256": "c2967a05cf0b0c8accee1be55052dbcf1ef09a58f618eae8b6d1852fc5513e6c",
+      "canonical_pcm_bytes": 75119832,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 9389979,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/WESTSIDE_MIX 4 CONFIRMATION_130323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-westside-v1.wav"
+        ],
+        "elapsed_ms": 139
+      }
+    },
+    {
+      "id": "confirmation-westside-v2",
+      "relativePath": "WESTSIDE_V2_MIX 4 CONFIRMATION_140323.wav",
+      "class": "Original",
+      "sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b",
+      "source_path": "/Users/jamie/Downloads/Lori EP/WESTSIDE_V2_MIX 4 CONFIRMATION_140323.wav",
+      "source_sha256": "15518ce0885a9b0ed0ce2b32410e79da74dfcf1914bda002d1bbe88b0d947f6b",
+      "source_bytes": 55861380,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-westside-v2.wav",
+      "canonical_wav_sha256": "1f97eadcb82528a0be3c42d7d7dd36884d22b3ca8646e7a06c9482a6035561fa",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-westside-v2.f32le",
+      "canonical_pcm_sha256": "67514c6e4b49cdf1919caf04c3887140a251500346b2a10a0c678417a059f28c",
+      "canonical_pcm_bytes": 74087352,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 9260919,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/WESTSIDE_V2_MIX 4 CONFIRMATION_140323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-westside-v2.wav"
+        ],
+        "elapsed_ms": 113
+      }
+    },
+    {
+      "id": "confirmation-after-dark-v1",
+      "relativePath": "AFTER DARK_MIX 4 CONFIRMATION_130323.wav",
+      "class": "Original",
+      "sha256": "1812df5e6062549a4947a78b5bb08474b6d11026292c019c2da9b5b1950bc655",
+      "source_path": "/Users/jamie/Downloads/Lori EP/AFTER DARK_MIX 4 CONFIRMATION_130323.wav",
+      "source_sha256": "1812df5e6062549a4947a78b5bb08474b6d11026292c019c2da9b5b1950bc655",
+      "source_bytes": 57492794,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-after-dark-v1.wav",
+      "canonical_wav_sha256": "30e3790966523abcc0d60e18f118875fb94623d39c4ffcce74c0715975c9d207",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-after-dark-v1.f32le",
+      "canonical_pcm_sha256": "7eb63b31e40ddab71e028473864578e2939aebc9e79a7afd56e8808ed3158cab",
+      "canonical_pcm_bytes": 76251136,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 9531392,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/AFTER DARK_MIX 4 CONFIRMATION_130323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-after-dark-v1.wav"
+        ],
+        "elapsed_ms": 160
+      }
+    },
+    {
+      "id": "confirmation-1979-v1",
+      "relativePath": "Lori Asha - Lori Asha Album Premix/1979_MIX 4 CONFIRMATION_130323.wav",
+      "class": "Premix",
+      "sha256": "ed1db8e4a35679be511b12be32fcd0945582f9623a088247431862a884311679",
+      "source_path": "/Users/jamie/Downloads/Lori EP/Lori Asha - Lori Asha Album Premix/1979_MIX 4 CONFIRMATION_130323.wav",
+      "source_sha256": "ed1db8e4a35679be511b12be32fcd0945582f9623a088247431862a884311679",
+      "source_bytes": 65973618,
+      "canonical_wav_path": "inputs/canonical-wav/confirmation-1979-v1.wav",
+      "canonical_wav_sha256": "50bdabace262d5e39de21447694568a09425629a470c497e54a485a01eff426b",
+      "canonical_pcm_path": "inputs/canonical-planar-f32le/confirmation-1979-v1.f32le",
+      "canonical_pcm_sha256": "3dc6116f24a5f29aa544393dfb1b9efbea2536ac91fc38427f47ad37611f8364",
+      "canonical_pcm_bytes": 87499392,
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples": 10937424,
+      "sample_format": "pcm_f32le",
+      "ffmpeg": {
+        "command": [
+          "ffmpeg",
+          "-nostdin",
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-bitexact",
+          "-i",
+          "/Users/jamie/Downloads/Lori EP/Lori Asha - Lori Asha Album Premix/1979_MIX 4 CONFIRMATION_130323.wav",
+          "-map",
+          "0:a:0",
+          "-map_metadata",
+          "-1",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-c:a",
+          "pcm_f32le",
+          "-flags:a",
+          "+bitexact",
+          "-n",
+          "/Users/jamie/wavey.ai/encodec-rs/target/qualification/20260725T050000Z-redo-e3fd8a8e64f64988/inputs/canonical-wav/confirmation-1979-v1.wav"
+        ],
+        "elapsed_ms": 393
+      }
+    }
+  ],
+  "vectors": {
+    "generator_sha256": "8c6b6b4d675a5d8efc1462033f5e58cf53ac87c28a3cd67850d845b09df3cdff",
+    "silence": {
+      "path": "vectors/silence/10s.f32le",
+      "bytes": 3840000,
+      "sha256": "81beb57ba94e8afbf61c796a8a2438ff11c5e05c6fc156e7425b391c81369516",
+      "frames": 480000,
+      "channels": 2
+    },
+    "impulse": {
+      "path": "vectors/impulses/10s.f32le",
+      "positions": [
+        0,
+        1,
+        318,
+        319,
+        320,
+        479,
+        480,
+        481,
+        47518,
+        47519,
+        47520,
+        47521,
+        47998,
+        47999,
+        48000,
+        48001,
+        63998,
+        63999,
+        64000,
+        64001,
+        86398,
+        86399,
+        86400,
+        86401,
+        479998,
+        479999
+      ],
+      "bytes": 3840000,
+      "sha256": "03ce6604c62f9af9c2476b6eb858042075448583e232f43272541bee1e9f7169",
+      "frames": 480000,
+      "channels": 2
+    },
+    "tails": {
+      "meta-1000": [
+        {
+          "samples": 1,
+          "expected_frames": 1,
+          "path": "vectors/tails/meta-1000/1.f32le",
+          "bytes": 8,
+          "sha256": "c5feaee25dc9f5404c7d754b5b56e7ed423fff392230361608493fedf04c3b00",
+          "frames": 1,
+          "channels": 2
+        },
+        {
+          "samples": 319,
+          "expected_frames": 1,
+          "path": "vectors/tails/meta-1000/319.f32le",
+          "bytes": 2552,
+          "sha256": "9bd56024427c796e376703a1249ab00064f735a64b9ace970e23b8b339d62d0c",
+          "frames": 319,
+          "channels": 2
+        },
+        {
+          "samples": 320,
+          "expected_frames": 1,
+          "path": "vectors/tails/meta-1000/320.f32le",
+          "bytes": 2560,
+          "sha256": "5bbe543363d14fca40b8f963e48b3353fae94da690d33696a1265a61042062a7",
+          "frames": 320,
+          "channels": 2
+        },
+        {
+          "samples": 479,
+          "expected_frames": 2,
+          "path": "vectors/tails/meta-1000/479.f32le",
+          "bytes": 3832,
+          "sha256": "a3fcd08894574991fae12a446f0833887349cfe45a3a67fd845023ffbeefa54d",
+          "frames": 479,
+          "channels": 2
+        },
+        {
+          "samples": 480,
+          "expected_frames": 2,
+          "path": "vectors/tails/meta-1000/480.f32le",
+          "bytes": 3840,
+          "sha256": "343dda466cbc621a50bb9dedabaae839517b0faf7909d8e8f3d7c473af605dac",
+          "frames": 480,
+          "channels": 2
+        },
+        {
+          "samples": 481,
+          "expected_frames": 2,
+          "path": "vectors/tails/meta-1000/481.f32le",
+          "bytes": 3848,
+          "sha256": "d0e104229df2889c3da9d47ee2045809516b27ee2109bd8604abd356a12d81eb",
+          "frames": 481,
+          "channels": 2
+        },
+        {
+          "samples": 47519,
+          "expected_frames": 149,
+          "path": "vectors/tails/meta-1000/47519.f32le",
+          "bytes": 380152,
+          "sha256": "c200f129fa3caedd81998aec1f888d4385211323c53bfb5daf97718df9ce3a48",
+          "frames": 47519,
+          "channels": 2
+        },
+        {
+          "samples": 47520,
+          "expected_frames": 149,
+          "path": "vectors/tails/meta-1000/47520.f32le",
+          "bytes": 380160,
+          "sha256": "4ee1ebe4111660050b99269e307b04050635544831fe5030029a8efbc89035f2",
+          "frames": 47520,
+          "channels": 2
+        },
+        {
+          "samples": 47521,
+          "expected_frames": 149,
+          "path": "vectors/tails/meta-1000/47521.f32le",
+          "bytes": 380168,
+          "sha256": "a77f9d4e903a0c3d42b95ab9a7c725399d3922231b14cc7b867dd0871bf6eaa7",
+          "frames": 47521,
+          "channels": 2
+        },
+        {
+          "samples": 47999,
+          "expected_frames": 150,
+          "path": "vectors/tails/meta-1000/47999.f32le",
+          "bytes": 383992,
+          "sha256": "945daf08106f4861f6dec22d4735f209e8a634f9abccb82847661e729f3e1b97",
+          "frames": 47999,
+          "channels": 2
+        },
+        {
+          "samples": 48000,
+          "expected_frames": 150,
+          "path": "vectors/tails/meta-1000/48000.f32le",
+          "bytes": 384000,
+          "sha256": "eec85e4b8eb688950dd72d5f62ccdb514ffb3930788f898022fd4bc0df52977e",
+          "frames": 48000,
+          "channels": 2
+        },
+        {
+          "samples": 48001,
+          "expected_frames": 151,
+          "path": "vectors/tails/meta-1000/48001.f32le",
+          "bytes": 384008,
+          "sha256": "09da493d583d4ed1e92b86e4bf2626ef246fe3a5e58b9931a10afb0b9e027c78",
+          "frames": 48001,
+          "channels": 2
+        },
+        {
+          "samples": 63999,
+          "expected_frames": 200,
+          "path": "vectors/tails/meta-1000/63999.f32le",
+          "bytes": 511992,
+          "sha256": "517ffae66eadf2dfef246bb521bec1f5a28ab3e443ac930867f7197295039f0a",
+          "frames": 63999,
+          "channels": 2
+        },
+        {
+          "samples": 64000,
+          "expected_frames": 200,
+          "path": "vectors/tails/meta-1000/64000.f32le",
+          "bytes": 512000,
+          "sha256": "8dd0691d9a0460de0f201109a5e575ee2d5b06bc4aa9add2dd32642d474dde3c",
+          "frames": 64000,
+          "channels": 2
+        },
+        {
+          "samples": 64001,
+          "expected_frames": 201,
+          "path": "vectors/tails/meta-1000/64001.f32le",
+          "bytes": 512008,
+          "sha256": "6d128f2a35a9fc2ff57efcca948f2b20bb5098ae59a8ea229e46e3984f673854",
+          "frames": 64001,
+          "channels": 2
+        },
+        {
+          "samples": 64959,
+          "expected_frames": 203,
+          "path": "vectors/tails/meta-1000/64959.f32le",
+          "bytes": 519672,
+          "sha256": "78f754fb83e35675dd2297cc03179633d84f58db12208fe1740d8d76ef461236",
+          "frames": 64959,
+          "channels": 2
+        },
+        {
+          "samples": 64960,
+          "expected_frames": 203,
+          "path": "vectors/tails/meta-1000/64960.f32le",
+          "bytes": 519680,
+          "sha256": "cc57c133b93b0a40831e104b6c65a91106e110b8e345d5252fbe1838786b6a75",
+          "frames": 64960,
+          "channels": 2
+        },
+        {
+          "samples": 64961,
+          "expected_frames": 204,
+          "path": "vectors/tails/meta-1000/64961.f32le",
+          "bytes": 519688,
+          "sha256": "138c85d368650f7818a6cbff13838d71aea34f53eeaccacb1af3de4508a737f9",
+          "frames": 64961,
+          "channels": 2
+        },
+        {
+          "samples": 86399,
+          "expected_frames": 270,
+          "path": "vectors/tails/meta-1000/86399.f32le",
+          "bytes": 691192,
+          "sha256": "d0a2aae0cd5d234943dafbe18a6e2a71ae80c22c81f3eb319add192f625fa23e",
+          "frames": 86399,
+          "channels": 2
+        },
+        {
+          "samples": 86400,
+          "expected_frames": 270,
+          "path": "vectors/tails/meta-1000/86400.f32le",
+          "bytes": 691200,
+          "sha256": "19611a83e74c2ac356f01094e860fe1d67903b9832e726b600352012e0d716e8",
+          "frames": 86400,
+          "channels": 2
+        },
+        {
+          "samples": 86401,
+          "expected_frames": 271,
+          "path": "vectors/tails/meta-1000/86401.f32le",
+          "bytes": 691208,
+          "sha256": "deebffc196b12547251a92d8ff87fc60280ff05dc560f579dcb1d60ef1ae3ee9",
+          "frames": 86401,
+          "channels": 2
+        },
+        {
+          "samples": 87359,
+          "expected_frames": 273,
+          "path": "vectors/tails/meta-1000/87359.f32le",
+          "bytes": 698872,
+          "sha256": "8b506b95a36c73eab1ce5e881966373d850e3b437545e9798f73138ed1061647",
+          "frames": 87359,
+          "channels": 2
+        },
+        {
+          "samples": 87360,
+          "expected_frames": 273,
+          "path": "vectors/tails/meta-1000/87360.f32le",
+          "bytes": 698880,
+          "sha256": "af4e3a88355c1255ce53ed2f4416de16b1271851b43e4285b6799e7bea42fa33",
+          "frames": 87360,
+          "channels": 2
+        },
+        {
+          "samples": 87361,
+          "expected_frames": 274,
+          "path": "vectors/tails/meta-1000/87361.f32le",
+          "bytes": 698888,
+          "sha256": "3c76d3fb61860d365c0ceba1b1bb6e64a07f0572eabf1a403483c7b92f5d756c",
+          "frames": 87361,
+          "channels": 2
+        }
+      ],
+      "fixed-1333": [
+        {
+          "samples": 1,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/1.f32le",
+          "bytes": 8,
+          "sha256": "c5feaee25dc9f5404c7d754b5b56e7ed423fff392230361608493fedf04c3b00",
+          "frames": 1,
+          "channels": 2
+        },
+        {
+          "samples": 319,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/319.f32le",
+          "bytes": 2552,
+          "sha256": "9bd56024427c796e376703a1249ab00064f735a64b9ace970e23b8b339d62d0c",
+          "frames": 319,
+          "channels": 2
+        },
+        {
+          "samples": 320,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/320.f32le",
+          "bytes": 2560,
+          "sha256": "5bbe543363d14fca40b8f963e48b3353fae94da690d33696a1265a61042062a7",
+          "frames": 320,
+          "channels": 2
+        },
+        {
+          "samples": 479,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/479.f32le",
+          "bytes": 3832,
+          "sha256": "a3fcd08894574991fae12a446f0833887349cfe45a3a67fd845023ffbeefa54d",
+          "frames": 479,
+          "channels": 2
+        },
+        {
+          "samples": 480,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/480.f32le",
+          "bytes": 3840,
+          "sha256": "343dda466cbc621a50bb9dedabaae839517b0faf7909d8e8f3d7c473af605dac",
+          "frames": 480,
+          "channels": 2
+        },
+        {
+          "samples": 481,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/481.f32le",
+          "bytes": 3848,
+          "sha256": "d0e104229df2889c3da9d47ee2045809516b27ee2109bd8604abd356a12d81eb",
+          "frames": 481,
+          "channels": 2
+        },
+        {
+          "samples": 47519,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/47519.f32le",
+          "bytes": 380152,
+          "sha256": "c200f129fa3caedd81998aec1f888d4385211323c53bfb5daf97718df9ce3a48",
+          "frames": 47519,
+          "channels": 2
+        },
+        {
+          "samples": 47520,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/47520.f32le",
+          "bytes": 380160,
+          "sha256": "4ee1ebe4111660050b99269e307b04050635544831fe5030029a8efbc89035f2",
+          "frames": 47520,
+          "channels": 2
+        },
+        {
+          "samples": 47521,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/47521.f32le",
+          "bytes": 380168,
+          "sha256": "a77f9d4e903a0c3d42b95ab9a7c725399d3922231b14cc7b867dd0871bf6eaa7",
+          "frames": 47521,
+          "channels": 2
+        },
+        {
+          "samples": 47999,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/47999.f32le",
+          "bytes": 383992,
+          "sha256": "945daf08106f4861f6dec22d4735f209e8a634f9abccb82847661e729f3e1b97",
+          "frames": 47999,
+          "channels": 2
+        },
+        {
+          "samples": 48000,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/48000.f32le",
+          "bytes": 384000,
+          "sha256": "eec85e4b8eb688950dd72d5f62ccdb514ffb3930788f898022fd4bc0df52977e",
+          "frames": 48000,
+          "channels": 2
+        },
+        {
+          "samples": 48001,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/48001.f32le",
+          "bytes": 384008,
+          "sha256": "09da493d583d4ed1e92b86e4bf2626ef246fe3a5e58b9931a10afb0b9e027c78",
+          "frames": 48001,
+          "channels": 2
+        },
+        {
+          "samples": 63999,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/63999.f32le",
+          "bytes": 511992,
+          "sha256": "517ffae66eadf2dfef246bb521bec1f5a28ab3e443ac930867f7197295039f0a",
+          "frames": 63999,
+          "channels": 2
+        },
+        {
+          "samples": 64000,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/64000.f32le",
+          "bytes": 512000,
+          "sha256": "8dd0691d9a0460de0f201109a5e575ee2d5b06bc4aa9add2dd32642d474dde3c",
+          "frames": 64000,
+          "channels": 2
+        },
+        {
+          "samples": 64001,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/64001.f32le",
+          "bytes": 512008,
+          "sha256": "6d128f2a35a9fc2ff57efcca948f2b20bb5098ae59a8ea229e46e3984f673854",
+          "frames": 64001,
+          "channels": 2
+        },
+        {
+          "samples": 64959,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/64959.f32le",
+          "bytes": 519672,
+          "sha256": "78f754fb83e35675dd2297cc03179633d84f58db12208fe1740d8d76ef461236",
+          "frames": 64959,
+          "channels": 2
+        },
+        {
+          "samples": 64960,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/64960.f32le",
+          "bytes": 519680,
+          "sha256": "cc57c133b93b0a40831e104b6c65a91106e110b8e345d5252fbe1838786b6a75",
+          "frames": 64960,
+          "channels": 2
+        },
+        {
+          "samples": 64961,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/64961.f32le",
+          "bytes": 519688,
+          "sha256": "138c85d368650f7818a6cbff13838d71aea34f53eeaccacb1af3de4508a737f9",
+          "frames": 64961,
+          "channels": 2
+        },
+        {
+          "samples": 86399,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/86399.f32le",
+          "bytes": 691192,
+          "sha256": "d0a2aae0cd5d234943dafbe18a6e2a71ae80c22c81f3eb319add192f625fa23e",
+          "frames": 86399,
+          "channels": 2
+        },
+        {
+          "samples": 86400,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/86400.f32le",
+          "bytes": 691200,
+          "sha256": "19611a83e74c2ac356f01094e860fe1d67903b9832e726b600352012e0d716e8",
+          "frames": 86400,
+          "channels": 2
+        },
+        {
+          "samples": 86401,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/86401.f32le",
+          "bytes": 691208,
+          "sha256": "deebffc196b12547251a92d8ff87fc60280ff05dc560f579dcb1d60ef1ae3ee9",
+          "frames": 86401,
+          "channels": 2
+        },
+        {
+          "samples": 87359,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/87359.f32le",
+          "bytes": 698872,
+          "sha256": "8b506b95a36c73eab1ce5e881966373d850e3b437545e9798f73138ed1061647",
+          "frames": 87359,
+          "channels": 2
+        },
+        {
+          "samples": 87360,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/87360.f32le",
+          "bytes": 698880,
+          "sha256": "af4e3a88355c1255ce53ed2f4416de16b1271851b43e4285b6799e7bea42fa33",
+          "frames": 87360,
+          "channels": 2
+        },
+        {
+          "samples": 87361,
+          "expected_frames": 203,
+          "path": "vectors/tails/fixed-1333/87361.f32le",
+          "bytes": 698888,
+          "sha256": "3c76d3fb61860d365c0ceba1b1bb6e64a07f0572eabf1a403483c7b92f5d756c",
+          "frames": 87361,
+          "channels": 2
+        }
+      ],
+      "fixed-1800": [
+        {
+          "samples": 1,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/1.f32le",
+          "bytes": 8,
+          "sha256": "c5feaee25dc9f5404c7d754b5b56e7ed423fff392230361608493fedf04c3b00",
+          "frames": 1,
+          "channels": 2
+        },
+        {
+          "samples": 319,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/319.f32le",
+          "bytes": 2552,
+          "sha256": "9bd56024427c796e376703a1249ab00064f735a64b9ace970e23b8b339d62d0c",
+          "frames": 319,
+          "channels": 2
+        },
+        {
+          "samples": 320,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/320.f32le",
+          "bytes": 2560,
+          "sha256": "5bbe543363d14fca40b8f963e48b3353fae94da690d33696a1265a61042062a7",
+          "frames": 320,
+          "channels": 2
+        },
+        {
+          "samples": 479,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/479.f32le",
+          "bytes": 3832,
+          "sha256": "a3fcd08894574991fae12a446f0833887349cfe45a3a67fd845023ffbeefa54d",
+          "frames": 479,
+          "channels": 2
+        },
+        {
+          "samples": 480,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/480.f32le",
+          "bytes": 3840,
+          "sha256": "343dda466cbc621a50bb9dedabaae839517b0faf7909d8e8f3d7c473af605dac",
+          "frames": 480,
+          "channels": 2
+        },
+        {
+          "samples": 481,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/481.f32le",
+          "bytes": 3848,
+          "sha256": "d0e104229df2889c3da9d47ee2045809516b27ee2109bd8604abd356a12d81eb",
+          "frames": 481,
+          "channels": 2
+        },
+        {
+          "samples": 47519,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/47519.f32le",
+          "bytes": 380152,
+          "sha256": "c200f129fa3caedd81998aec1f888d4385211323c53bfb5daf97718df9ce3a48",
+          "frames": 47519,
+          "channels": 2
+        },
+        {
+          "samples": 47520,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/47520.f32le",
+          "bytes": 380160,
+          "sha256": "4ee1ebe4111660050b99269e307b04050635544831fe5030029a8efbc89035f2",
+          "frames": 47520,
+          "channels": 2
+        },
+        {
+          "samples": 47521,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/47521.f32le",
+          "bytes": 380168,
+          "sha256": "a77f9d4e903a0c3d42b95ab9a7c725399d3922231b14cc7b867dd0871bf6eaa7",
+          "frames": 47521,
+          "channels": 2
+        },
+        {
+          "samples": 47999,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/47999.f32le",
+          "bytes": 383992,
+          "sha256": "945daf08106f4861f6dec22d4735f209e8a634f9abccb82847661e729f3e1b97",
+          "frames": 47999,
+          "channels": 2
+        },
+        {
+          "samples": 48000,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/48000.f32le",
+          "bytes": 384000,
+          "sha256": "eec85e4b8eb688950dd72d5f62ccdb514ffb3930788f898022fd4bc0df52977e",
+          "frames": 48000,
+          "channels": 2
+        },
+        {
+          "samples": 48001,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/48001.f32le",
+          "bytes": 384008,
+          "sha256": "09da493d583d4ed1e92b86e4bf2626ef246fe3a5e58b9931a10afb0b9e027c78",
+          "frames": 48001,
+          "channels": 2
+        },
+        {
+          "samples": 63999,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/63999.f32le",
+          "bytes": 511992,
+          "sha256": "517ffae66eadf2dfef246bb521bec1f5a28ab3e443ac930867f7197295039f0a",
+          "frames": 63999,
+          "channels": 2
+        },
+        {
+          "samples": 64000,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/64000.f32le",
+          "bytes": 512000,
+          "sha256": "8dd0691d9a0460de0f201109a5e575ee2d5b06bc4aa9add2dd32642d474dde3c",
+          "frames": 64000,
+          "channels": 2
+        },
+        {
+          "samples": 64001,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/64001.f32le",
+          "bytes": 512008,
+          "sha256": "6d128f2a35a9fc2ff57efcca948f2b20bb5098ae59a8ea229e46e3984f673854",
+          "frames": 64001,
+          "channels": 2
+        },
+        {
+          "samples": 64959,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/64959.f32le",
+          "bytes": 519672,
+          "sha256": "78f754fb83e35675dd2297cc03179633d84f58db12208fe1740d8d76ef461236",
+          "frames": 64959,
+          "channels": 2
+        },
+        {
+          "samples": 64960,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/64960.f32le",
+          "bytes": 519680,
+          "sha256": "cc57c133b93b0a40831e104b6c65a91106e110b8e345d5252fbe1838786b6a75",
+          "frames": 64960,
+          "channels": 2
+        },
+        {
+          "samples": 64961,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/64961.f32le",
+          "bytes": 519688,
+          "sha256": "138c85d368650f7818a6cbff13838d71aea34f53eeaccacb1af3de4508a737f9",
+          "frames": 64961,
+          "channels": 2
+        },
+        {
+          "samples": 86399,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/86399.f32le",
+          "bytes": 691192,
+          "sha256": "d0a2aae0cd5d234943dafbe18a6e2a71ae80c22c81f3eb319add192f625fa23e",
+          "frames": 86399,
+          "channels": 2
+        },
+        {
+          "samples": 86400,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/86400.f32le",
+          "bytes": 691200,
+          "sha256": "19611a83e74c2ac356f01094e860fe1d67903b9832e726b600352012e0d716e8",
+          "frames": 86400,
+          "channels": 2
+        },
+        {
+          "samples": 86401,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/86401.f32le",
+          "bytes": 691208,
+          "sha256": "deebffc196b12547251a92d8ff87fc60280ff05dc560f579dcb1d60ef1ae3ee9",
+          "frames": 86401,
+          "channels": 2
+        },
+        {
+          "samples": 87359,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/87359.f32le",
+          "bytes": 698872,
+          "sha256": "8b506b95a36c73eab1ce5e881966373d850e3b437545e9798f73138ed1061647",
+          "frames": 87359,
+          "channels": 2
+        },
+        {
+          "samples": 87360,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/87360.f32le",
+          "bytes": 698880,
+          "sha256": "af4e3a88355c1255ce53ed2f4416de16b1271851b43e4285b6799e7bea42fa33",
+          "frames": 87360,
+          "channels": 2
+        },
+        {
+          "samples": 87361,
+          "expected_frames": 273,
+          "path": "vectors/tails/fixed-1800/87361.f32le",
+          "bytes": 698888,
+          "sha256": "3c76d3fb61860d365c0ceba1b1bb6e64a07f0572eabf1a403483c7b92f5d756c",
+          "frames": 87361,
+          "channels": 2
+        }
+      ]
+    }
+  },
+  "generated_at": "2026-07-25T01:32:31.933Z"
+}

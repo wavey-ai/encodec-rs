@@ -137,7 +137,7 @@ async function run(options) {
     const chunkStarted = Date.now();
 
     // --- WASM encode: PCM chunk -> standalone .ecdc ---
-    const ecdc = await encodeChunk(encodeSession, bundleJson, meta, lmRuntime, chunk);
+    const ecdc = await encodeChunk(encodeSession, bundleJson, meta, lmRuntime, chunk, wav);
     writeFileSync(ecdcPath, ecdc);
     totalEcdcBytes += ecdc.byteLength;
 
@@ -234,14 +234,24 @@ function* chunkPcmStreaming(wav, chunkFrames) {
   }
 }
 
-async function encodeChunk(session, bundleJson, meta, lmRuntime, chunk) {
-  // Pad the chunk into a full segment (segment_samples) for the encode model.
+async function encodeChunk(session, bundleJson, meta, lmRuntime, chunk, wav) {
+  const context = fixedContextSamples(meta);
+  if (context === null) {
+    throw new Error("Westside chunk test requires a recognized fixed-context bundle");
+  }
+
+  // Build the same left-context, owned-audio, and right-context window as the
+  // native encoder. Source samples outside the track remain zero.
   const segment = new Float32Array(meta.channels * meta.segment_samples);
   for (let channel = 0; channel < meta.channels; channel += 1) {
-    segment.set(
-      chunk.planar.subarray(channel * chunk.frames, (channel + 1) * chunk.frames),
-      channel * meta.segment_samples,
-    );
+    const sourceBase = channel * wav.frames;
+    const targetBase = channel * meta.segment_samples;
+    for (let modelIndex = 0; modelIndex < meta.segment_samples; modelIndex += 1) {
+      const sourceIndex = chunk.start - context + modelIndex;
+      if (sourceIndex >= 0 && sourceIndex < wav.frames) {
+        segment[targetBase + modelIndex] = wav.audio[sourceBase + sourceIndex];
+      }
+    }
   }
 
   const outputs = await session.run({
@@ -258,11 +268,7 @@ async function encodeChunk(session, bundleJson, meta, lmRuntime, chunk) {
     codes[i] = toU16Code(codesTensor.data[i], i);
   }
   const scale = Number(scaleTensor.data[0] ?? 1);
-  const frameLength = segmentFrameLength(
-    Math.min(chunk.frames, meta.segment_samples),
-    meta.segment_samples,
-    meta.frame_length,
-  );
+  const frameLength = meta.frame_length;
 
   // Re-use the same fixed header as wasm-encode-fixture.mjs, scoped to this chunk.
   const header = lmEcdcFixedHeaderForWeights(
@@ -282,7 +288,7 @@ async function encodeChunk(session, bundleJson, meta, lmRuntime, chunk) {
       }
       encoder.push(stepCodes);
     }
-    payload = encoder.finishPadded(meta.frame_length);
+    payload = encoder.finish();
   } finally {
     encoder.free();
   }
@@ -436,6 +442,18 @@ function segmentFrameLength(samples, segmentSamples, frameLength) {
   return Math.ceil((samples * frameLength) / segmentSamples);
 }
 
+function fixedContextSamples(meta) {
+  const samples = Number(meta.segment_samples);
+  const stride = Number(meta.segment_stride);
+  if (
+    (samples === 64_960 && stride === 64_000)
+    || (samples === 87_360 && stride === 86_400)
+  ) {
+    return 480;
+  }
+  return null;
+}
+
 function toU16Code(raw, index) {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0 || value > 65535) {
@@ -474,7 +492,10 @@ function writeWav(outputPath, planar, channels, sampleRate) {
   for (let frame = 0; frame < frames; frame += 1) {
     for (let channel = 0; channel < channels; channel += 1) {
       const value = Math.max(-1, Math.min(1, planar[channel * frames + frame]));
-      out.writeInt16LE(Math.round(value * 32767), cursor);
+      out.writeInt16LE(
+        value < 0 ? Math.round(value * 32768) : Math.round(value * 32767),
+        cursor,
+      );
       cursor += bytesPerSample;
     }
   }

@@ -120,9 +120,10 @@ Use `lmEcdcHeaderForWeights` for dynamic bundles. Use
 `lmEcdcFixedHeaderForWeights` when writing ECDC against a fixed-length ONNX
 graph. It records the fixed chunk samples, stride, and LM frame length (`fl`) so
 decoders have the full graph width for each chunk. This also applies to the final
-chunk. For fixed graph chunks, finish LM packet encoding with
-`QuantizedLmChunkEncoder.finishPadded(frameLength)`. This makes encodec-rs write
-zero-code padding for a short final segment before it wraps the ECDC packet.
+chunk. Encode all model codes for each fixed graph chunk. This rule also applies
+to a short final owned region. Finish the LM packet with
+`QuantizedLmChunkEncoder.finish()`. Do not replace unowned model codes with code
+zero. `finishPadded` now rejects an incomplete code sequence.
 
 ## Native Scope
 
@@ -298,6 +299,34 @@ encodec-rs onnx-roundtrip-wav \
   input.wav \
   output.wav
 ```
+
+Export qualification-only frame evidence:
+
+```bash
+encodec-rs onnx-encode-evidence \
+  onnx-bundles/encodec_48khz_6kbps_1333ms \
+  input.wav \
+  evidence/fixed-1333-6kbps
+```
+
+This command writes the exact model input, codes, scale, raw entropy, recovered
+codes, and codebook order. The manifest contains file shapes, SHA-256 digests,
+and exact code recovery status.
+
+Use `--true-variable-tail` with a dynamic model bundle to preserve the actual
+final input length.
+
+Export one canonical fixed-code LM vector:
+
+```bash
+encodec-rs onnx-lm-evidence \
+  onnx-bundles/encodec_48khz_6kbps_1333ms \
+  evidence/lm-6kbps \
+  --steps 203
+```
+
+These commands do not create a Profile 1 container. See
+[`docs/frame-evidence.md`](docs/frame-evidence.md).
 
 ## Execution Targets
 

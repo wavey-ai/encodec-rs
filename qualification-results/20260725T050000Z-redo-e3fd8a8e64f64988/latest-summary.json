@@ -1,0 +1,83 @@
+{
+  "schema": "wavey.encodec.qualification-results-snapshot",
+  "schema_version": 1,
+  "run_id": "20260725T050000Z-redo-e3fd8a8e64f64988",
+  "generated_at": "2026-07-25T08:57:38.229Z",
+  "recorded_rows": 111,
+  "latest_case_rows": 106,
+  "latest_statuses": {
+    "authorized_pending_plan": 1,
+    "blocked": 16,
+    "pass": 89
+  },
+  "latest_environments": {
+    "azure-linux-x86_64-cpu": {
+      "rows": 1,
+      "statuses": {
+        "authorized_pending_plan": 1
+      }
+    },
+    "gcp-linux-x86_64-cpu": {
+      "rows": 1,
+      "statuses": {
+        "blocked": 1
+      }
+    },
+    "gcp-linux-x86_64-cuda-fp32": {
+      "rows": 1,
+      "statuses": {
+        "blocked": 1
+      }
+    },
+    "mac-arm64-chromium-ort-wasm": {
+      "rows": 1,
+      "statuses": {
+        "blocked": 1
+      }
+    },
+    "mac-arm64-chromium-webgpu": {
+      "rows": 1,
+      "statuses": {
+        "blocked": 1
+      }
+    },
+    "mac-arm64-coreml-gpu": {
+      "rows": 15,
+      "statuses": {
+        "pass": 15
+      }
+    },
+    "mac-arm64-onnx-cpu": {
+      "rows": 62,
+      "statuses": {
+        "pass": 50,
+        "blocked": 12
+      }
+    },
+    "mac-arm64-original-meta-vs-fork-cpu": {
+      "rows": 24,
+      "statuses": {
+        "pass": 24
+      }
+    }
+  },
+  "direct_meta_fork_quality": {
+    "rows": 24,
+    "statuses": {
+      "pass": 24
+    }
+  },
+  "gcp": {
+    "cpu_codec_rows_completed": 0,
+    "cuda_codec_rows_completed": 0,
+    "status": "blocked",
+    "reasons": [
+      "The CPU package transfer failed before codec execution.",
+      "The project-wide GPU quota was zero."
+    ]
+  },
+  "scope": {
+    "includes": "Result records, reports, manifests, environment records, and command logs.",
+    "excludes": "Source audio, decoded audio, model files, compiled caches, and other large binary artifacts."
+  }
+}

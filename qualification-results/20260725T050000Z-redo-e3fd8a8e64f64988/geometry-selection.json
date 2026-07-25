@@ -1,0 +1,440 @@
+{
+  "schema": "wavey.encodec.geometry-selection",
+  "schema_version": 1,
+  "run_id": "20260725T050000Z-redo-e3fd8a8e64f64988",
+  "selected_geometry_id": null,
+  "owner_approval_time": null,
+  "owner_approval_identifier": null,
+  "status": "blocked",
+  "stage": "A-geometry-selection",
+  "measurement_format": "current-acv2-unpublished",
+  "result_digest": "d33b23e0e04857c9109f1e9f8630d4499411059259375fb96164648931c57be9",
+  "rows_by_rate": {
+    "6": [
+      {
+        "case_id": "select-fixed-1333-6-confirmation-i-want-her-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 91003,
+        "best_fixed_current_acv2_bytes": 89811,
+        "delta_bytes": 1192
+      },
+      {
+        "case_id": "select-fixed-1333-6-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 136983,
+        "best_fixed_current_acv2_bytes": 135360,
+        "delta_bytes": 1623
+      },
+      {
+        "case_id": "select-fixed-1333-6-confirmation-westside-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 125971,
+        "best_fixed_current_acv2_bytes": 124426,
+        "delta_bytes": 1545
+      },
+      {
+        "case_id": "select-fixed-1333-6-confirmation-westside-v2",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 125001,
+        "best_fixed_current_acv2_bytes": 123469,
+        "delta_bytes": 1532
+      },
+      {
+        "case_id": "select-fixed-1333-6-confirmation-after-dark-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 124554,
+        "best_fixed_current_acv2_bytes": 123288,
+        "delta_bytes": 1266
+      },
+      {
+        "case_id": "select-fixed-1333-6-confirmation-1979-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 145523,
+        "best_fixed_current_acv2_bytes": 143745,
+        "delta_bytes": 1778
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-i-want-her-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 89811,
+        "best_fixed_current_acv2_bytes": 89811,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 135360,
+        "best_fixed_current_acv2_bytes": 135360,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-westside-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 124426,
+        "best_fixed_current_acv2_bytes": 124426,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-westside-v2",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 123469,
+        "best_fixed_current_acv2_bytes": 123469,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-after-dark-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 123288,
+        "best_fixed_current_acv2_bytes": 123288,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-6-confirmation-1979-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 143745,
+        "best_fixed_current_acv2_bytes": 143745,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-i-want-her-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 91003,
+        "best_fixed_current_acv2_bytes": 89811,
+        "delta_bytes": 1192
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 136983,
+        "best_fixed_current_acv2_bytes": 135360,
+        "delta_bytes": 1623
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-westside-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 125971,
+        "best_fixed_current_acv2_bytes": 124426,
+        "delta_bytes": 1545
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-westside-v2",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 125001,
+        "best_fixed_current_acv2_bytes": 123469,
+        "delta_bytes": 1532
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-i-want-her-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 91003,
+        "best_fixed_current_acv2_bytes": 89811,
+        "delta_bytes": 1192
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-after-dark-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 124554,
+        "best_fixed_current_acv2_bytes": 123288,
+        "delta_bytes": 1266
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-6-confirmation-1979-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 145523,
+        "best_fixed_current_acv2_bytes": 143745,
+        "delta_bytes": 1778
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 136983,
+        "best_fixed_current_acv2_bytes": 135360,
+        "delta_bytes": 1623
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-i-want-her-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 89811,
+        "best_fixed_current_acv2_bytes": 89811,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-westside-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 125971,
+        "best_fixed_current_acv2_bytes": 124426,
+        "delta_bytes": 1545
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 135360,
+        "best_fixed_current_acv2_bytes": 135360,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-westside-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 124426,
+        "best_fixed_current_acv2_bytes": 124426,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-westside-v2",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 123469,
+        "best_fixed_current_acv2_bytes": 123469,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-westside-v2",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 125003,
+        "best_fixed_current_acv2_bytes": 123469,
+        "delta_bytes": 1534
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-after-dark-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 123288,
+        "best_fixed_current_acv2_bytes": 123288,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-after-dark-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 124556,
+        "best_fixed_current_acv2_bytes": 123288,
+        "delta_bytes": 1268
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-6-confirmation-1979-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 143745,
+        "best_fixed_current_acv2_bytes": 143745,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "provider-coreml-gpu-fixed-1333-6-confirmation-1979-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 145520,
+        "best_fixed_current_acv2_bytes": 143745,
+        "delta_bytes": 1775
+      }
+    ],
+    "12": [
+      {
+        "case_id": "select-fixed-1333-12-confirmation-i-want-her-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 189309,
+        "best_fixed_current_acv2_bytes": 187687,
+        "delta_bytes": 1622
+      },
+      {
+        "case_id": "select-fixed-1333-12-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 283861,
+        "best_fixed_current_acv2_bytes": 281531,
+        "delta_bytes": 2330
+      },
+      {
+        "case_id": "select-fixed-1333-12-confirmation-westside-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 258069,
+        "best_fixed_current_acv2_bytes": 256226,
+        "delta_bytes": 1843
+      },
+      {
+        "case_id": "select-fixed-1333-12-confirmation-westside-v2",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 257382,
+        "best_fixed_current_acv2_bytes": 255139,
+        "delta_bytes": 2243
+      },
+      {
+        "case_id": "select-fixed-1333-12-confirmation-after-dark-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 259111,
+        "best_fixed_current_acv2_bytes": 257372,
+        "delta_bytes": 1739
+      },
+      {
+        "case_id": "select-fixed-1333-12-confirmation-1979-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 297458,
+        "best_fixed_current_acv2_bytes": 294706,
+        "delta_bytes": 2752
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-i-want-her-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 187687,
+        "best_fixed_current_acv2_bytes": 187687,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 281531,
+        "best_fixed_current_acv2_bytes": 281531,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-westside-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 256226,
+        "best_fixed_current_acv2_bytes": 256226,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-westside-v2",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 255139,
+        "best_fixed_current_acv2_bytes": 255139,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-after-dark-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 257372,
+        "best_fixed_current_acv2_bytes": 257372,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "select-fixed-1800-12-confirmation-1979-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 294706,
+        "best_fixed_current_acv2_bytes": 294706,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-i-want-her-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 187687,
+        "best_fixed_current_acv2_bytes": 187687,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-12-confirmation-i-want-her-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-i-want-her-v1",
+        "current_acv2_bytes": 189309,
+        "best_fixed_current_acv2_bytes": 187687,
+        "delta_bytes": 1622
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 281531,
+        "best_fixed_current_acv2_bytes": 281531,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-westside-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 256226,
+        "best_fixed_current_acv2_bytes": 256226,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-12-confirmation-pray-4-me-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-pray-4-me-v1",
+        "current_acv2_bytes": 283861,
+        "best_fixed_current_acv2_bytes": 281531,
+        "delta_bytes": 2330
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-westside-v2",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 255139,
+        "best_fixed_current_acv2_bytes": 255139,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-12-confirmation-westside-v1",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v1",
+        "current_acv2_bytes": 258069,
+        "best_fixed_current_acv2_bytes": 256226,
+        "delta_bytes": 1843
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-after-dark-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-after-dark-v1",
+        "current_acv2_bytes": 257372,
+        "best_fixed_current_acv2_bytes": 257372,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1800-12-confirmation-1979-v1",
+        "candidate": "fixed-1800",
+        "corpus_id": "confirmation-1979-v1",
+        "current_acv2_bytes": 294706,
+        "best_fixed_current_acv2_bytes": 294706,
+        "delta_bytes": 0
+      },
+      {
+        "case_id": "quality-fork-vs-canonical-fixed-1333-12-confirmation-westside-v2",
+        "candidate": "fixed-1333",
+        "corpus_id": "confirmation-westside-v2",
+        "current_acv2_bytes": 257382,
+        "best_fixed_current_acv2_bytes": 255139,
+        "delta_bytes": 2243
+      }
+    ]
+  },
+  "blockers": [
+    "The current objects are not complete proposed Profile 1 containers.",
+    "Fixed-code entropy bytes and recovered code tensors are not exported by the current CLI.",
+    "The worktree is dirty, so the release lock cannot be frozen.",
+    "No owner approval identifier exists for a geometry selection."
+  ]
+}

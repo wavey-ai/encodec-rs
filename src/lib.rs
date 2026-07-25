@@ -7,6 +7,8 @@ pub mod ecdc;
 #[cfg(feature = "ecdc")]
 pub mod ecdc_presets;
 #[cfg(feature = "ecdc")]
+pub mod entropy;
+#[cfg(feature = "ecdc")]
 pub mod format;
 #[cfg(feature = "ecdc")]
 pub mod metadata;
@@ -15,9 +17,13 @@ pub mod mlx_bridge;
 #[cfg(feature = "onnx")]
 pub mod onnx;
 #[cfg(feature = "ecdc")]
+pub mod pcm;
+#[cfg(feature = "ecdc")]
 pub mod portable_lm;
 #[cfg(feature = "ecdc")]
 pub mod quantized_lm;
+#[cfg(feature = "ecdc")]
+pub mod seam;
 #[cfg(feature = "ecdc")]
 pub mod stable_hash;
 #[cfg(feature = "wasm")]

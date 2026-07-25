@@ -51,19 +51,11 @@ impl PortableLmCodec {
         weights: &[u8],
     ) -> Result<Self> {
         let hash = stable_hash_hex(weights);
-        if metadata.schema_version != 1 {
-            bail!(
-                "unsupported bundle schema_version {}",
-                metadata.schema_version
-            );
-        }
-        metadata.lm_dim()?;
-        metadata.lm_num_layers()?;
-        metadata.lm_past_context()?;
+        metadata.validate_lm()?;
 
         let weights = QuantizedLmWeights::from_bytes(weights)
             .context("failed to parse quantized LM weights")?;
-        weights.validate_for_codebooks(metadata.num_codebooks)?;
+        weights.validate_for_metadata(&metadata)?;
         let lm_window_frame_length = weights.frame_length.max(1);
         Ok(Self {
             bundle_dir: None,
@@ -126,9 +118,9 @@ impl LmCodec for PortableLmCodec {
         if shape[0] != 1 || shape[2] != 1 {
             bail!("q8 LM only supports shape [1, codebooks, 1]");
         }
-        if shape[1] > self.metadata.num_codebooks {
+        if shape[1] != self.metadata.num_codebooks {
             bail!(
-                "LM indices use {} codebooks, but bundle only supports {}",
+                "LM indices use {} codebooks, but bundle requires {}",
                 shape[1],
                 self.metadata.num_codebooks
             );
@@ -152,7 +144,8 @@ impl LmCodec for PortableLmCodec {
         };
         let card = self.metadata.lm_cardinality();
         let codebooks = self.metadata.num_codebooks;
-        let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits).expect("shape");
+        let logits = Array4::from_shape_vec((1, card, codebooks, 1), logits)
+            .map_err(|error| anyhow::anyhow!("invalid LM logit shape: {error}"))?;
         Ok((logits, offset + 1, self.initial_states(shape[0])?))
     }
 }

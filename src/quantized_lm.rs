@@ -1,9 +1,10 @@
 use anyhow::{bail, Result};
 
+use crate::metadata::OnnxFrameBundleMetadata;
+
 const MAGIC: &[u8; 8] = b"ELMQ0001";
 const HEADER_U32S: usize = 7;
 const LAYER_NORM_EPS: f64 = 1.0e-5;
-const SQRT_2: f64 = 1.414_213_562_373_095_1;
 
 #[derive(Clone, Debug)]
 pub struct QuantizedLmWeights {
@@ -101,7 +102,7 @@ impl QuantizedLmWeights {
         if dim == 0 || layers == 0 || heads == 0 || codebooks == 0 || cardinality == 0 {
             bail!("quantized LM weight header contains a zero dimension");
         }
-        if dim % heads != 0 {
+        if !dim.is_multiple_of(heads) {
             bail!("quantized LM dim {dim} is not divisible by heads {heads}");
         }
         let hidden_dim = dim * 4;
@@ -171,6 +172,53 @@ impl QuantizedLmWeights {
                 "quantized LM weights contain {} codebooks, but {} were requested",
                 self.codebooks,
                 codebooks
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_metadata(&self, metadata: &OnnxFrameBundleMetadata) -> Result<()> {
+        metadata.validate_lm()?;
+        if self.codebooks != metadata.num_codebooks {
+            bail!(
+                "quantized LM weights contain {} codebooks, but bundle requires {}",
+                self.codebooks,
+                metadata.num_codebooks,
+            );
+        }
+        if self.cardinality != metadata.lm_cardinality() {
+            bail!(
+                "quantized LM cardinality {} does not match bundle {}",
+                self.cardinality,
+                metadata.lm_cardinality(),
+            );
+        }
+        if self.dim != metadata.lm_dim()? {
+            bail!(
+                "quantized LM dimension {} does not match bundle {}",
+                self.dim,
+                metadata.lm_dim()?,
+            );
+        }
+        if self.layers != metadata.lm_num_layers()? {
+            bail!(
+                "quantized LM layer count {} does not match bundle {}",
+                self.layers,
+                metadata.lm_num_layers()?,
+            );
+        }
+        if self.past_context != metadata.lm_past_context()? {
+            bail!(
+                "quantized LM past context {} does not match bundle {}",
+                self.past_context,
+                metadata.lm_past_context()?,
+            );
+        }
+        if metadata.frame_length > self.frame_length {
+            bail!(
+                "bundle frame length {} exceeds quantized LM capacity {}",
+                metadata.frame_length,
+                self.frame_length,
             );
         }
         Ok(())
@@ -417,10 +465,10 @@ fn quantized_linear_part_with_input(
     debug_assert!(row_offset + out_dim <= weight.rows);
     debug_assert_eq!(input_q.len(), weight.cols);
     out.resize(out_dim, 0.0);
-    for row in 0..out_dim {
+    for (row, output) in out.iter_mut().enumerate() {
         let source_row = row_offset + row;
         let acc = dot_i8_i16(weight.row(source_row), input_q);
-        out[row] = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+        *output = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
     }
 }
 
@@ -526,7 +574,7 @@ fn attention_into(
     scores: &mut Vec<f64>,
 ) -> Result<()> {
     let dim = query.len();
-    if dim % heads != 0 {
+    if !dim.is_multiple_of(heads) {
         bail!("attention dim {dim} is not divisible by heads {heads}");
     }
     if keys.len() != len * dim || values.len() != len * dim {
@@ -541,14 +589,14 @@ fn attention_into(
     for head in 0..heads {
         let head_base = head * head_dim;
         let mut max_score = f64::NEG_INFINITY;
-        for t in 0..len {
+        for (t, output_score) in scores.iter_mut().enumerate().take(len) {
             let base = t * dim + head_base;
             let mut dot = 0.0_f64;
             for d in 0..head_dim {
                 dot += (query[head_base + d] as f64) * (keys[base + d] as f64);
             }
             let score = dot * scale;
-            scores[t] = score;
+            *output_score = score;
             max_score = max_score.max(score);
         }
 
@@ -569,8 +617,8 @@ fn attention_into(
             continue;
         }
 
-        for t in 0..len {
-            let prob = scores[t] / denom;
+        for (t, score) in scores.iter().copied().enumerate().take(len) {
+            let prob = score / denom;
             let base = t * dim + head_base;
             for d in 0..head_dim {
                 out[head_base + d] += (prob * values[base + d] as f64) as f32;
@@ -581,7 +629,7 @@ fn attention_into(
 }
 
 fn gelu(value: f64) -> f64 {
-    0.5 * value * (1.0 + libm::erf(value / SQRT_2))
+    0.5 * value * (1.0 + libm::erf(value / std::f64::consts::SQRT_2))
 }
 
 struct WeightReader<'a> {

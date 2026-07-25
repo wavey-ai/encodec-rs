@@ -1,0 +1,10 @@
+{
+  "id": "mac-arm64-onnx-cpu",
+  "os": "darwin 25.5.0",
+  "arch": "arm64",
+  "cpu": "Apple M1",
+  "memory_bytes": 17179869184,
+  "node": "v26.3.0",
+  "ffmpeg_sha256": "22aceea83cf3f255784a09c991d308f63a41da1f32b2a3f7654c9e4b636a948d",
+  "qualification_mux_sha256": "8c6b6b4d675a5d8efc1462033f5e58cf53ac87c28a3cd67850d845b09df3cdff"
+}

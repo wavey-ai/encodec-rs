@@ -1,29 +1,7 @@
-#[cfg(feature = "ecdc")]
-pub mod arithmetic;
-#[cfg(feature = "ecdc")]
-pub mod binary;
-#[cfg(feature = "ecdc")]
-pub mod ecdc;
-#[cfg(feature = "ecdc")]
-pub mod ecdc_presets;
-#[cfg(feature = "ecdc")]
-pub mod format;
-#[cfg(feature = "ecdc")]
-pub mod metadata;
-#[cfg(feature = "onnx")]
-pub mod onnx;
-#[cfg(feature = "ecdc")]
-pub mod portable_lm;
-#[cfg(feature = "ecdc")]
-pub mod quantized_lm;
-#[cfg(feature = "ecdc")]
-pub mod stable_hash;
-#[cfg(feature = "wasm")]
-pub mod wasm;
 #[cfg(feature = "onnx")]
 use std::fs;
 #[cfg(feature = "onnx")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "onnx")]
 use std::time::Instant;
 
@@ -34,11 +12,18 @@ use clap::{Parser, Subcommand};
 use encodec_rs::arithmetic::deterministic_cdf_multi;
 #[cfg(feature = "onnx")]
 use encodec_rs::ecdc::{
-    decode_ecdc, deterministic_pdf_from_logits, encode_audio_to_ecdc_with_options, LmCodec,
+    decode_ecdc, deterministic_pdf_from_logits, encode_audio_frame_evidence,
+    encode_audio_to_ecdc_with_options, encode_lm_chunk_evidence, LmCodec,
     ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
 };
 #[cfg(feature = "onnx")]
+use encodec_rs::ecdc_presets::fixed_context_samples;
+#[cfg(feature = "onnx")]
 use encodec_rs::onnx::{CoreMlComputeUnits, ExecutionTarget, OnnxFrameCodec, OnnxLmCodec};
+#[cfg(feature = "onnx")]
+use encodec_rs::pcm::{f32_to_s16, s16_to_f32, s24_to_f32, s32_to_f32};
+#[cfg(feature = "onnx")]
+use encodec_rs::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
 #[cfg(feature = "onnx")]
 use encodec_rs::stable_hash::stable_hash_hex;
 #[cfg(feature = "onnx")]
@@ -47,6 +32,9 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use ndarray::{Array2, Array3};
 #[cfg(feature = "onnx")]
 use serde_json::json;
+
+#[cfg(feature = "onnx")]
+type EncodedSegments = (Vec<Array3<i64>>, Vec<Array2<f32>>);
 
 #[derive(Debug, Parser)]
 #[command(name = "encodec-rs")]
@@ -137,6 +125,16 @@ enum Commands {
         runtime: OnnxRuntimeArgs,
     },
     #[cfg(feature = "onnx")]
+    OnnxLmEvidence {
+        bundle_dir: PathBuf,
+        output_dir: PathBuf,
+        /// Code frames to test. Zero selects the bundle frame length.
+        #[arg(long, default_value_t = 0)]
+        steps: usize,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
+    },
+    #[cfg(feature = "onnx")]
     OnnxRoundtripWav {
         bundle_dir: PathBuf,
         input_wav: PathBuf,
@@ -155,6 +153,19 @@ enum Commands {
         batch_size: usize,
         #[arg(long)]
         chunk_ms: Option<f64>,
+        #[command(flatten)]
+        runtime: OnnxRuntimeArgs,
+    },
+    #[cfg(feature = "onnx")]
+    OnnxEncodeEvidence {
+        bundle_dir: PathBuf,
+        input_wav: PathBuf,
+        output_dir: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        batch_size: usize,
+        /// Pass the actual final input length to a dynamic non-fixed model.
+        #[arg(long)]
+        true_variable_tail: bool,
         #[command(flatten)]
         runtime: OnnxRuntimeArgs,
     },
@@ -245,6 +256,149 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         #[cfg(feature = "onnx")]
+        Commands::OnnxEncodeEvidence {
+            bundle_dir,
+            input_wav,
+            output_dir,
+            batch_size,
+            true_variable_tail,
+            runtime,
+        } => {
+            let target = execution_target(&bundle_dir, &runtime)?;
+            let mut codec = OnnxFrameCodec::from_dir(&bundle_dir, target)?;
+            let mut lm_codec = OnnxLmCodec::from_dir(
+                bundle_dir.clone(),
+                execution_target(&bundle_dir, &runtime)?,
+            )?;
+            let meta = codec.metadata().clone();
+            let (audio, input_frames, input_sample_rate) = read_wav_f32(&input_wav, meta.channels)?;
+            if input_sample_rate as usize != meta.sample_rate {
+                return Err(format!(
+                    "input WAV sample rate {} does not match bundle sample rate {}; resampling is not implemented in encodec-rs yet",
+                    input_sample_rate,
+                    meta.sample_rate
+                )
+                .into());
+            }
+            let frame_evidence = encode_audio_frame_evidence(
+                &mut codec,
+                &audio,
+                batch_size.max(1),
+                true_variable_tail,
+            )?;
+            let input_wav_sha256 = stable_hash_hex(&fs::read(&input_wav)?);
+            let mut model_input_digest = Vec::new();
+            let mut code_digest = Vec::new();
+            let mut recovered_code_digest = Vec::new();
+            let mut scale_digest = Vec::new();
+            let mut entropy_digest = Vec::new();
+            let mut segments = Vec::with_capacity(frame_evidence.len());
+            fs::create_dir_all(&output_dir)?;
+            let codebook_order: Vec<u32> = (0..meta.num_codebooks as u32).collect();
+            let codebook_order_path = output_dir.join("codebook-order.u32le");
+            let codebook_order_bytes = write_u32le(&codebook_order_path, &codebook_order)?;
+            for (index, segment) in frame_evidence.iter().enumerate() {
+                let model_input_path =
+                    output_dir.join(format!("segment-{index:06}.model-input.f32le"));
+                let codes_path = output_dir.join(format!("segment-{index:06}.codes.i64le"));
+                let recovered_codes_path =
+                    output_dir.join(format!("segment-{index:06}.recovered-codes.i64le"));
+                let scale_path = output_dir.join(format!("segment-{index:06}.scale.f32le"));
+                let entropy_path = output_dir.join(format!("segment-{index:06}.entropy.bin"));
+                let model_input_bytes =
+                    write_array3_f32le(&model_input_path, &segment.model_input)?;
+                let codes_bytes = write_i64le(&codes_path, &segment.codes)?;
+                let scale_bytes = write_f32le(&scale_path, &segment.scale)?;
+                let lm_evidence =
+                    encode_lm_chunk_evidence(&mut lm_codec, &segment.codes, &segment.scale)?;
+                let recovered_codes_bytes =
+                    write_i64le(&recovered_codes_path, &lm_evidence.recovered_codes)?;
+                fs::write(&entropy_path, &lm_evidence.entropy)?;
+                model_input_digest.extend_from_slice(&model_input_bytes);
+                code_digest.extend_from_slice(&codes_bytes);
+                recovered_code_digest.extend_from_slice(&recovered_codes_bytes);
+                scale_digest.extend_from_slice(&scale_bytes);
+                entropy_digest.extend_from_slice(&lm_evidence.entropy);
+                let model_input_file = evidence_file_name(&model_input_path)?;
+                let codes_file = codes_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("codes evidence filename is not valid UTF-8")?;
+                let recovered_codes_file = evidence_file_name(&recovered_codes_path)?;
+                let scale_file = evidence_file_name(&scale_path)?;
+                let entropy_file = evidence_file_name(&entropy_path)?;
+                segments.push(json!({
+                    "index": index,
+                    "offset_samples": segment.offset_samples,
+                    "owned_samples": segment.owned_samples,
+                    "model_samples": segment.model_input.shape()[2],
+                    "frame_length": segment.codes.shape()[2],
+                    "model_input_file": model_input_file,
+                    "codes_file": codes_file,
+                    "recovered_codes_file": recovered_codes_file,
+                    "scale_file": scale_file,
+                    "entropy_file": entropy_file,
+                    "model_input_shape": segment.model_input.shape(),
+                    "codes_shape": segment.codes.shape(),
+                    "recovered_codes_shape": lm_evidence.recovered_codes.shape(),
+                    "scale_shape": segment.scale.shape(),
+                    "model_input_sha256": stable_hash_hex(&model_input_bytes),
+                    "codes_sha256": stable_hash_hex(&codes_bytes),
+                    "recovered_codes_sha256": stable_hash_hex(&recovered_codes_bytes),
+                    "scale_sha256": stable_hash_hex(&scale_bytes),
+                    "scale_bits_hex": format!("{:08x}", segment.scale[[0, 0]].to_bits()),
+                    "entropy_sha256": stable_hash_hex(&lm_evidence.entropy),
+                    "entropy_bytes": lm_evidence.entropy.len(),
+                    "codes_exactly_recovered": codes_bytes == recovered_codes_bytes,
+                }));
+            }
+            let manifest = json!({
+                "schema": "wavey.encodec.frame-evidence",
+                "schema_version": 2,
+                "evidence_type": "model-input-codes-scales-entropy-recovered-codes",
+                "qualification_only": true,
+                "profile_container": false,
+                "wire_format": "none",
+                "provider": runtime_label(&runtime),
+                "bundle_dir": codec.bundle_dir(),
+                "input_wav": input_wav,
+                "input_wav_sha256": input_wav_sha256,
+                "input_samples": input_frames,
+                "sample_rate": meta.sample_rate,
+                "channels": meta.channels,
+                "model_name": meta.model_name,
+                "bandwidth_kbps": meta.bandwidth_kbps,
+                "num_codebooks": meta.num_codebooks,
+                "segment_samples": meta.segment_samples,
+                "segment_stride": meta.segment_stride,
+                "batch_size": batch_size.max(1),
+                "true_variable_tail": true_variable_tail,
+                "model_input_encoding": "planar little-endian IEEE-754 binary32",
+                "codes_encoding": "little-endian signed 64-bit",
+                "scale_encoding": "little-endian IEEE-754 binary32",
+                "entropy_encoding": "raw arithmetic payload without scale or container framing",
+                "recovered_codes_encoding": "little-endian signed 64-bit",
+                "codebook_order_file": evidence_file_name(&codebook_order_path)?,
+                "codebook_order": codebook_order,
+                "codebook_order_sha256": stable_hash_hex(&codebook_order_bytes),
+                "model_inputs_sha256": stable_hash_hex(&model_input_digest),
+                "codes_sha256": stable_hash_hex(&code_digest),
+                "recovered_codes_sha256": stable_hash_hex(&recovered_code_digest),
+                "scales_sha256": stable_hash_hex(&scale_digest),
+                "entropy_sha256": stable_hash_hex(&entropy_digest),
+                "codes_exactly_recovered": code_digest == recovered_code_digest,
+                "lm_hash": lm_codec.bitstream_lm_hash(),
+                "lm_bitstream_version": lm_codec.bitstream_version(),
+                "lm_temperature_bits_hex": format!("{:08x}", 1.0_f32.to_bits()),
+                "probability_scale": DEFAULT_FP_SCALE,
+                "arithmetic_min_range": DEFAULT_MIN_RANGE,
+                "segments": segments,
+            });
+            let manifest_path = output_dir.join("manifest.json");
+            fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+        }
+        #[cfg(feature = "onnx")]
         Commands::OnnxDecode {
             bundle_dir,
             input_ecdc,
@@ -333,6 +487,94 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "cdf_sequence_hash": stable_hash_hex(&digest_bytes),
                 }))?
             );
+        }
+        #[cfg(feature = "onnx")]
+        Commands::OnnxLmEvidence {
+            bundle_dir,
+            output_dir,
+            steps,
+            runtime,
+        } => {
+            let target = execution_target(&bundle_dir, &runtime)?;
+            let mut lm_codec = OnnxLmCodec::from_dir(bundle_dir.clone(), target)?;
+            let meta = lm_codec.metadata().clone();
+            let steps = if steps == 0 { meta.frame_length } else { steps };
+            if steps > lm_codec.lm_window_frame_length() {
+                return Err(format!(
+                    "requested {} LM steps exceed positional capacity {}",
+                    steps,
+                    lm_codec.lm_window_frame_length(),
+                )
+                .into());
+            }
+            let cardinality = meta.lm_cardinality();
+            let mut codes = Array3::<i64>::zeros((1, meta.num_codebooks, steps));
+            for step in 0..steps {
+                for codebook in 0..meta.num_codebooks {
+                    codes[[0, codebook, step]] =
+                        (((step * 17) + (codebook * 31)) % cardinality) as i64;
+                }
+            }
+            let scale = Array2::from_elem((1, 1), f32::from_bits(0x3f12_3456));
+            let evidence = encode_lm_chunk_evidence(&mut lm_codec, &codes, &scale)?;
+            fs::create_dir_all(&output_dir)?;
+            let codes_path = output_dir.join("codes.i64le");
+            let recovered_codes_path = output_dir.join("recovered-codes.i64le");
+            let scale_path = output_dir.join("scale.f32le");
+            let payload_path = output_dir.join("payload.bin");
+            let entropy_path = output_dir.join("entropy.bin");
+            let codebook_order_path = output_dir.join("codebook-order.u32le");
+            let codes_bytes = write_i64le(&codes_path, &codes)?;
+            let recovered_codes_bytes =
+                write_i64le(&recovered_codes_path, &evidence.recovered_codes)?;
+            let scale_bytes = write_f32le(&scale_path, &scale)?;
+            fs::write(&payload_path, &evidence.payload)?;
+            fs::write(&entropy_path, &evidence.entropy)?;
+            let codebook_order: Vec<u32> = (0..meta.num_codebooks as u32).collect();
+            let codebook_order_bytes = write_u32le(&codebook_order_path, &codebook_order)?;
+            let manifest = json!({
+                "schema": "wavey.encodec.lm-evidence",
+                "schema_version": 1,
+                "qualification_only": true,
+                "provider": runtime_label(&runtime),
+                "bundle_dir": bundle_dir,
+                "model_name": meta.model_name,
+                "bandwidth_kbps": meta.bandwidth_kbps,
+                "num_codebooks": meta.num_codebooks,
+                "cardinality": cardinality,
+                "steps": steps,
+                "codes_shape": codes.shape(),
+                "codes_file": evidence_file_name(&codes_path)?,
+                "codes_sha256": stable_hash_hex(&codes_bytes),
+                "recovered_codes_file": evidence_file_name(&recovered_codes_path)?,
+                "recovered_codes_sha256": stable_hash_hex(&recovered_codes_bytes),
+                "codes_exactly_recovered": codes_bytes == recovered_codes_bytes,
+                "scale_file": evidence_file_name(&scale_path)?,
+                "scale_sha256": stable_hash_hex(&scale_bytes),
+                "scale_bits_hex": format!("{:08x}", scale[[0, 0]].to_bits()),
+                "payload_file": evidence_file_name(&payload_path)?,
+                "payload_sha256": stable_hash_hex(&evidence.payload),
+                "entropy_file": evidence_file_name(&entropy_path)?,
+                "entropy_sha256": stable_hash_hex(&evidence.entropy),
+                "entropy_bytes": evidence.entropy.len(),
+                "codebook_order_file": evidence_file_name(&codebook_order_path)?,
+                "codebook_order": codebook_order,
+                "codebook_order_sha256": stable_hash_hex(&codebook_order_bytes),
+                "symbol_rule": "symbol[codebook,time]=(time*17+codebook*31)%cardinality",
+                "bos_rule": "zero on every codebook",
+                "next_input_rule": "prior code plus one",
+                "iteration_order": "time-major, codebook-minor",
+                "lm_hash": lm_codec.bitstream_lm_hash(),
+                "lm_bitstream_version": lm_codec.bitstream_version(),
+                "lm_temperature_bits_hex": format!("{:08x}", 1.0_f32.to_bits()),
+                "probability_scale": DEFAULT_FP_SCALE,
+                "arithmetic_min_range": DEFAULT_MIN_RANGE,
+            });
+            fs::write(
+                output_dir.join("manifest.json"),
+                serde_json::to_vec_pretty(&manifest)?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
         }
         #[cfg(feature = "onnx")]
         Commands::OnnxInspect {
@@ -449,7 +691,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "onnx")]
 fn execution_target(
-    bundle_dir: &PathBuf,
+    bundle_dir: &Path,
     runtime: &OnnxRuntimeArgs,
 ) -> Result<ExecutionTarget, Box<dyn std::error::Error>> {
     let selected_targets = runtime.cuda as u8 + runtime.tensorrt as u8 + runtime.coreml as u8;
@@ -495,6 +737,19 @@ fn execution_target(
 }
 
 #[cfg(feature = "onnx")]
+fn runtime_label(runtime: &OnnxRuntimeArgs) -> &'static str {
+    if runtime.tensorrt {
+        "tensorrt"
+    } else if runtime.cuda {
+        "cuda"
+    } else if runtime.coreml {
+        "coreml"
+    } else {
+        "cpu"
+    }
+}
+
+#[cfg(feature = "onnx")]
 fn read_wav_f32(
     path: &PathBuf,
     expected_channels: usize,
@@ -513,7 +768,15 @@ fn read_wav_f32(
     let interleaved: Vec<f32> = match (spec.sample_format, spec.bits_per_sample) {
         (SampleFormat::Int, 16) => reader
             .samples::<i16>()
-            .map(|sample| sample.map(|value| value as f32 / i16::MAX as f32))
+            .map(|sample| sample.map(s16_to_f32))
+            .collect::<Result<Vec<_>, _>>()?,
+        (SampleFormat::Int, 24) => reader
+            .samples::<i32>()
+            .map(|sample| sample.map(s24_to_f32))
+            .collect::<Result<Vec<_>, _>>()?,
+        (SampleFormat::Int, 32) => reader
+            .samples::<i32>()
+            .map(|sample| sample.map(s32_to_f32))
             .collect::<Result<Vec<_>, _>>()?,
         (SampleFormat::Float, 32) => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
         _ => {
@@ -526,6 +789,14 @@ fn read_wav_f32(
             .into());
         }
     };
+    if !interleaved.len().is_multiple_of(expected_channels) {
+        return Err(format!(
+            "WAV sample count {} is not divisible by channel count {}",
+            interleaved.len(),
+            expected_channels,
+        )
+        .into());
+    }
     let samples_per_channel = interleaved.len() / expected_channels;
     let mut audio = Array3::<f32>::zeros((1, expected_channels, samples_per_channel));
     for (index, sample) in interleaved.into_iter().enumerate() {
@@ -554,8 +825,7 @@ fn write_wav_f32(
     let mut writer = WavWriter::create(path, spec)?;
     for frame in 0..samples {
         for channel in 0..channels {
-            let sample = audio[[0, channel, frame]].clamp(-0.99, 0.99);
-            writer.write_sample((sample * i16::MAX as f32) as i16)?;
+            writer.write_sample(f32_to_s16(audio[[0, channel, frame]]))?;
         }
     }
     writer.finalize()?;
@@ -563,23 +833,83 @@ fn write_wav_f32(
 }
 
 #[cfg(feature = "onnx")]
+fn write_i64le(
+    path: &PathBuf,
+    values: &ndarray::Array3<i64>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<i64>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, &bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "onnx")]
+fn write_array3_f32le(
+    path: &PathBuf,
+    values: &ndarray::Array3<f32>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, &bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "onnx")]
+fn write_f32le(
+    path: &PathBuf,
+    values: &ndarray::Array2<f32>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, &bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "onnx")]
+fn write_u32le(path: &PathBuf, values: &[u32]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fs::write(path, &bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(feature = "onnx")]
+fn evidence_file_name(path: &std::path::Path) -> Result<&str, Box<dyn std::error::Error>> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "evidence filename is not valid UTF-8".into())
+}
+
+#[cfg(feature = "onnx")]
 fn encode_audio_segments(
     codec: &mut OnnxFrameCodec,
     audio: &Array3<f32>,
     batch_size: usize,
-) -> Result<(Vec<Array3<i64>>, Vec<Array2<f32>>), Box<dyn std::error::Error>> {
+) -> Result<EncodedSegments, Box<dyn std::error::Error>> {
     let meta = codec.metadata().clone();
     let total_samples = audio.shape()[2];
     let mut codes = Vec::new();
     let mut scales = Vec::new();
     let segment_starts = segment_starts(total_samples, meta.segment_stride);
+    let context = fixed_context_samples(meta.segment_samples, meta.segment_stride)?.unwrap_or(0);
     for chunk in segment_starts.chunks(batch_size) {
         let mut batch = Array3::<f32>::zeros((chunk.len(), meta.channels, meta.segment_samples));
         for (batch_index, offset) in chunk.iter().copied().enumerate() {
-            let copy_len = (total_samples - offset).min(meta.segment_samples);
             for channel in 0..meta.channels {
-                for t in 0..copy_len {
-                    batch[[batch_index, channel, t]] = audio[[0, channel, offset + t]];
+                for model_index in 0..meta.segment_samples {
+                    let source_index = offset as isize - context as isize + model_index as isize;
+                    if source_index >= 0 && (source_index as usize) < total_samples {
+                        batch[[batch_index, channel, model_index]] =
+                            audio[[0, channel, source_index as usize]];
+                    }
                 }
             }
         }
@@ -610,6 +940,7 @@ fn decode_audio_segments(
     batch_size: usize,
 ) -> Result<Array3<f32>, Box<dyn std::error::Error>> {
     let meta = codec.metadata().clone();
+    let context = fixed_context_samples(meta.segment_samples, meta.segment_stride)?;
     let mut frames = Vec::with_capacity(codes.len());
     for (code_chunk, scale_chunk) in codes.chunks(batch_size).zip(scales.chunks(batch_size)) {
         let frame_length = code_chunk
@@ -645,6 +976,50 @@ fn decode_audio_segments(
             frames.push(frame);
         }
     }
+
+    if let Some(context) = context {
+        let starts = segment_starts(output_length, meta.segment_stride);
+        if frames.len() != starts.len() {
+            return Err(format!(
+                "decoded frame count {} does not match fixed segment count {}",
+                frames.len(),
+                starts.len()
+            )
+            .into());
+        }
+        let mut output = Array3::<f32>::zeros((1, meta.channels, output_length));
+        for (frame, offset) in frames.iter().zip(starts) {
+            let owned_length = (output_length - offset).min(meta.segment_stride);
+            let source_end = context
+                .checked_add(owned_length)
+                .ok_or("fixed-context source range overflow")?;
+            if frame.shape()[2] < source_end {
+                return Err(format!(
+                    "decoded fixed frame has {} samples; {} are required",
+                    frame.shape()[2],
+                    source_end
+                )
+                .into());
+            }
+            for channel in 0..meta.channels {
+                for index in 0..owned_length {
+                    output[[0, channel, offset + index]] = frame[[0, channel, context + index]];
+                }
+            }
+        }
+        let output_slice = output
+            .as_slice_mut()
+            .ok_or("fixed-context output is not contiguous")?;
+        repair_cubic_hermite_seams_planar(
+            output_slice,
+            meta.channels,
+            output_length,
+            meta.segment_stride,
+            FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
+        )?;
+        return Ok(output);
+    }
+
     let reconstructed = linear_overlap_add(&frames, meta.segment_stride);
     let mut trimmed = Array3::<f32>::zeros((1, meta.channels, output_length));
     for channel in 0..meta.channels {
