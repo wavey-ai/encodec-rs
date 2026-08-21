@@ -22,7 +22,7 @@ pub mod pcm;
 pub mod portable_lm;
 #[cfg(feature = "ecdc")]
 pub mod quantized_lm;
-#[cfg(feature = "ecdc")]
+#[cfg(feature = "seam")]
 pub mod seam;
 #[cfg(feature = "ecdc")]
 pub mod stable_hash;

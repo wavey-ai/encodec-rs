@@ -28,9 +28,11 @@ ecdc = [
   "dep:serde_json",
   "dep:sha2",
 ]
+seam = ["dep:anyhow"]
 onnx = ["ecdc", "dep:gpu-worker-ort", "dep:hound"]
 wasm = [
   "ecdc",
+  "seam",
   "dep:console_error_panic_hook",
   "dep:serde-wasm-bindgen",
   "dep:wasm-bindgen",

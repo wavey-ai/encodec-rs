@@ -16,7 +16,7 @@ use crate::format::{
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
-use crate::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
+use crate::seam::triangle_overlap_add_planar_frames;
 use crate::stable_hash::stable_hash_hex;
 use serde::Serialize;
 use std::io::Cursor;
@@ -81,6 +81,28 @@ pub fn ecdc_metadata(payload: &[u8]) -> Result<JsValue, JsValue> {
     let metadata: EcdcMetadata =
         read_ecdc_header(&mut Cursor::new(payload)).map_err(to_js_error)?;
     to_js_value(&metadata)
+}
+
+/// Applies triangle-weighted overlap-add to decoded PCM windows.
+///
+/// This function is explicit and PCM-only. Fixed-context ECDC decoding never
+/// invokes it implicitly.
+#[wasm_bindgen(js_name = triangleOverlapAddPlanarFrames)]
+pub fn triangle_overlap_add_planar_frames_js(
+    decoded_windows: &[f32],
+    window_count: usize,
+    channels: usize,
+    window_samples: usize,
+    stride: usize,
+) -> Result<Vec<f32>, JsValue> {
+    triangle_overlap_add_planar_frames(
+        decoded_windows,
+        window_count,
+        channels,
+        window_samples,
+        stride,
+    )
+    .map_err(to_js_error)
 }
 
 #[wasm_bindgen(js_name = ecdcOverlapAdd)]
@@ -589,8 +611,8 @@ fn symbols_from_codes(codes: &[u16], meta: &OnnxFrameBundleMetadata) -> anyhow::
 
 /// Crops each fully-decoded fixed model window (`segment_samples` long, the
 /// same layout the native decoder produces) down to its owned region and
-/// concatenates the results at logical stride positions. The fixed-context
-/// seam repair keeps the output length unchanged.
+/// concatenates the results at logical stride positions. The output contains
+/// exact cropped PCM. Callers can apply an optional seam repair after assembly.
 fn fixed_context_crop_concat(
     meta: &OnnxFrameBundleMetadata,
     audio_length: usize,
@@ -637,13 +659,6 @@ fn fixed_context_crop_concat(
                 .copy_from_slice(&decoded_frames[src_base..src_base + owned_len]);
         }
     }
-    repair_cubic_hermite_seams_planar(
-        &mut output,
-        channels,
-        audio_length,
-        stride,
-        FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
-    )?;
     Ok(output)
 }
 
@@ -981,7 +996,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_context_crop_concat_repairs_seams_and_returns_owned_audio() {
+    fn fixed_context_crop_concat_returns_untouched_owned_audio() {
         let meta: OnnxFrameBundleMetadata =
             serde_json::from_str(&fixed_block_bundle_json()).unwrap();
         let stride = meta.segment_stride;
@@ -1010,12 +1025,11 @@ mod tests {
 
         // First owned sample of chunk 0 comes from model index `context`.
         assert_eq!(output[0], 480.0);
-        // Samples outside the 24-sample repair remain exact crop results.
+        // Every output sample is an exact crop result.
         assert_eq!(output[stride - 13], (context + stride - 13) as f32);
         assert_eq!(output[stride + 12], (1_000_000 + context + 12) as f32);
-        // Twelve samples on each side of the join use the Hermite repair.
-        assert_ne!(output[stride - 1], (context + stride - 1) as f32);
-        assert_ne!(output[stride], (1_000_000 + context) as f32);
+        assert_eq!(output[stride - 1], (context + stride - 1) as f32);
+        assert_eq!(output[stride], (1_000_000 + context) as f32);
         // The final partial chunk contributes only its true owned length.
         assert_eq!(output[2 * stride + 12], (2_000_000 + context + 12) as f32);
         assert_eq!(output[audio_length - 1], (2_000_000 + 480 + 1_999) as f32);

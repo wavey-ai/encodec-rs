@@ -21,7 +21,6 @@ pub use crate::format::{
     DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
 use crate::metadata::OnnxFrameBundleMetadata;
-use crate::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
 
 pub trait FrameCodec {
     fn metadata(&self) -> &OnnxFrameBundleMetadata;
@@ -71,6 +70,15 @@ impl EcdcMetadata {
 pub struct DecodedEcdcAudio {
     pub metadata: EcdcMetadata,
     pub audio: Array3<f32>,
+}
+
+/// Describes the complete decoded model windows in one ECDC payload.
+#[derive(Debug, Clone)]
+pub struct DecodedEcdcWindowInfo {
+    pub metadata: EcdcMetadata,
+    pub chunk_layout: EcdcChunkLayout,
+    pub context_samples: Option<usize>,
+    pub window_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -377,6 +385,22 @@ pub fn decode_ecdc(
     decode_ecdc_impl(codec, lm_codec, payload)
 }
 
+/// Decodes complete model windows without cropping their context samples.
+///
+/// The callback receives the window index, logical owned offset, owned sample
+/// count, and decoded `[1, channel, sample]` window.
+pub fn decode_ecdc_model_windows<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    on_window: F,
+) -> Result<DecodedEcdcWindowInfo>
+where
+    F: FnMut(&DecodedEcdcWindowInfo, usize, usize, usize, Array3<f32>) -> Result<()>,
+{
+    decode_ecdc_model_windows_impl(codec, lm_codec, payload, on_window)
+}
+
 fn collect_ecdc_bytes<F>(encode: F) -> Result<Vec<u8>>
 where
     F: FnOnce(&mut dyn FnMut(&[u8]) -> Result<()>) -> Result<()>,
@@ -558,6 +582,57 @@ fn decode_ecdc_impl(
     lm_codec: &mut dyn LmCodec,
     payload: &[u8],
 ) -> Result<DecodedEcdcAudio> {
+    let channels = codec.metadata().channels;
+    let mut fixed_audio = None;
+    let mut windows = Vec::new();
+    let info = decode_ecdc_model_windows_impl(
+        codec,
+        lm_codec,
+        payload,
+        |info, _window_index, offset, owned_samples, window| {
+            if let Some(context) = info.context_samples {
+                let output = fixed_audio.get_or_insert_with(|| {
+                    Array3::<f32>::zeros((1, channels, info.metadata.audio_length))
+                });
+                copy_owned_segment_into(&window, context, owned_samples, output, offset)?;
+            } else {
+                windows.push(window);
+            }
+            Ok(())
+        },
+    )?;
+
+    let audio_length = info.metadata.audio_length;
+    let stride = info.chunk_layout.stride;
+    let audio = if info.context_samples.is_some() {
+        fixed_audio.ok_or_else(|| anyhow::anyhow!("fixed-context payload has no model windows"))?
+    } else {
+        let reconstructed = if windows.len() <= 1 {
+            windows
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Array3::<f32>::zeros((1, channels, 0)))
+        } else {
+            linear_overlap_add(&windows, stride)
+        };
+        trim_audio_to_length(reconstructed, channels, audio_length)?
+    };
+
+    Ok(DecodedEcdcAudio {
+        metadata: info.metadata,
+        audio,
+    })
+}
+
+fn decode_ecdc_model_windows_impl<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    mut on_window: F,
+) -> Result<DecodedEcdcWindowInfo>
+where
+    F: FnMut(&DecodedEcdcWindowInfo, usize, usize, usize, Array3<f32>) -> Result<()>,
+{
     let mut reader = Cursor::new(payload);
     let metadata: EcdcMetadata = read_ecdc_header(&mut reader)?;
     let bundle_meta = codec.metadata().clone();
@@ -601,28 +676,27 @@ fn decode_ecdc_impl(
             starts.len()
         );
     }
-    let mut fixed_audio =
-        context.map(|_| Array3::<f32>::zeros((1, bundle_meta.channels, metadata.audio_length)));
-    let mut frames = Vec::with_capacity(if context.is_none() {
-        raw_chunks.len()
-    } else {
-        0
-    });
-    for (offset, chunk) in starts.into_iter().zip(raw_chunks) {
-        let owned_len = (metadata.audio_length - offset).min(chunk_layout.stride);
+    let info = DecodedEcdcWindowInfo {
+        metadata,
+        chunk_layout,
+        context_samples: context,
+        window_count: raw_chunks.len(),
+    };
+    for (window_index, (offset, chunk)) in starts.into_iter().zip(raw_chunks).enumerate() {
+        let owned_len = (info.metadata.audio_length - offset).min(info.chunk_layout.stride);
         let decode_len = if context.is_some() {
-            chunk_layout.samples
+            info.chunk_layout.samples
         } else {
             owned_len
         };
         let frame_length = if context.is_some() {
-            metadata
+            info.metadata
                 .lm_frame_length
                 .filter(|value| *value > 0)
                 .unwrap_or(bundle_meta.frame_length)
         } else {
             ecdc_lm_frame_length(
-                &metadata,
+                &info.metadata,
                 owned_len,
                 bundle_meta.segment_samples,
                 bundle_meta.frame_length,
@@ -632,37 +706,14 @@ fn decode_ecdc_impl(
             codec,
             lm_codec,
             &bundle_meta,
-            &metadata,
+            &info.metadata,
             &chunk,
             decode_len,
             frame_length,
         )?;
-        if let Some(context) = context {
-            let output = fixed_audio
-                .as_mut()
-                .expect("fixed-context output must be initialized");
-            copy_owned_segment_into(&frame, context, owned_len, output, offset)?;
-        } else {
-            frames.push(frame);
-        }
+        on_window(&info, window_index, offset, owned_len, frame)?;
     }
-
-    let audio = if let Some(mut output) = fixed_audio {
-        repair_owned_output(&mut output, chunk_layout.stride)?;
-        output
-    } else {
-        let reconstructed = if frames.len() <= 1 {
-            frames
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| Array3::<f32>::zeros((1, bundle_meta.channels, 0)))
-        } else {
-            linear_overlap_add(&frames, chunk_layout.stride)
-        };
-        trim_audio_to_length(reconstructed, bundle_meta.channels, metadata.audio_length)?
-    };
-
-    Ok(DecodedEcdcAudio { metadata, audio })
+    Ok(info)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1164,22 +1215,6 @@ fn copy_owned_segment_into(
     Ok(())
 }
 
-fn repair_owned_output(output: &mut Array3<f32>, stride: usize) -> Result<()> {
-    let channels = output.shape()[1];
-    let audio_length = output.shape()[2];
-    let planar = output
-        .as_slice_mut()
-        .ok_or_else(|| anyhow::anyhow!("decoded audio is not contiguous"))?;
-    repair_cubic_hermite_seams_planar(
-        planar,
-        channels,
-        audio_length,
-        stride,
-        FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
-    )?;
-    Ok(())
-}
-
 fn trim_audio_to_length(
     reconstructed: Array3<f32>,
     channels: usize,
@@ -1578,19 +1613,13 @@ mod tests {
             (2_000_000 + context + 1_999) as f32
         );
 
-        let mut repaired = concatenated;
-        repair_owned_output(&mut repaired, stride).unwrap();
-        assert_eq!(repaired.shape(), &[1, 1, audio_length]);
+        // Decode reconstruction returns the exact cropped chunks. A caller can
+        // opt into `encodec_rs::seam` after it receives adjacent chunks.
         assert_eq!(
-            repaired[[0, 0, stride - 13]],
-            (context + stride - 13) as f32
+            concatenated[[0, 0, stride - 1]],
+            (context + stride - 1) as f32
         );
-        assert_eq!(
-            repaired[[0, 0, stride + 12]],
-            (1_000_000 + context + 12) as f32
-        );
-        assert_ne!(repaired[[0, 0, stride - 1]], (context + stride - 1) as f32);
-        assert_ne!(repaired[[0, 0, stride]], (1_000_000 + context) as f32);
+        assert_eq!(concatenated[[0, 0, stride]], (1_000_000 + context) as f32);
     }
 
     #[test]

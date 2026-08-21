@@ -23,7 +23,6 @@ use encodec_rs::onnx::{CoreMlComputeUnits, ExecutionTarget, OnnxFrameCodec, Onnx
 #[cfg(feature = "onnx")]
 use encodec_rs::pcm::{f32_to_s16, s16_to_f32, s24_to_f32, s32_to_f32};
 #[cfg(feature = "onnx")]
-use encodec_rs::seam::{repair_cubic_hermite_seams_planar, FIXED_CONTEXT_SEAM_REPAIR_SAMPLES};
 #[cfg(feature = "onnx")]
 use encodec_rs::stable_hash::stable_hash_hex;
 #[cfg(feature = "onnx")]
@@ -1007,16 +1006,6 @@ fn decode_audio_segments(
                 }
             }
         }
-        let output_slice = output
-            .as_slice_mut()
-            .ok_or("fixed-context output is not contiguous")?;
-        repair_cubic_hermite_seams_planar(
-            output_slice,
-            meta.channels,
-            output_length,
-            meta.segment_stride,
-            FIXED_CONTEXT_SEAM_REPAIR_SAMPLES,
-        )?;
         return Ok(output);
     }
 

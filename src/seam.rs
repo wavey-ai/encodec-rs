@@ -1,67 +1,95 @@
 use anyhow::{bail, Result};
 
-/// Total samples replaced around each fixed-context chunk boundary.
-pub const FIXED_CONTEXT_SEAM_REPAIR_SAMPLES: usize = 24;
-
-/// Repairs fixed-context chunk boundaries in planar PCM without changing its length.
-pub fn repair_cubic_hermite_seams_planar(
-    audio: &mut [f32],
+/// Applies triangle-weighted overlap-add to decoded PCM windows.
+///
+/// `decoded_windows` uses `[window][channel][sample]` storage. The returned
+/// buffer uses `[channel][sample]` planar storage. Each window receives a
+/// triangle weight. The function accumulates overlapping samples and divides
+/// them by their total weight.
+pub fn triangle_overlap_add_planar_frames(
+    decoded_windows: &[f32],
+    window_count: usize,
     channels: usize,
-    frames: usize,
-    seam_stride: usize,
-    repair_samples: usize,
-) -> Result<()> {
-    if channels == 0 {
-        bail!("seam repair requires at least one channel");
+    window_samples: usize,
+    stride: usize,
+) -> Result<Vec<f32>> {
+    if window_count == 0 {
+        bail!("overlap-add requires at least one window");
     }
-    if audio.len() != channels.saturating_mul(frames) {
+    if channels == 0 {
+        bail!("overlap-add requires at least one channel");
+    }
+    if window_samples == 0 {
+        bail!("overlap-add window length must be positive");
+    }
+    if stride == 0 || stride > window_samples {
         bail!(
-            "planar audio length {} does not match {} channels and {} frames",
-            audio.len(),
-            channels,
-            frames,
+            "overlap-add stride {} must be in 1..={}",
+            stride,
+            window_samples,
         );
     }
-    if seam_stride == 0 {
-        bail!("seam repair stride must be positive");
-    }
-    if repair_samples == 0 || !repair_samples.is_multiple_of(2) {
-        bail!("seam repair sample count must be a positive even number");
-    }
-    if frames < 3 {
-        return Ok(());
+
+    let window_values = channels
+        .checked_mul(window_samples)
+        .ok_or_else(|| anyhow::anyhow!("overlap-add window size overflows usize"))?;
+    let expected_values = window_count
+        .checked_mul(window_values)
+        .ok_or_else(|| anyhow::anyhow!("overlap-add input size overflows usize"))?;
+    if decoded_windows.len() != expected_values {
+        bail!(
+            "overlap-add input length {} does not match {} windows, {} channels, and {} samples",
+            decoded_windows.len(),
+            window_count,
+            channels,
+            window_samples,
+        );
     }
 
-    let each_side = repair_samples / 2;
-    let mut seam = seam_stride;
-    while seam < frames {
-        let start = seam.saturating_sub(each_side).max(1);
-        let end = seam.saturating_add(each_side).min(frames - 1);
-        let span = end.saturating_sub(start);
-        if span > 0 {
-            for channel in 0..channels {
-                let base = channel * frames;
-                let y0 = audio[base + start - 1] as f64;
-                let y1 = audio[base + end] as f64;
-                let m0 = audio[base + start] as f64 - y0;
-                let m1 = y1 - audio[base + end - 1] as f64;
-                for index in 0..span {
-                    let t = (index + 1) as f64 / (span + 1) as f64;
-                    let t2 = t * t;
-                    let t3 = t2 * t;
-                    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-                    let h10 = t3 - 2.0 * t2 + t;
-                    let h01 = -2.0 * t3 + 3.0 * t2;
-                    let h11 = t3 - t2;
-                    audio[base + start + index] =
-                        (h00 * y0 + h10 * span as f64 * m0 + h01 * y1 + h11 * span as f64 * m1)
-                            as f32;
-                }
+    let total_samples = stride
+        .checked_mul(window_count - 1)
+        .and_then(|value| value.checked_add(window_samples))
+        .ok_or_else(|| anyhow::anyhow!("overlap-add output size overflows usize"))?;
+    let output_values = channels
+        .checked_mul(total_samples)
+        .ok_or_else(|| anyhow::anyhow!("overlap-add planar output size overflows usize"))?;
+
+    let denominator = (window_samples + 1) as f32;
+    let window_weights: Vec<f32> = (0..window_samples)
+        .map(|sample| {
+            let position = (sample + 1) as f32 / denominator;
+            0.5_f32 - (position - 0.5_f32).abs()
+        })
+        .collect();
+
+    let mut total_weight = vec![0.0_f32; total_samples];
+    let mut output = vec![0.0_f32; output_values];
+    for window in 0..window_count {
+        let offset = window * stride;
+        let input_window_base = window * window_values;
+        for sample in 0..window_samples {
+            total_weight[offset + sample] += window_weights[sample];
+        }
+        for channel in 0..channels {
+            let input_base = input_window_base + channel * window_samples;
+            let output_base = channel * total_samples + offset;
+            for sample in 0..window_samples {
+                output[output_base + sample] +=
+                    window_weights[sample] * decoded_windows[input_base + sample];
             }
         }
-        seam = seam.saturating_add(seam_stride);
     }
-    Ok(())
+
+    if total_weight.iter().any(|weight| *weight <= 0.0) {
+        bail!("overlap-add produced an uncovered output sample");
+    }
+    for channel in 0..channels {
+        let output_base = channel * total_samples;
+        for sample in 0..total_samples {
+            output[output_base + sample] /= total_weight[sample];
+        }
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -69,40 +97,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repair_is_deterministic_and_preserves_length() {
-        let mut first = vec![0.0_f32; 80];
-        first[40..].fill(1.0);
-        let mut second = first.clone();
-
-        repair_cubic_hermite_seams_planar(&mut first, 1, 80, 40, 24).unwrap();
-        repair_cubic_hermite_seams_planar(&mut second, 1, 80, 40, 24).unwrap();
-
-        assert_eq!(first, second);
-        assert_eq!(first.len(), 80);
-        assert_eq!(first[..28], vec![0.0; 28]);
-        assert_eq!(first[52..], vec![1.0; 28]);
-        assert!(first[39] < first[40]);
-    }
-
-    #[test]
-    fn repair_uses_the_same_curve_for_each_channel() {
-        let frames = 80;
-        let mut audio = vec![0.0_f32; frames * 2];
-        audio[40..frames].fill(1.0);
-        audio[frames + 40..].fill(2.0);
-
-        repair_cubic_hermite_seams_planar(&mut audio, 2, frames, 40, 24).unwrap();
-
-        for frame in 28..52 {
-            assert_eq!(audio[frames + frame], audio[frame] * 2.0);
+    fn triangle_overlap_add_matches_expected_weights() {
+        let windows = [1.0_f32, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0];
+        let output = triangle_overlap_add_planar_frames(&windows, 2, 1, 4, 2).unwrap();
+        let expected = [1.0_f32, 2.0, 16.0 / 3.0, 44.0 / 3.0, 30.0, 40.0];
+        assert_eq!(output.len(), expected.len());
+        for (actual, expected) in output.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-6, "{actual} != {expected}");
         }
     }
 
     #[test]
-    fn repair_rejects_invalid_geometry() {
-        assert!(repair_cubic_hermite_seams_planar(&mut [0.0; 4], 0, 4, 2, 24).is_err());
-        assert!(repair_cubic_hermite_seams_planar(&mut [0.0; 4], 1, 5, 2, 24).is_err());
-        assert!(repair_cubic_hermite_seams_planar(&mut [0.0; 4], 1, 4, 0, 24).is_err());
-        assert!(repair_cubic_hermite_seams_planar(&mut [0.0; 4], 1, 4, 2, 23).is_err());
+    fn triangle_overlap_add_preserves_planar_channel_layout() {
+        let windows = [
+            1.0_f32, 2.0, 3.0, 4.0, // window 0, channel 0
+            10.0, 20.0, 30.0, 40.0, // window 0, channel 1
+            5.0, 6.0, 7.0, 8.0, // window 1, channel 0
+            50.0, 60.0, 70.0, 80.0, // window 1, channel 1
+        ];
+        let output = triangle_overlap_add_planar_frames(&windows, 2, 2, 4, 2).unwrap();
+        assert_eq!(output.len(), 12);
+        for index in 0..6 {
+            assert!((output[6 + index] - output[index] * 10.0).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn triangle_overlap_add_rejects_invalid_geometry() {
+        assert!(triangle_overlap_add_planar_frames(&[], 0, 1, 4, 2).is_err());
+        assert!(triangle_overlap_add_planar_frames(&[0.0; 4], 1, 0, 4, 2).is_err());
+        assert!(triangle_overlap_add_planar_frames(&[0.0; 4], 1, 1, 4, 5).is_err());
+        assert!(triangle_overlap_add_planar_frames(&[0.0; 3], 1, 1, 4, 2).is_err());
     }
 }

@@ -67,11 +67,13 @@ The fixed browser encoder processes one owned chunk at a time.
 
 The final owned region can be short. Its model input and LM sequence keep the fixed graph length.
 
-The decoder reverses these steps. It crops each guarded result to its owned region before concatenation.
+The encoder stores all 203 latent steps for each 64,960-sample model window.
 
-The current decoder changes 24 samples at each join with `cubic-hermite-v1` repair.
+`decode_ecdc` crops each decoded window to its owned region. It returns the concatenated PCM without seam changes.
 
-This repair covers 12 samples before the join and 12 samples after the join.
+`decode_ecdc_model_windows` gives callers each complete decoded window. The window includes both 480-sample guards.
+
+The optional `seam` API provides `triangle_overlap_add_planar_frames`. A caller can overlap adjacent windows by 960 samples before the final crop.
 
 ## State, sessions, and batches
 
@@ -115,8 +117,8 @@ The word `frame` can mean several units. This README uses `neural segment` for M
 |---|---|---|
 | Long-file unit | 64,000 owned samples | 48,000-sample neural segment |
 | Stride | 64,000 samples | 47,520 samples |
-| Source context | 480 samples on each side | 480-sample adjacent overlap |
-| Reconstruction | Crop, concatenate, then repair | Triangle overlap-add |
+| Source context | 480 guard samples on each side for model inference | 480-sample adjacent overlap |
+| Reconstruction | Crop guards and concatenate untouched owned PCM | Triangle overlap-add |
 | Entropy reset | Each owned chunk | Each neural segment |
 | Entropy arithmetic | Deterministic q8 integer path | Floating-point PyTorch LM path |
 | Segment framing | Length and CRC32 | Inferred from expected symbols |
@@ -340,17 +342,19 @@ This comparison measures complete implementations, not Python against Rust or on
 
 The seamless PCM24 master is the reference for every result.
 
+The two `encodec-rs` rows retain the completed Hermite ablation. One applies the retired experiment, and one leaves owned PCM untouched.
+
 All decoded candidates matched the master length and had zero measured sample lag.
 
 Higher SNR and SI-SDR are better. Lower log-spectral distance and spectral convergence are better.
 
 | Candidate | SNR | SI-SDR | Mean segment SNR | Log-spectral distance | Spectral convergence | Loudness delta |
 |---|---:|---:|---:|---:|---:|---:|
-| `encodec-rs`, repaired | 6.579 dB | 5.706 dB | 7.011 dB | 12.460 dB | 0.27915 | -0.408 LU |
-| `encodec-rs`, before repair | 6.594 dB | 5.723 dB | 7.015 dB | 12.524 dB | 0.27869 | -0.410 LU |
+| `encodec-rs` + Hermite experiment | 6.579 dB | 5.706 dB | 7.011 dB | 12.460 dB | 0.27915 | -0.408 LU |
+| `encodec-rs`, untouched owned PCM | 6.594 dB | 5.723 dB | 7.015 dB | 12.524 dB | 0.27869 | -0.410 LU |
 | Official Meta | 6.600 dB | 5.719 dB | 7.017 dB | 12.596 dB | 0.27893 | -0.434 LU |
 
-Meta SNR exceeded repaired `encodec-rs` by 0.021 dB.
+Meta SNR exceeded Hermite-repaired `encodec-rs` by 0.021 dB.
 
 Repaired `encodec-rs` log-spectral distance was 0.136 dB lower than Meta.
 
@@ -397,13 +401,13 @@ Two nearby nonjoin windows provide an equal-duration control error.
 
 | Reconstruction | Joins | Median excess | P90 excess | Worst excess | Median seam SNR | P10 seam SNR | Median step error |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `encodec-rs`, repaired | 170 | 0.587 dB | 3.929 dB | 5.996 dB | 5.169 dB | 0.817 dB | 0.02957 |
-| `encodec-rs`, before repair | 170 | 0.476 dB | 3.011 dB | 5.082 dB | 5.245 dB | 1.581 dB | 0.08958 |
+| `encodec-rs` + Hermite experiment | 170 | 0.587 dB | 3.929 dB | 5.996 dB | 5.169 dB | 0.817 dB | 0.02957 |
+| `encodec-rs`, untouched owned PCM | 170 | 0.476 dB | 3.011 dB | 5.082 dB | 5.245 dB | 1.581 dB | 0.08958 |
 | Official Meta overlap-add | 230 | 0.019 dB | 2.099 dB | 5.792 dB | 6.118 dB | 2.791 dB | 0.02699 |
 
 Meta's 10 ms overlap-add produced the best join distribution on this file.
 
-The current cubic repair reduced median step error, but it did not improve master-reference fidelity.
+The optional cubic repair reduced median step error, but it did not improve master-reference fidelity.
 
 The repair changed 8,160 sample values, or 0.0373% of the decoded stereo values.
 
@@ -427,11 +431,11 @@ The final figure uses the same scales for Meta's worst measured overlap-add join
 
 ![Waveforms and spectrograms for the worst Meta overlap-add join](docs/benchmarks/encodec-full-file-20260821/meta-worst-overlap-join.png)
 
-These results do not support the current cubic repair as the final reconstruction method.
+These results do not support cubic Hermite as a reconstruction method.
 
-A slope-limited and amplitude-clamped Hermite repair is a suitable next experiment.
+The selected repair uses triangle overlap-add across the complete decoded guard windows.
 
-A short crossfade against real overlapping context is another suitable experiment.
+The caller selects this repair. Standard library and CLI decode continue to return untouched owned PCM.
 
 Python is useful for these sweeps and plots. The selected arithmetic can then move unchanged into Rust and WASM.
 
@@ -504,12 +508,19 @@ The `ecdc::FrameCodec` trait separates neural frame execution from the container
 
 The `ecdc::LmCodec` and `portable_lm::PortableLmCodec` paths provide deterministic q8 entropy coding.
 
+Decoding never invokes seam repair. Callers can enable `seam` and request complete decoded model windows:
+
+```toml
+encodec-rs = { git = "https://github.com/wavey-ai/encodec-rs.git", features = ["ecdc", "seam"] }
+```
+
+Pass the complete windows to `triangle_overlap_add_planar_frames`. Crop the outer context after overlap-add.
+
 ## Current limitations
 
 - Hosted bundles support only 48 kHz stereo audio.
 - The CLI does not resample input.
 - The browser encoder processes one fixed window per call.
-- The current cubic seam repair can overshoot and can reduce local fidelity.
 - The Apple M1 WASM decoder is slower than the pinned Meta CPU decoder.
 - Full-file timing results come from one host and one complete run per condition.
 - ViSQOL evidence is outside its documented training bitrate range.

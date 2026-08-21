@@ -20,6 +20,7 @@ const {
   QuantizedLmChunkDecoder,
   QuantizedLmChunkEncoder,
   stableHashHex,
+  triangleOverlapAddPlanarFrames,
 } = encodec;
 
 try {
@@ -215,6 +216,17 @@ async function decodeFixture(options) {
   const overlapStarted = performance.now();
   const decodedAudio = ecdcOverlapAddForMetadata(bundleJson, JSON.stringify(metadata), decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
+  const seamListeningPack = options.seamPackRoot
+    ? writeSeamListeningPack({
+      outputRoot: options.seamPackRoot,
+      hardAudio: decodedAudio,
+      decodedFrames: decodedFrames.audio,
+      frameCount: frames.length,
+      audioLength,
+      meta,
+      inputEcdc: options.inputEcdc,
+    })
+    : null;
   mkdirSync(path.dirname(options.outputWav), { recursive: true });
   writeWav(
     options.outputWav,
@@ -252,6 +264,7 @@ async function decodeFixture(options) {
     inputEcdc: path.relative(repoRoot, options.inputEcdc),
     outputWav: path.relative(repoRoot, options.outputWav),
     preRepairWav,
+    seamListeningPack,
     bundleDir: path.relative(repoRoot, options.bundleDir),
     runtime: "onnxruntime-web wasm",
     lmRuntime: summarizeLmRuntime(lmRuntime),
@@ -341,6 +354,7 @@ function parseArgs(args) {
     floatWav: false,
     report: null,
     preRepairWav: null,
+    seamPackRoot: null,
     referenceWav: null,
     levelToleranceDb: 1,
   };
@@ -371,6 +385,8 @@ function parseArgs(args) {
       out.report = path.resolve(args[++index]);
     } else if (arg === "--pre-repair-wav") {
       out.preRepairWav = path.resolve(args[++index]);
+    } else if (arg === "--seam-pack-root") {
+      out.seamPackRoot = path.resolve(args[++index]);
     } else if (arg === "--reference-wav") {
       out.referenceWav = path.resolve(args[++index]);
     } else if (arg === "--level-tolerance-db") {
@@ -439,6 +455,7 @@ function printUsageAndExit() {
       "  --float-wav       Write IEEE float32 decoded WAV output",
       "  --report <path>   Write the JSON timing report",
       "  --pre-repair-wav <path> Write fixed-context PCM before seam repair",
+      "  --seam-pack-root <dir> Write hard-crop and triangle-overlap float WAVs",
       "  --reference-wav <path> Compare decoded PCM with the source WAV",
       "  --level-tolerance-db <dB> Maximum decoded RMS change per channel",
     ].join("\n"),
@@ -966,6 +983,113 @@ function cropFixedContextWithoutRepair(decodedFrames, audioLength, meta) {
         targetStart,
       );
     }
+  }
+  return output;
+}
+
+function writeSeamListeningPack({
+  outputRoot,
+  hardAudio,
+  decodedFrames,
+  frameCount,
+  audioLength,
+  meta,
+  inputEcdc,
+}) {
+  const context = fixedContextSamples(meta);
+  if (context === null) {
+    throw new Error("--seam-pack-root requires a fixed-context bundle");
+  }
+  const triangleFull = triangleOverlapAddPlanarFrames(
+    decodedFrames,
+    frameCount,
+    meta.channels,
+    meta.segment_samples,
+    meta.segment_stride,
+  );
+  const triangleFullFrames =
+    meta.segment_stride * (frameCount - 1) + meta.segment_samples;
+  const triangleAudio = cropPlanarAudio(
+    triangleFull,
+    meta.channels,
+    triangleFullFrames,
+    context,
+    audioLength,
+  );
+
+  mkdirSync(outputRoot, { recursive: true });
+  const strategies = [
+    {
+      id: "hard-owned-crop",
+      filename: "01-hard-owned-crop.wav",
+      audio: hardAudio,
+      description: "Crop both 480-sample model guards and concatenate owned PCM unchanged.",
+    },
+    {
+      id: "triangle-guard-overlap",
+      filename: "02-triangle-guard-overlap.wav",
+      audio: triangleAudio,
+      description: "Triangle overlap-add over full decoded model windows. Adjacent windows overlap across both 480-sample guards.",
+    },
+  ];
+  for (const strategy of strategies) {
+    writeWav(
+      path.join(outputRoot, strategy.filename),
+      strategy.audio,
+      meta.channels,
+      meta.sample_rate,
+      true,
+    );
+  }
+
+  const manifest = {
+    schema: "wavey.encodec.seam-listening-pack",
+    schemaVersion: 1,
+    sourceEcdc: path.relative(repoRoot, inputEcdc),
+    sampleRate: meta.sample_rate,
+    channels: meta.channels,
+    audioSamples: audioLength,
+    modelWindows: frameCount,
+    modelWindowSamples: meta.segment_samples,
+    ownedStrideSamples: meta.segment_stride,
+    modelGuardSamplesPerSide: context,
+    decodedWindowOverlapSamples: meta.segment_samples - meta.segment_stride,
+    upstreamReferenceCommit: "0e2d0aed29362c8e8f52494baf3e6f99056b214f",
+    strategies: strategies.map(({ id, filename, description }) => ({
+      id,
+      wav: filename,
+      description,
+    })),
+  };
+  writeFileSync(
+    path.join(outputRoot, "manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return {
+    root: path.relative(repoRoot, outputRoot),
+    manifest: path.relative(repoRoot, path.join(outputRoot, "manifest.json")),
+    strategies: manifest.strategies,
+  };
+}
+
+function cropPlanarAudio(audio, channels, frames, start, length) {
+  if (audio.length !== channels * frames) {
+    throw new Error(
+      `planar buffer has ${audio.length} values; expected ${channels * frames}`,
+    );
+  }
+  if (start < 0 || length < 0 || start + length > frames) {
+    throw new Error(
+      `invalid planar crop start=${start} length=${length} for ${frames} frames`,
+    );
+  }
+  const output = new Float32Array(channels * length);
+  for (let channel = 0; channel < channels; channel += 1) {
+    const sourceStart = channel * frames + start;
+    output.set(
+      audio.subarray(sourceStart, sourceStart + length),
+      channel * length,
+    );
   }
   return output;
 }
