@@ -6,6 +6,7 @@ OUT="${OUT:-${ROOT}/dist/wasm-fixed-bundles}"
 BINDGEN_TARGET="${BINDGEN_TARGET:-web}"
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-nightly}"
 RUST_WASM_TARGET="${RUST_WASM_TARGET:-wasm32-unknown-unknown}"
+RUST_WASM_TARGET_FEATURES="${RUST_WASM_TARGET_FEATURES:-+simd128}"
 BUNDLES="${BUNDLES:-encodec_48khz_6kbps_1333ms encodec_48khz_6kbps_1800ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_1800ms}"
 
 cd "$ROOT"
@@ -30,7 +31,8 @@ fi
 rm -rf "$OUT" "$ROOT/pkg"
 mkdir -p "$OUT/pkg" "$OUT/bundles" "$ROOT/pkg"
 
-cargo +"$RUST_TOOLCHAIN" build \
+WASM_RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=${RUST_WASM_TARGET_FEATURES}"
+RUSTFLAGS="$WASM_RUSTFLAGS" cargo +"$RUST_TOOLCHAIN" build \
   --lib \
   --features wasm,ecdc \
   --target "$RUST_WASM_TARGET" \

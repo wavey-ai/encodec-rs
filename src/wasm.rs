@@ -1,4 +1,4 @@
-use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
+use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder, CdfScratch};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
@@ -297,6 +297,7 @@ pub struct QuantizedLmChunkEncoder {
     input_symbols: Vec<usize>,
     encoder: ArithmeticEncoder,
     probability_scratch: ProbabilityScratch,
+    cdf_scratch: CdfScratch,
     prefix: Vec<u8>,
     pushed_steps: usize,
 }
@@ -328,6 +329,7 @@ impl QuantizedLmChunkEncoder {
             lm_window_frame_length,
             encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS).map_err(to_js_error)?,
             probability_scratch: ProbabilityScratch::default(),
+            cdf_scratch: CdfScratch::default(),
             prefix,
             pushed_steps: 0,
         })
@@ -389,13 +391,14 @@ impl QuantizedLmChunkEncoder {
             },
             &mut self.probability_scratch,
         )?;
-        self.encoder.push_pdf_symbols(
+        self.encoder.push_pdf_symbols_with_scratch(
             pdf,
             self.meta.lm_cardinality(),
             self.meta.num_codebooks,
             symbols,
             DEFAULT_FP_SCALE,
             DEFAULT_MIN_RANGE,
+            &mut self.cdf_scratch,
         )?;
         for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
             *dst = symbol + 1;
@@ -420,6 +423,7 @@ pub struct QuantizedLmChunkDecoder {
     input_symbols: Vec<usize>,
     decoder: ArithmeticDecoder,
     probability_scratch: ProbabilityScratch,
+    cdf_scratch: CdfScratch,
     scale: f32,
     pulled_steps: usize,
 }
@@ -457,6 +461,7 @@ impl QuantizedLmChunkDecoder {
             decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
                 .map_err(to_js_error)?,
             probability_scratch: ProbabilityScratch::default(),
+            cdf_scratch: CdfScratch::default(),
             scale,
             pulled_steps: 0,
         })
@@ -501,12 +506,13 @@ impl QuantizedLmChunkDecoder {
         .map_err(to_js_error)?;
         let symbols = self
             .decoder
-            .pull_symbols(
+            .pull_symbols_with_scratch(
                 pdf,
                 self.meta.lm_cardinality(),
                 self.meta.num_codebooks,
                 DEFAULT_FP_SCALE,
                 DEFAULT_MIN_RANGE,
+                &mut self.cdf_scratch,
             )
             .map_err(to_js_error)?;
         for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {

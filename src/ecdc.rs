@@ -4,7 +4,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use ndarray::{Array2, Array3, Array4};
 
-use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder};
+use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder, CdfScratch};
 use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
@@ -689,6 +689,7 @@ pub(crate) fn encode_lm_chunk_payload(
     let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
     let mut symbols = vec![0_usize; meta.num_codebooks];
     let mut scratch = ProbabilityScratch::default();
+    let mut cdf_scratch = CdfScratch::default();
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     if frame_length > lm_window_frame_length {
         bail!(
@@ -731,13 +732,14 @@ pub(crate) fn encode_lm_chunk_payload(
         }
 
         let arithmetic_started = profile_enabled.then(Instant::now);
-        encoder.push_pdf_symbols(
+        encoder.push_pdf_symbols_with_scratch(
             pdf,
             meta.lm_cardinality(),
             meta.num_codebooks,
             &symbols,
             fp_scale,
             min_range,
+            &mut cdf_scratch,
         )?;
         if let Some(arithmetic_started) = arithmetic_started {
             arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
@@ -896,6 +898,7 @@ fn decode_lm_chunk_codes(
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
     let mut scratch = ProbabilityScratch::default();
+    let mut cdf_scratch = CdfScratch::default();
     let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     if frame_length > lm_window_frame_length {
@@ -930,12 +933,13 @@ fn decode_lm_chunk_codes(
         }
 
         let arithmetic_started = profile_enabled.then(Instant::now);
-        let symbols = decoder.pull_symbols(
+        let symbols = decoder.pull_symbols_with_scratch(
             pdf,
             lm_codec.metadata().lm_cardinality(),
             model_meta.num_codebooks,
             fp_scale,
             min_range,
+            &mut cdf_scratch,
         )?;
         if let Some(arithmetic_started) = arithmetic_started {
             arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;

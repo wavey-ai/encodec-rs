@@ -196,6 +196,61 @@ The default wasm fixed-bundle package ships the `1333ms` and
 The only non-Rust runtime dependency is ONNX Runtime for the neural frame
 encoder/decoder.
 
+### ONNX Session State
+
+The ONNX frame encoder and decoder sessions do not keep codec state between
+`run()` calls. Each call depends only on its input tensors. Applications can
+reuse one session for independent chunks or interleave chunks from different
+tracks.
+
+ONNX Runtime can retain graph optimizations, memory allocations, thread pools,
+and internal caches. This operational state can change performance, but it does
+not change encoded output.
+
+The q8 LM encoder and decoder start with new entropy state for each independent
+chunk. Callers must pass state explicitly when they use a model that exposes
+recurrent state tensors. The fixed frame models in these bundles do not use
+cross-call state.
+
+A single-thread WASM test compared 316 chunks in isolated sessions and one
+randomly interleaved shared session. All 316 interleaved chunk SHA-256 values
+matched their isolated values. This result confirms byte-for-byte deterministic
+output for that test.
+
+### WASM Entropy Performance
+
+The single-thread test uses ONNX Runtime Web WASM and the fixed 12 kbps,
+1333 ms bundle. Track A has 227.863 seconds in 171 chunks. Track B has
+192.936 seconds in 145 chunks.
+
+Higher realtime factors are faster. Lower LM times are faster. The table shows
+one complete run for each stage.
+
+| Stage | A warm realtime | B warm realtime | A median LM | B median LM |
+|---|---:|---:|---:|---:|
+| Scalar baseline | 1.583× | 1.569× | 515.547 ms | 514.621 ms |
+| Exact WASM SIMD | 2.471× | 2.449× | 207.956 ms | 211.098 ms |
+| Exact CDF selection | 2.651× | 2.532× | 186.162 ms | 191.117 ms |
+| Reused CDF storage | 2.548× | 2.516× | 189.152 ms | 190.439 ms |
+| Exact probability cache | 2.652× | 2.628× | 183.708 ms | 184.515 ms |
+
+Each stage matched all 316 scalar baseline chunk hashes. Each randomized
+interleave also matched all 316 isolated chunk hashes. The final stage passes
+the 2× realtime gate for both tracks.
+
+Use these commands to build and measure a stage:
+
+```bash
+scripts/build-entropy-wasm-stage.sh <stage-name>
+node scripts/profile-encodec-wasm-session.mjs \
+  --wasm-root target/performance/entropy-optimization/<stage-name>/wasm \
+  --output target/performance/entropy-optimization/<stage-name>/profile.json \
+  <track-a.wav> <track-b.wav>
+```
+
+Use `scripts/compare-encodec-wasm-profiles.mjs` to compare timings and chunk
+hashes between two reports.
+
 ## Apple Native Backend Boundary
 
 The `.ecdc` layer is now model-runtime agnostic. Build it without ONNX Runtime:

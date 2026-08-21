@@ -1,5 +1,7 @@
 use anyhow::{bail, Result};
 
+const EXACT_EXP_CACHE_SLOTS: usize = 4096;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ProbabilityParameters {
     pub tau: f64,
@@ -27,6 +29,9 @@ pub struct ProbabilityScratch {
     pdf: Vec<f64>,
     quantized: Vec<f64>,
     probs: Vec<f64>,
+    exp_cache_keys: Vec<u64>,
+    exp_cache_values: Vec<f64>,
+    exp_cache_valid: Vec<bool>,
 }
 
 impl ProbabilityScratch {
@@ -34,7 +39,27 @@ impl ProbabilityScratch {
         self.pdf.resize(cardinality * columns, 0.0);
         self.quantized.resize(cardinality, 0.0);
         self.probs.resize(cardinality, 0.0);
+        if self.exp_cache_keys.is_empty() {
+            self.exp_cache_keys.resize(EXACT_EXP_CACHE_SLOTS, 0);
+            self.exp_cache_values.resize(EXACT_EXP_CACHE_SLOTS, 0.0);
+            self.exp_cache_valid.resize(EXACT_EXP_CACHE_SLOTS, false);
+        }
     }
+}
+
+fn exact_cached_exp(value: f64, keys: &mut [u64], values: &mut [f64], valid: &mut [bool]) -> f64 {
+    let key = value.to_bits();
+    let folded = (key as u32) ^ ((key >> 32) as u32);
+    let slot = folded.wrapping_mul(0x9e37_79b1) as usize & (EXACT_EXP_CACHE_SLOTS - 1);
+    if valid[slot] && keys[slot] == key {
+        return values[slot];
+    }
+
+    let result = libm::exp(value);
+    keys[slot] = key;
+    values[slot] = result;
+    valid[slot] = true;
+    result
 }
 
 /// Converts `[cardinality, codebooks, steps]` logits into probability columns.
@@ -42,6 +67,24 @@ impl ProbabilityScratch {
 /// The result uses `[cardinality, steps * codebooks]` row-major storage.
 /// Columns use time-major, codebook-minor order.
 pub fn probability_columns_from_flat_logits<'a>(
+    logits: &[f32],
+    cardinality: usize,
+    codebooks: usize,
+    steps: usize,
+    parameters: ProbabilityParameters,
+    scratch: &'a mut ProbabilityScratch,
+) -> Result<&'a [f64]> {
+    probability_columns_from_flat_logits_impl::<true>(
+        logits,
+        cardinality,
+        codebooks,
+        steps,
+        parameters,
+        scratch,
+    )
+}
+
+fn probability_columns_from_flat_logits_impl<'a, const OPTIMIZED: bool>(
     logits: &[f32],
     cardinality: usize,
     codebooks: usize,
@@ -73,6 +116,9 @@ pub fn probability_columns_from_flat_logits<'a>(
     let pdf = &mut scratch.pdf;
     let quantized = &mut scratch.quantized;
     let probs = &mut scratch.probs;
+    let exp_cache_keys = &mut scratch.exp_cache_keys;
+    let exp_cache_values = &mut scratch.exp_cache_values;
+    let exp_cache_valid = &mut scratch.exp_cache_valid;
     let uniform = 1.0 / cardinality as f64;
     let near_pdf_threshold = 0.25 / parameters.fp_scale as f64;
 
@@ -89,13 +135,26 @@ pub fn probability_columns_from_flat_logits<'a>(
                 min_value = min_value.min(value);
             }
 
+            if OPTIMIZED && (max_value - min_value) <= (2.0 * parameters.logit_step) {
+                let column = step * codebooks + codebook;
+                for bin in 0..cardinality {
+                    pdf[bin * columns + column] = uniform;
+                }
+                continue;
+            }
+
             let mut denominator = 0.0_f64;
             for (probability, quantized_value) in probs
                 .iter_mut()
                 .zip(quantized.iter().copied())
                 .take(cardinality)
             {
-                let value = libm::exp(quantized_value - max_value);
+                let delta = quantized_value - max_value;
+                let value = if OPTIMIZED {
+                    exact_cached_exp(delta, exp_cache_keys, exp_cache_values, exp_cache_valid)
+                } else {
+                    libm::exp(delta)
+                };
                 *probability = value;
                 denominator += value;
             }
@@ -135,6 +194,89 @@ fn quantize_logit(value: f64, step: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_exp_cache_matches_uncached_libm_bits() {
+        let mut keys = vec![0_u64; EXACT_EXP_CACHE_SLOTS];
+        let mut values = vec![0.0_f64; EXACT_EXP_CACHE_SLOTS];
+        let mut valid = vec![false; EXACT_EXP_CACHE_SLOTS];
+        let inputs = [
+            0.0,
+            -0.0,
+            -2.1,
+            -4.2,
+            -42.0,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+
+        for _ in 0..3 {
+            for input in inputs {
+                assert_eq!(
+                    exact_cached_exp(input, &mut keys, &mut values, &mut valid).to_bits(),
+                    libm::exp(input).to_bits(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cached_probability_path_matches_uncached_path_bit_for_bit() {
+        let configurations = [(1_usize, 1_usize, 1_usize), (7, 3, 2), (31, 2, 3)];
+        let parameters = ProbabilityParameters {
+            tau: 1.0,
+            logit_step: 2.1,
+            fp_scale: 1 << 13,
+        };
+        let mut seed = 0xd1b5_4a32_d192_ed03_u64;
+        let mut optimized_scratch = ProbabilityScratch::default();
+        let mut reference_scratch = ProbabilityScratch::default();
+
+        for _ in 0..4 {
+            for (cardinality, codebooks, steps) in configurations {
+                let len = cardinality * codebooks * steps;
+                let mut logits = Vec::with_capacity(len);
+                for index in 0..len {
+                    seed = seed
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    let value = if index % 17 == 0 {
+                        0.0
+                    } else {
+                        ((seed >> 40) as i32 - 8_388_608) as f32 / 262_144.0
+                    };
+                    logits.push(value);
+                }
+
+                let optimized = probability_columns_from_flat_logits_impl::<true>(
+                    &logits,
+                    cardinality,
+                    codebooks,
+                    steps,
+                    parameters,
+                    &mut optimized_scratch,
+                )
+                .unwrap()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+                let reference = probability_columns_from_flat_logits_impl::<false>(
+                    &logits,
+                    cardinality,
+                    codebooks,
+                    steps,
+                    parameters,
+                    &mut reference_scratch,
+                )
+                .unwrap()
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+                assert_eq!(optimized, reference);
+            }
+        }
+    }
 
     #[test]
     fn columns_use_time_major_codebook_minor_order() {

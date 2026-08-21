@@ -500,17 +500,76 @@ fn dot_i8_i16(weights: &[i8], input: &[i16]) -> i64 {
         // checked slice bounds and handles any tail elements with scalar code.
         unsafe { dot_i8_i16_aarch64(weights, input) }
     }
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(all(
+        target_arch = "wasm32",
+        target_feature = "simd128",
+        not(target_arch = "aarch64")
+    ))]
+    {
+        // SAFETY: the helper only performs unaligned vector loads inside the
+        // checked slice bounds and handles any tail elements with scalar code.
+        unsafe { dot_i8_i16_wasm_simd128(weights, input) }
+    }
+    #[cfg(all(
+        not(target_arch = "aarch64"),
+        not(all(target_arch = "wasm32", target_feature = "simd128"))
+    ))]
     {
         dot_i8_i16_scalar(weights, input)
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn dot_i8_i16_scalar(weights: &[i8], input: &[i16]) -> i64 {
     let mut acc = 0_i64;
     for (w, x) in weights.iter().zip(input.iter()) {
         acc += (*w as i64) * (*x as i64);
+    }
+    acc
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn dot_i8_i16_wasm_simd128(weights: &[i8], input: &[i16]) -> i64 {
+    use core::arch::wasm32::{
+        i16x8_extend_low_i8x16, i32x4_add, i32x4_dot_i16x8, i32x4_extract_lane, i32x4_splat,
+        v128_load, v128_load64_zero,
+    };
+
+    const VECTORS_PER_FLUSH: usize = 128;
+
+    let len = weights.len().min(input.len());
+    let mut index = 0_usize;
+    let mut vectors = 0_usize;
+    let mut lanes = i32x4_splat(0);
+    let mut acc = 0_i64;
+    while index + 8 <= len {
+        let packed_weights = v128_load64_zero(weights.as_ptr().add(index).cast::<u64>());
+        let weights_i16 = i16x8_extend_low_i8x16(packed_weights);
+        let input_i16 = v128_load(input.as_ptr().add(index).cast());
+        lanes = i32x4_add(lanes, i32x4_dot_i16x8(weights_i16, input_i16));
+        vectors += 1;
+        index += 8;
+
+        // Each lane contains two products per vector. Flushing after 128
+        // vectors keeps even the i8/i16 extreme bound inside signed i32.
+        if vectors == VECTORS_PER_FLUSH {
+            acc += i32x4_extract_lane::<0>(lanes) as i64;
+            acc += i32x4_extract_lane::<1>(lanes) as i64;
+            acc += i32x4_extract_lane::<2>(lanes) as i64;
+            acc += i32x4_extract_lane::<3>(lanes) as i64;
+            lanes = i32x4_splat(0);
+            vectors = 0;
+        }
+    }
+    acc += i32x4_extract_lane::<0>(lanes) as i64;
+    acc += i32x4_extract_lane::<1>(lanes) as i64;
+    acc += i32x4_extract_lane::<2>(lanes) as i64;
+    acc += i32x4_extract_lane::<3>(lanes) as i64;
+
+    while index < len {
+        acc += (*weights.get_unchecked(index) as i64) * (*input.get_unchecked(index) as i64);
+        index += 1;
     }
     acc
 }
@@ -679,5 +738,36 @@ impl<'a> WeightReader<'a> {
 
     fn remaining(&self) -> usize {
         self.bytes.len().saturating_sub(self.pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optimized_dot_matches_scalar_for_extreme_and_tail_lengths() {
+        for len in [0, 1, 7, 8, 9, 25, 200, 800, 1025] {
+            let weights: Vec<i8> = (0..len)
+                .map(|index| match index % 4 {
+                    0 => i8::MIN,
+                    1 => i8::MAX,
+                    2 => -1,
+                    _ => 1,
+                })
+                .collect();
+            let input: Vec<i16> = (0..len)
+                .map(|index| match index % 4 {
+                    0 => i16::MIN,
+                    1 => i16::MAX,
+                    2 => -17_123,
+                    _ => 19_937,
+                })
+                .collect();
+            assert_eq!(
+                dot_i8_i16(&weights, &input),
+                dot_i8_i16_scalar(&weights, &input)
+            );
+        }
     }
 }
