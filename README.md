@@ -1,769 +1,532 @@
 # encodec-rs
 
-Live browser demo:
-[`https://wavey.ai/code/encodec-rs/browser-smoke/`](https://wavey.ai/code/encodec-rs/browser-smoke/)
+`encodec-rs` provides EnCodec frame execution, deterministic entropy coding, and a chunk-framed `.ecdc` container.
 
-`encodec-rs` is a Rust EnCodec runtime with native and browser `.ecdc`
-encode/decode paths.
+The current scope is 48 kHz stereo audio at 6 kbps or 12 kbps.
 
-Native execution is implemented in Rust on top of ONNX Runtime and has no
-Python runtime dependency. It does not require a Python bridge or external codec
-subprocess. The browser path runs the EnCodec ONNX frame models with
-`onnxruntime-web` and uses Rust wasm for `.ecdc` packaging, parsing,
-overlap-add, and deterministic LM arithmetic coding. It also has no Python
-runtime dependency.
+Native execution uses ONNX Runtime. Browser execution uses ONNX Runtime Web and Rust WASM.
 
-The native path loads EnCodec-compatible ONNX bundles, encodes `48 kHz` stereo
-WAV to `.ecdc`, and decodes `.ecdc` back to WAV. It supports CPU, CUDA, CoreML,
-and TensorRT execution targets. Rust implements LM-assisted entropy coding.
+Neither production path requires Python. Python supports only upstream comparison and quality analysis.
 
-## Browser Support
+Live browser demo: [wavey.ai/code/encodec-rs/browser-smoke](https://wavey.ai/code/encodec-rs/browser-smoke/)
 
-The browser path supports the current q8 LM `.ecdc` bitstream (`acv=2`):
+## Runtime boundary
 
-- encode a full audio file in the browser with `encode_frame.onnx`
-- package q8 LM arithmetic-coded chunks with Rust wasm
-- decode q8 `.ecdc` payloads with `decode_frame.onnx`
-- overlap-add decoded frames in Rust wasm
-- run ONNX frame models through WebGPU, with WASM available for unsupported
-  nodes
+| Function | Native path | Browser path |
+|---|---|---|
+| Neural frame encode and decode | ONNX Runtime | ONNX Runtime Web |
+| Quantized language model | Rust q8 | Rust q8 WASM |
+| Arithmetic coding | Rust | Rust WASM |
+| `.ecdc` framing and CRC | Rust | Rust WASM |
+| Fixed-chunk reconstruction | Rust | Rust WASM |
 
-Build the wasm package:
+The q8 entropy path uses integer operations and bitstream version `acv=2`.
+
+Older raw payloads and floating-point LM payloads are not supported.
+
+## Supported bundles
+
+Download the model bundles before you run ONNX or browser commands:
+
+```bash
+scripts/download-onnx-bundles.sh
+```
+
+The files come from [wavey-ai/encodec-rs-onnx-bundles](https://huggingface.co/wavey-ai/encodec-rs-onnx-bundles).
+
+Each bundle contains these files:
+
+- `bundle.json`
+- `encode_frame.onnx`
+- `decode_frame.onnx`
+- `lm_weights_q8.bin`
+
+The repository supports dynamic 1,000 ms bundles and these fixed browser bundles:
+
+| Fixed bundle | Bitrate | Owned samples | Guarded model samples | LM steps | Codebooks |
+|---|---:|---:|---:|---:|---:|
+| `encodec_48khz_6kbps_1333ms` | 6 kbps | 64,000 | 64,960 | 203 | 4 |
+| `encodec_48khz_12kbps_1333ms` | 12 kbps | 64,000 | 64,960 | 203 | 8 |
+| `encodec_48khz_6kbps_1800ms` | 6 kbps | 86,400 | 87,360 | 273 | 4 |
+| `encodec_48khz_12kbps_1800ms` | 12 kbps | 86,400 | 87,360 | 273 | 8 |
+
+Each fixed model window contains 480 source samples of guard context on each side.
+
+The owned region defines the output timeline. The decoder removes both guards after frame decoding.
+
+## Fixed browser pipeline
+
+The fixed browser encoder processes one owned chunk at a time.
+
+1. Split the 48 kHz stereo source into nonoverlapping owned regions.
+2. Add 480 real source samples on each available side.
+3. Add zeros where file boundaries do not provide guard samples.
+4. Run one guarded window through `encode_frame.onnx`.
+5. Encode all fixed LM steps with the q8 Rust WASM path.
+6. Store the independent entropy payload with its length and CRC32.
+
+The final owned region can be short. Its model input and LM sequence keep the fixed graph length.
+
+The decoder reverses these steps. It crops each guarded result to its owned region before concatenation.
+
+The current decoder changes 24 samples at each join with `cubic-hermite-v1` repair.
+
+This repair covers 12 samples before the join and 12 samples after the join.
+
+## State, sessions, and batches
+
+Codec state is data that changes the next encoded or decoded result.
+
+The provided frame graphs do not keep codec state between ONNX `run()` calls.
+
+Each call depends only on its input tensors. One session can process independent chunks or different tracks in any order.
+
+ONNX Runtime keeps allocations, thread pools, graph optimizations, and caches.
+
+This runtime state affects speed. It does not affect the encoded result in the tested configuration.
+
+The q8 LM and arithmetic coder start with new state for every independent `encodec-rs` chunk.
+
+A randomized test interleaved two complete tracks through one session. All 316 chunk hashes matched their isolated-session hashes.
+
+The WASM encoder API accepts one fixed model window per call. It does not combine encoder windows into a tensor batch.
+
+The fixed decoder benchmark can batch windows. Batch size two was 0.04% slower than batch size one.
+
+Batch sizes eight and 32 exceeded available memory. They have no reported performance result.
+
+Session reuse removes setup cost. It does not make chunks dependent on earlier calls.
+
+## Difference from official Meta EnCodec
+
+Official Meta EnCodec also divides long 48 kHz audio into neural segments.
+
+Its CLI accepts one file, but its model processes 48,000-sample segments with a 47,520-sample stride.
+
+The 480-sample difference creates a 10 ms overlap. Meta combines decoded segments with triangle-weighted overlap-add.
+
+Official Meta creates one arithmetic coder and one LM state for each neural segment.
+
+It does not reset the coder at each code timestep or codebook.
+
+The word `frame` can mean several units. This README uses `neural segment` for Meta's one-second coding unit.
+
+| Property | `encodec-rs` fixed profile | Official Meta 48 kHz profile |
+|---|---|---|
+| Long-file unit | 64,000 owned samples | 48,000-sample neural segment |
+| Stride | 64,000 samples | 47,520 samples |
+| Source context | 480 samples on each side | 480-sample adjacent overlap |
+| Reconstruction | Crop, concatenate, then repair | Triangle overlap-add |
+| Entropy reset | Each owned chunk | Each neural segment |
+| Entropy arithmetic | Deterministic q8 integer path | Floating-point PyTorch LM path |
+| Segment framing | Length and CRC32 | Inferred from expected symbols |
+
+Meta ECDC version 0 does not store an encoded length or CRC for each neural segment.
+
+Its decoder infers each boundary from the expected symbol count.
+
+Floating-point CDF differences can change arithmetic bit consumption across architectures.
+
+One changed boundary can make later segments unreadable because the container has no explicit resynchronization point.
+
+`encodec-rs` contains each failure within one length-framed and CRC-protected chunk.
+
+See the pinned official implementation at commit `0e2d0aed29362c8e8f52494baf3e6f99056b214f`:
+
+- [model segmentation](https://github.com/facebookresearch/encodec/blob/0e2d0aed29362c8e8f52494baf3e6f99056b214f/encodec/model.py)
+- [entropy compression](https://github.com/facebookresearch/encodec/blob/0e2d0aed29362c8e8f52494baf3e6f99056b214f/encodec/compress.py)
+- [binary container](https://github.com/facebookresearch/encodec/blob/0e2d0aed29362c8e8f52494baf3e6f99056b214f/encodec/binary.py)
+- [triangle overlap-add](https://github.com/facebookresearch/encodec/blob/0e2d0aed29362c8e8f52494baf3e6f99056b214f/encodec/utils.py)
+
+## ECDC layout
+
+One `.ecdc` file contains one header and one or more independent chunk payloads:
+
+```text
+4 bytes   magic: "ECDC"
+1 byte    version: 0
+4 bytes   metadata JSON length, big-endian u32
+N bytes   metadata JSON
+
+repeated chunks:
+4 bytes   payload length, big-endian u32
+4 bytes   payload CRC32, big-endian u32
+M bytes   payload
+```
+
+The metadata records the model, audio length, codebook count, LM mode, and q8 weight hash.
+
+Fixed containers record the LM frame length through `fl`.
+
+The selected fixed bundle supplies the guarded sample count and owned stride.
+
+Do not concatenate complete `.ecdc` files. One complete file can already contain many framed chunks.
+
+The current `acv=2` envelope is repository-specific. It is not the proposed Profile 1 container.
+
+## Build and run
+
+### Native
+
+Build the native ONNX CLI:
+
+```bash
+cargo build --release --features onnx
+```
+
+Inspect a bundle:
+
+```bash
+target/release/encodec-rs onnx-inspect \
+  onnx-bundles/encodec_48khz_12kbps
+```
+
+Encode a WAV file:
+
+```bash
+target/release/encodec-rs onnx-encode \
+  onnx-bundles/encodec_48khz_12kbps \
+  input.wav output.ecdc
+```
+
+Decode an ECDC file:
+
+```bash
+target/release/encodec-rs onnx-decode \
+  onnx-bundles/encodec_48khz_12kbps \
+  input.ecdc output.wav
+```
+
+The CLI accepts WAV input. The input must be 48 kHz stereo for the hosted bundles.
+
+The CLI does not resample input.
+
+Native execution supports CPU, CUDA, TensorRT, and CoreML targets.
+
+Run `target/release/encodec-rs --help` for target and batch options.
+
+### Browser WASM
+
+Build the WASM package:
 
 ```bash
 rustup target add wasm32-unknown-unknown
-cargo check --lib --no-default-features --features wasm --target wasm32-unknown-unknown
-cargo install wasm-pack
+cargo check --lib --no-default-features --features wasm \
+  --target wasm32-unknown-unknown
 wasm-pack build --target web --no-default-features --features wasm
 ```
 
-Run the local browser encode/decode/playback page:
+Run the browser test page:
 
 ```bash
 npm install --prefix browser-smoke
 python3 browser-smoke/serve.py
 ```
 
-Then open:
+Open `http://127.0.0.1:8787/browser-smoke/`.
 
-```text
-http://127.0.0.1:8787/browser-smoke/
-```
-
-The scripted WebGPU matrix runner is:
+Run the scripted WebGPU matrix:
 
 ```bash
 node scripts/webgpu-matrix.mjs
 ```
 
-It writes browser WebGPU artifacts under `target/webgpu-matrix/`. See
-`MATRIX.md` for the current full-track matrix output folders.
+The matrix writes its results under `target/webgpu-matrix/`. See [MATRIX.md](MATRIX.md) for the tested browser paths.
 
-### Chunked WASM Round-Trip Test
+An entropy-only implementation change requires a new `encodec_rs_bg.wasm` downstream.
 
-`scripts/westside-chunk-wasm-roundtrip.mjs` exercises the full wasm
-encode/decode path on the `Lori Asha - Westside` track in independent
-fixed-chunk mode. It uses only the exported wasm helpers (no native runtime):
+Update the generated JavaScript and TypeScript bindings only when the exported WASM interface changes.
 
-1. reads the source WAV from
-   `target/lori-asha-wasm-native/wav/02 - Lori Asha - Westside.48k-stereo.wav`
-2. splits it, soundkit-style, into non-overlapping `1.333s` PCM chunks (one
-   chunk per `encodec_48khz_12kbps_1333ms` owned hop, `64,000`
-   samples)
-3. wasm-encodes each chunk to its own standalone `.ecdc` in `testdata/out/ecdc/`
-4. wasm-decodes each `.ecdc` (read back from disk) to PCM in `testdata/out/pcm/`
-5. concatenates the per-chunk PCM into one contiguous
-   `testdata/out/westside.contiguous.wav`
+## Entropy optimization benchmark
+
+The August 21, 2026 audit used an Apple M1 host and macOS 26.5.
+
+Node was version 26.3.0. ONNX Runtime Web was version 1.26.0 with one WASM thread.
+
+The test used the fixed 12 kbps, 1,333 ms bundle.
+
+Higher RTFx is faster. `RTFx = audio duration / wall time`.
+
+| Stage | Track A warm RTFx | Track B warm RTFx | A median LM | B median LM | Baseline hashes |
+|---|---:|---:|---:|---:|---:|
+| Scalar baseline | 1.583× | 1.569× | 515.547 ms | 514.621 ms | 316/316 |
+| Exact handwritten WASM SIMD | 2.471× | 2.449× | 207.956 ms | 211.098 ms | 316/316 |
+| Exact CDF selection | 2.651× | 2.532× | 186.162 ms | 191.117 ms | 316/316 |
+| Reused CDF storage | 2.548× | 2.516× | 189.152 ms | 190.439 ms | 316/316 |
+| Exact probability cache | 2.645× | 2.514× | 184.749 ms | 189.520 ms | 316/316 |
+| Final clean audit | 2.652× | 2.628× | 183.708 ms | 184.515 ms | 316/316 |
+
+The final pooled LM time was 64.334% lower than the scalar baseline.
+
+Pooled total encoding time was 40.287% lower. Pooled ONNX time changed by 0.028%.
+
+Handwritten SIMD produced the largest reduction. The smaller CDF changes added the remaining improvement.
+
+Every stage encoded both complete tracks in isolated sessions and in one randomized interleave.
+
+All 316 isolated chunk payloads matched the scalar baseline byte for byte at every stage.
+
+All 316 interleaved payloads matched their isolated results. Both final tracks passed the 2× warm RTFx gate.
+
+### Audit inputs
+
+| Track | Source basename | Duration | Chunks | SHA-256 |
+|---|---|---:|---:|---|
+| A | `eMastered_1979_MIX-4-CONFIRMATION_130323_HD.wav` | 227.863 s | 171 | `771460cec7c8be31bb162f855f4eb3858e11e9b5d2015fe6e50f0ec4b5a6f865` |
+| B | `eMastered_WESTSIDE_V2_MIX-4-CONFIRMATION_140323_HD.wav` | 192.936 s | 145 | `dd30787dc269100eaf0b5faf713401d84dd2f36b4da96fbe0de6380107ab885f` |
+
+Both inputs are 48 kHz stereo PCM24 masters.
+
+### Reproduce the stage audit
+
+Build one stage:
 
 ```bash
-# full track (~4.5 min, 158 chunks)
-node scripts/westside-chunk-wasm-roundtrip.mjs
-
-# quick smoke test over the first N chunks
-WESTSIDE_MAX_CHUNKS=3 node scripts/westside-chunk-wasm-roundtrip.mjs
+scripts/build-entropy-wasm-stage.sh 05-final-audit
 ```
 
-Chatty progress is written to stderr. A JSON summary is written to stdout
-(`node scripts/westside-chunk-wasm-roundtrip.mjs 2>/dev/null` to keep only the
-summary). Each chunk re-uses `lmEcdcFixedHeaderForWeights`, so the chunk size is
-the bundle's `63,520`-frame non-overlapping stride (`~1.323s`). This tiles the
-track gaplessly and reconstructs every source frame.
-
-Because `wasm-bindgen --target web` does not emit a `package.json`, Node treats
-the generated `pkg/encodec_rs.js` as CommonJS. If the import fails, add the ESM
-marker to the gitignored build output:
+Profile both complete files:
 
 ```bash
-echo '{ "type": "module" }' > pkg/package.json
-```
-
-Safari requires Safari 26 or newer for WebGPU, or Safari Technology Preview
-with the WebGPU feature enabled. Apple Silicon hardware is not enough by itself.
-the browser must expose `navigator.gpu` to the page. In Safari, enable
-`Show features for web developers`, then open `Develop > Feature Flags`, search
-for `WebGPU`, and enable it. If present, also enable `GPU Process: DOM Rendering`
-and `GPU Process: Canvas Rendering`, then quit and reopen Safari.
-
-The exported wasm helpers used by the q8 matrix path are:
-
-- `ecdcMetadata(payload)`
-- `ecdcOverlapAdd(bundleJson, audioLength, decodedFrames)`
-- `lmEcdcHeaderForWeights(bundleJson, audioLength, 2, weights)`
-- `lmEcdcFixedHeaderForWeights(bundleJson, audioLength, 2, weights)`
-- `lmEcdcChunk(payload)`
-- `lmEcdcDecodeChunks(bundleJson, payload)`
-- `QuantizedLmChunkEncoder`
-- `QuantizedLmChunkDecoder`
-- `stableHashHex(bytes)`
-
-Use `lmEcdcHeaderForWeights` for dynamic bundles. Use
-`lmEcdcFixedHeaderForWeights` when writing ECDC against a fixed-length ONNX
-graph. It records the fixed chunk samples, stride, and LM frame length (`fl`) so
-decoders have the full graph width for each chunk. This also applies to the final
-chunk. Encode all model codes for each fixed graph chunk. This rule also applies
-to a short final owned region. Finish the LM packet with
-`QuantizedLmChunkEncoder.finish()`. Do not replace unowned model codes with code
-zero. `finishPadded` now rejects an incomplete code sequence.
-
-## Native Scope
-
-Model bundles are hosted on Hugging Face:
-
-- [`wavey-ai/encodec-rs-onnx-bundles`](https://huggingface.co/wavey-ai/encodec-rs-onnx-bundles)
-
-Download them into the checkout before running ONNX/browser model paths:
-
-```bash
-scripts/download-onnx-bundles.sh
-```
-
-The hosted bundles target the `48 kHz` stereo model family:
-
-- `onnx-bundles/encodec_48khz_6kbps`
-- `onnx-bundles/encodec_48khz_12kbps`
-
-Both bundles include:
-
-- `encode_frame.onnx`
-- `decode_frame.onnx`
-- `lm_weights_q8.bin`
-- `bundle.json`
-
-So LM-assisted `.ecdc` compression works after the bundle download step.
-
-Native and browser LM entropy coding use the q8 Rust/wasm LM backend. Older raw
-and f32/ONNX-LM bitstreams are intentionally not supported.
-
-### Bundle Sizes
-
-The dynamic bundles are the default native bundles. Their frame models accept a
-variable final frame, so ECDC can derive each chunk's LM frame length from the
-actual sample count:
-
-| Bundle | Bandwidth | Nominal chunk | Samples | Stride | LM frames | Codebooks |
-|---|---:|---:|---:|---:|---:|---:|
-| `encodec_48khz_6kbps` | 6 kbps | 1000ms | 48,000 | 47,520 | 150 | 4 |
-| `encodec_48khz_12kbps` | 12 kbps | 1000ms | 48,000 | 47,520 | 150 | 8 |
-
-Fixed bundles trace the ONNX graph at one chunk size. ECDC written for these
-bundles should include `cs`, `cst`, and `fl`, and should entropy-code the full
-`fl` steps. The PCM input segment is already zero-padded before EnCodec encode.
-the ECDC writer must not shorten the LM stream for the final partial chunk.
-
-Fixed bundles are guarded: each logical chunk is encoded with ±10 ms (480
-samples) of real neighbouring source context on each side. The model window is
-`owned + 2 × 480`. The guard samples are codec context only and are cropped
-after decode, leaving the exact owned-sample timeline. Adjacent decoded chunks
-are then joined with a deterministic `cubic-hermite-v1` 0.5 ms (24-sample) seam
-repair (see `chunk-continuity.md`).
-
-| Fixed chunk | Owned | Model window | LM frames | Bundle suffix |
-|---|---:|---:|---:|---|
-| 1333ms | 64,000 | 64,960 | 203 | `_1333ms` |
-| 1800ms | 86,400 | 87,360 | 273 | `_1800ms` |
-
-The default wasm fixed-bundle package ships the `1333ms` and
-`1800ms` variants for both `6 kbps` and `12 kbps`.
-
-## Runtime Notes
-
-- Pure Rust `.ecdc` container logic
-- Pure Rust arithmetic coding
-- Pure Rust deterministic LM-driven entropy path
-- No Python bridge
-- No external codec subprocess
-
-The only non-Rust runtime dependency is ONNX Runtime for the neural frame
-encoder/decoder.
-
-### ONNX Session State
-
-The ONNX frame encoder and decoder sessions do not keep codec state between
-`run()` calls. Each call depends only on its input tensors. Applications can
-reuse one session for independent chunks or interleave chunks from different
-tracks.
-
-ONNX Runtime can retain graph optimizations, memory allocations, thread pools,
-and internal caches. This operational state can change performance, but it does
-not change encoded output.
-
-The q8 LM encoder and decoder start with new entropy state for each independent
-chunk. Callers must pass state explicitly when they use a model that exposes
-recurrent state tensors. The fixed frame models in these bundles do not use
-cross-call state.
-
-A single-thread WASM test compared 316 chunks in isolated sessions and one
-randomly interleaved shared session. All 316 interleaved chunk SHA-256 values
-matched their isolated values. This result confirms byte-for-byte deterministic
-output for that test.
-
-### WASM Entropy Performance
-
-The single-thread test uses ONNX Runtime Web WASM and the fixed 12 kbps,
-1333 ms bundle. Track A has 227.863 seconds in 171 chunks. Track B has
-192.936 seconds in 145 chunks.
-
-Higher realtime factors are faster. Lower LM times are faster. The table shows
-one complete run for each stage.
-
-| Stage | A warm realtime | B warm realtime | A median LM | B median LM |
-|---|---:|---:|---:|---:|
-| Scalar baseline | 1.583× | 1.569× | 515.547 ms | 514.621 ms |
-| Exact WASM SIMD | 2.471× | 2.449× | 207.956 ms | 211.098 ms |
-| Exact CDF selection | 2.651× | 2.532× | 186.162 ms | 191.117 ms |
-| Reused CDF storage | 2.548× | 2.516× | 189.152 ms | 190.439 ms |
-| Exact probability cache | 2.652× | 2.628× | 183.708 ms | 184.515 ms |
-
-Each stage matched all 316 scalar baseline chunk hashes. Each randomized
-interleave also matched all 316 isolated chunk hashes. The final stage passes
-the 2× realtime gate for both tracks.
-
-Use these commands to build and measure a stage:
-
-```bash
-scripts/build-entropy-wasm-stage.sh <stage-name>
 node scripts/profile-encodec-wasm-session.mjs \
-  --wasm-root target/performance/entropy-optimization/<stage-name>/wasm \
-  --output target/performance/entropy-optimization/<stage-name>/profile.json \
-  <track-a.wav> <track-b.wav>
+  --wasm-root target/performance/entropy-optimization/05-final-audit/wasm \
+  --output target/performance/entropy-optimization/05-final-audit/profile.json \
+  "$TRACK_A_WAV" "$TRACK_B_WAV"
 ```
 
-Use `scripts/compare-encodec-wasm-profiles.mjs` to compare timings and chunk
-hashes between two reports.
-
-## Apple Native Backend Boundary
-
-The `.ecdc` layer is now model-runtime agnostic. Build it without ONNX Runtime:
+Compare the final profile with the baseline:
 
 ```bash
-cargo check --features ecdc
+node scripts/compare-encodec-wasm-profiles.mjs \
+  target/performance/entropy-optimization/00-baseline/profile.json \
+  target/performance/entropy-optimization/05-final-audit/profile.json
 ```
 
-Native callers can keep the Rust bitstream path and provide only the neural
-frame runtime:
+The profile report checkpoints after each chunk. It records source hashes and per-chunk output hashes.
 
-- `ecdc::FrameCodec`: metadata plus `encode_frame` / `decode_frame`
-- `ecdc::LmCodec`: LM logits for portable arithmetic-coded chunks
-- `portable_lm::PortableLmCodec`: loads `bundle.json` + `lm_weights_q8.bin`
-  without ONNX Runtime
+## Full-file comparison with official Meta EnCodec
 
-The ONNX runtime implements those traits through `OnnxFrameCodec`
-and `OnnxLmCodec`, so existing CLI/browser parity remains the validation
-harness. The intended Apple product code uses a Swift/MLX frame backend. Use
-Core ML or ONNX Runtime only for transitional parity checks.
+The full-file comparison used Track A at 12 kbps with LM entropy coding.
 
-### Apple MLX Runtime
+All rows used one CPU thread on the same Apple M1 host.
 
-Apple MLX support now lives in this repository under `apple/`. The Swift package
-loads MLX Swift `.safetensors` archives for `encode_frame` and `decode_frame`.
-The Rust crate owns `.ecdc`, portable q8 LM coding, and the C ABI bridge in
-`src/mlx_bridge.rs`. See `apple/README.md` for Swift build, test, and Westside
-benchmark commands.
+The `encodec-rs` row uses ONNX Runtime Web WASM and Rust WASM.
 
-After downloading the bundles, convert them with:
+The Meta rows use native ARM64 PyTorch through the pinned official Python package.
+
+| Path | Encode time | Encode RTFx | Decode time | Decode RTFx | ECDC bytes | Effective rate |
+|---|---:|---:|---:|---:|---:|---:|
+| `encodec-rs`, warm direct path | 86.932 s | 2.621× | 183.373 s | 1.243× | 296,562 | 10.412 kbps |
+| Meta, loaded core API | 104.004 s | 2.191× | 104.171 s | 2.187× | 278,134 | 9.765 kbps |
+| Meta, standard fresh CLI | 108.605 s | 2.098× | 106.209 s | 2.145× | 278,134 | 9.765 kbps |
+
+The warm `encodec-rs` encoder had 19.6% higher throughput than the loaded Meta path.
+
+Its encode wall time was 16.4% lower. Its payload was 6.63% larger.
+
+The loaded Meta decoder had 1.76 times the throughput of the `encodec-rs` decoder.
+
+The Meta core row excludes model setup. The standard CLI row includes process startup, model setup, and file input and output.
+
+Both Meta rows reused cached model checkpoints. Their ECDC outputs were byte-identical.
+
+The `encodec-rs` row excludes session setup from warm RTFx. It includes every JS-to-WASM call and memory copy in the measured path.
+
+No FFI estimate was subtracted from any result.
+
+This comparison measures complete implementations, not Python against Rust or one entropy algorithm in isolation.
+
+## Full-file quality
+
+The seamless PCM24 master is the reference for every result.
+
+All decoded candidates matched the master length and had zero measured sample lag.
+
+Higher SNR and SI-SDR are better. Lower log-spectral distance and spectral convergence are better.
+
+| Candidate | SNR | SI-SDR | Mean segment SNR | Log-spectral distance | Spectral convergence | Loudness delta |
+|---|---:|---:|---:|---:|---:|---:|
+| `encodec-rs`, repaired | 6.579 dB | 5.706 dB | 7.011 dB | 12.460 dB | 0.27915 | -0.408 LU |
+| `encodec-rs`, before repair | 6.594 dB | 5.723 dB | 7.015 dB | 12.524 dB | 0.27869 | -0.410 LU |
+| Official Meta | 6.600 dB | 5.719 dB | 7.017 dB | 12.596 dB | 0.27893 | -0.434 LU |
+
+Meta SNR exceeded repaired `encodec-rs` by 0.021 dB.
+
+Repaired `encodec-rs` log-spectral distance was 0.136 dB lower than Meta.
+
+These full-file metrics show no material aggregate quality difference between the two decoded files.
+
+Entropy framing does not change decoded PCM when code recovery is exact.
+
+Model geometry and reconstruction determine the measured waveform differences.
+
+### ViSQOL
+
+Official [ViSQOL](https://github.com/google/visqol/tree/38d0b0163e441047d4429bf07ad09e5b9031d02c) scored ten matched active excerpts.
+
+Each excerpt was eight seconds. One shared gain protected the master and both candidates from PCM16 clipping.
+
+| Candidate | Mean MOS-LQO | Median MOS-LQO | Standard deviation |
+|---|---:|---:|---:|
+| `encodec-rs` | 4.2874 | 4.2809 | 0.0663 |
+| Official Meta | 4.2769 | 4.2847 | 0.0676 |
+
+The paired mean difference was `+0.0105` for `encodec-rs`.
+
+Its 95% confidence interval was `-0.0038` to `+0.0248`, so the result does not show a reliable winner.
+
+[ViSQOL audio guidance](https://github.com/google/visqol/blob/38d0b0163e441047d4429bf07ad09e5b9031d02c/README.md) states that audio mode downmixes stereo to mono.
+
+Its audio model was trained at rates of 24 kbps and higher.
+
+These payloads are below 12 kbps. Treat ViSQOL as secondary evidence at this rate.
+
+## Seam analysis
+
+The master has no codec join. Each candidate join is compared with the same master samples.
+
+The analysis uses a 20 ms window centered on each join.
+
+Two nearby nonjoin windows provide an equal-duration control error.
+
+`Seam excess error` compares join MSE with control MSE. Lower values are better.
+
+`Seam SNR` compares master signal power with join error. Higher values are better.
+
+`Step error` subtracts the master's own sample step from the decoded sample step.
+
+| Reconstruction | Joins | Median excess | P90 excess | Worst excess | Median seam SNR | P10 seam SNR | Median step error |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `encodec-rs`, repaired | 170 | 0.587 dB | 3.929 dB | 5.996 dB | 5.169 dB | 0.817 dB | 0.02957 |
+| `encodec-rs`, before repair | 170 | 0.476 dB | 3.011 dB | 5.082 dB | 5.245 dB | 1.581 dB | 0.08958 |
+| Official Meta overlap-add | 230 | 0.019 dB | 2.099 dB | 5.792 dB | 6.118 dB | 2.791 dB | 0.02699 |
+
+Meta's 10 ms overlap-add produced the best join distribution on this file.
+
+The current cubic repair reduced median step error, but it did not improve master-reference fidelity.
+
+The repair changed 8,160 sample values, or 0.0373% of the decoded stereo values.
+
+It improved join-window fidelity at 46 joins and degraded it at 124 joins.
+
+Median join fidelity changed by `-0.043 dB`. Median step error improved by `7.378 dB`.
+
+The repair also increased output peak from `+2.552 dBFS` to `+5.190 dBFS`.
+
+The largest repair effect occurred at 86.667 seconds.
+
+It reduced local fidelity by 2.186 dB while improving step error by 2.628 dB.
+
+![Waveforms and spectrograms for the largest encodec-rs repair effect](docs/benchmarks/encodec-full-file-20260821/encodec-rs-largest-repair-effect.png)
+
+The next figure shows decoded-minus-master residual energy at the worst repaired join.
+
+![Residual spectrograms at the worst repaired encodec-rs join](docs/benchmarks/encodec-full-file-20260821/encodec-rs-worst-join-residual.png)
+
+The final figure uses the same scales for Meta's worst measured overlap-add join.
+
+![Waveforms and spectrograms for the worst Meta overlap-add join](docs/benchmarks/encodec-full-file-20260821/meta-worst-overlap-join.png)
+
+These results do not support the current cubic repair as the final reconstruction method.
+
+A slope-limited and amplitude-clamped Hermite repair is a suitable next experiment.
+
+A short crossfade against real overlapping context is another suitable experiment.
+
+Python is useful for these sweeps and plots. The selected arithmetic can then move unchanged into Rust and WASM.
+
+## Reproduce the upstream and quality comparison
+
+Create the pinned Conda environment:
 
 ```bash
-target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
-  onnx-bundles/encodec_48khz_6kbps \
-  target/mlx-bundles/encodec_48khz_6kbps
-
-target/quant-venv/bin/python scripts/export-mlx-frame-archive.py \
-  onnx-bundles/encodec_48khz_12kbps \
-  target/mlx-bundles/encodec_48khz_12kbps
-
-scripts/create_mlx_fixed_bundles.sh
+conda env create -f benchmark-environment.yml
+conda activate encodec-upstream-benchmark
 ```
 
-Each MLX bundle contains `bundle.json`, `lm_weights_q8.bin`,
-`encode_frame.safetensors`, `decode_frame.safetensors`, and
-`mlx-manifest.json`. The Python step is offline conversion tooling only. The
-native app path is Swift/MLX plus the Rust `.ecdc`/portable-LM boundary.
-The fixed-bundle helper exports from the fixed ONNX bundles. Thus, the standard
-1333ms and 1800ms MLX bundles use the same 300-step q8 LM weights as ONNX. It
-does not create application-specific compatibility bundles.
-
-## Native Build
+Benchmark the loaded official implementation:
 
 ```bash
-cargo build --release --features onnx
+python scripts/benchmark-meta-encodec.py \
+  "$MASTER_WAV" \
+  --output-root target/performance/upstream-comparison/full/meta
 ```
 
-Run tests:
+Benchmark the standard official CLI:
 
 ```bash
-cargo test --features onnx
+python scripts/benchmark-meta-encodec-cli.py \
+  "$MASTER_WAV" \
+  --encodec-cli "$CONDA_PREFIX/bin/encodec" \
+  --output-root target/performance/upstream-comparison/full/meta-cli
 ```
 
-## CLI
-
-Inspect a bundle:
+Generate full-file metrics, excerpts, and spectrograms:
 
 ```bash
-encodec-rs onnx-inspect onnx-bundles/encodec_48khz_6kbps
+python scripts/compare-encodec-quality.py \
+  "$MASTER_WAV" \
+  --encodec-rs target/performance/upstream-comparison/full/encodec-rs-decoded.wav \
+  --encodec-rs-pre-repair target/performance/upstream-comparison/full/encodec-rs-before-seam-repair.wav \
+  --meta target/performance/upstream-comparison/full/meta/meta-decoded.wav \
+  --output-root target/performance/upstream-comparison/full/quality \
+  --figure-root docs/benchmarks/encodec-full-file-20260821
 ```
 
-Smoke-test model execution:
+Build ViSQOL from its pinned source before you run the perceptual metric.
+
+Then score the generated excerpts:
 
 ```bash
-encodec-rs onnx-smoke onnx-bundles/encodec_48khz_6kbps
+python scripts/benchmark-visqol.py \
+  --visqol target/third-party/visqol/bazel-bin/visqol \
+  --excerpt-root target/performance/upstream-comparison/full/quality/perceptual-excerpts \
+  --output-root target/performance/upstream-comparison/full/quality/visqol
 ```
 
-Encode WAV to `.ecdc`:
+The scripts write JSON and CSV evidence under `target/performance/`. Git does not track that directory.
 
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc
+## Library use
+
+Enable only container and entropy functions:
+
+```toml
+encodec-rs = { git = "https://github.com/wavey-ai/encodec-rs.git", features = ["ecdc"] }
 ```
 
-Decode `.ecdc` to WAV:
-
-```bash
-encodec-rs onnx-decode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.ecdc \
-  output.wav
-```
-
-Direct frame roundtrip without `.ecdc`:
-
-```bash
-encodec-rs onnx-roundtrip-wav \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.wav
-```
-
-Export qualification-only frame evidence:
-
-```bash
-encodec-rs onnx-encode-evidence \
-  onnx-bundles/encodec_48khz_6kbps_1333ms \
-  input.wav \
-  evidence/fixed-1333-6kbps
-```
-
-This command writes the exact model input, codes, scale, raw entropy, recovered
-codes, and codebook order. The manifest contains file shapes, SHA-256 digests,
-and exact code recovery status.
-
-Use `--true-variable-tail` with a dynamic model bundle to preserve the actual
-final input length.
-
-Export one canonical fixed-code LM vector:
-
-```bash
-encodec-rs onnx-lm-evidence \
-  onnx-bundles/encodec_48khz_6kbps_1333ms \
-  evidence/lm-6kbps \
-  --steps 203
-```
-
-These commands do not create a Profile 1 container. See
-[`docs/frame-evidence.md`](docs/frame-evidence.md).
-
-## Execution Targets
-
-CPU is the default.
-
-Use CUDA:
-
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc \
-  --cuda
-```
-
-Select a GPU explicitly:
-
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc \
-  --cuda \
-  --device-id 0
-```
-
-Use TensorRT:
-
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc \
-  --tensorrt \
-  --fp16
-```
-
-Use CoreML on Apple Silicon:
-
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc \
-  --coreml \
-  --coreml-compute-units cpu-and-gpu
-```
-
-CoreML caches compiled model artifacts under `bundle_dir/.coreml-cache/` by
-default. Override that with `--coreml-cache-dir` if needed.
-
-LM chunk payloads are CRC-wrapped by default. The CRC is stored next to each
-length-prefixed chunk and lets decoders identify corrupted recovered chunks
-before arithmetic decoding.
-
-Adjust frame batching:
-
-```bash
-encodec-rs onnx-encode \
-  onnx-bundles/encodec_48khz_6kbps \
-  input.wav \
-  output.ecdc \
-  --batch-size 16
-```
-
-## Input Rules
-
-- `onnx-encode` currently expects WAV input
-- input sample rate must match the bundle sample rate
-- the hosted bundles are for `48 kHz` stereo audio
-- CLI resampling is not implemented yet
-
-If your source is not already `48 kHz` stereo WAV, normalize it first.
-
-## Output Metadata
-
-`encodec-rs` writes only the minimal metadata needed to decode the payload:
-
-- model name
-- audio length
-- codebook count
-- LM / arithmetic settings
-- q8 bitstream version (`acv=2`)
-- q8 LM weight hash
-- fixed chunk sample count (`cs`), stride (`cst`), and LM frame length (`fl`)
-  when the payload targets a fixed-length graph
-
-## ECDC Container Layout
-
-An `.ecdc` file is one self-contained container. The file header is written
-once, followed by one or more framed chunk payloads:
-
-```text
-4 bytes   magic: "ECDC"
-1 byte    version: 0
-4 bytes   metadata JSON byte length, big-endian u32
-N bytes   metadata JSON
-
-repeated chunks:
-4 bytes   chunk payload length, big-endian u32
-4 bytes   CRC32 of the chunk payload, big-endian u32
-M bytes   chunk payload
-```
-
-The normal q8 LM `.ecdc` path always writes CRC-wrapped chunks. Chunk count is
-not stored as a separate top-level field. Decoders read chunk frames after the
-metadata header. They validate the count against the audio length and the chunk
-layout from metadata (`al`, `cs`, `cst`, `fl`).
-
-Do not concatenate multiple `.ecdc` files to make one record payload. A record
-spiral carries one complete `.ecdc` byte stream. That stream may contain many
-framed chunks internally, but each independently playable record needs its own
-container header and metadata.
-
-## Library Use
-
-Add the crate:
+Enable the native ONNX runtime:
 
 ```toml
 encodec-rs = { git = "https://github.com/wavey-ai/encodec-rs.git", features = ["onnx"] }
 ```
 
-Load the frame codec:
+The `ecdc::FrameCodec` trait separates neural frame execution from the container.
 
-```rust
-use encodec_rs::onnx::{ExecutionTarget, OnnxFrameCodec};
+The `ecdc::LmCodec` and `portable_lm::PortableLmCodec` paths provide deterministic q8 entropy coding.
 
-let mut codec = OnnxFrameCodec::from_dir(
-    "onnx-bundles/encodec_48khz_6kbps",
-    ExecutionTarget::Cpu,
-)?;
+## Current limitations
 
-println!("{:#?}", codec.metadata());
-```
+- Hosted bundles support only 48 kHz stereo audio.
+- The CLI does not resample input.
+- The browser encoder processes one fixed window per call.
+- The current cubic seam repair can overshoot and can reduce local fidelity.
+- The Apple M1 WASM decoder is slower than the pinned Meta CPU decoder.
+- Full-file timing results come from one host and one complete run per condition.
+- ViSQOL evidence is outside its documented training bitrate range.
+- The current `acv=2` container is not Profile 1.
 
-## Benchmark Snapshot
+## Tests
 
-On the `Lori Asha - Westside` premix test track, using LM-assisted `.ecdc`
-encoding on both runtimes, the latest local comparison was:
-
-| Codec | Bitrate | Encode | Decode | `.ecdc` size |
-|---|---:|---:|---:|---:|
-| upstream | 6 kbps | 39.97s | 42.77s | 112,942 bytes |
-| upstream | 12 kbps | 44.73s | 49.30s | 239,325 bytes |
-| `encodec-rs` | 6 kbps | 27.74s | 26.41s | 116,454 bytes |
-| `encodec-rs` | 12 kbps | 31.46s | 30.13s | 243,944 bytes |
-
-So the current Rust runtime is materially faster than upstream on both encode
-and decode, while payload size is still slightly larger than upstream.
-
-### Apple M4 CoreML Check
-
-On April 26, 2026, the same `Lori Asha - Westside` track was tested on an Apple
-M4 host. The test used the new CoreML target and LM-assisted `6 kbps` `.ecdc`
-encoding and decoding:
-
-| Runtime | Bitrate | Encode | Decode | `.ecdc` size |
-|---|---:|---:|---:|---:|
-| `encodec-rs` CoreML (`--coreml --coreml-compute-units cpu-and-gpu`) | 6 kbps | 163.84s | 157.26s | 115,572 bytes |
-
-This is approximately `5.9x` slower than the current `encodec-rs` benchmark.
-That benchmark took `27.74s` to encode and `26.41s` to decode at `6 kbps`.
-CoreML support works on Apple Silicon. It is not yet competitive with the
-current Linux and NVIDIA path.
-
-### Apple M1 ONNX CPU Check
-
-On May 19, 2026, the test measured the same `Lori Asha - Westside` fixture on an
-Apple M1 host. The fixture was 48 kHz stereo. The test used ONNX Runtime `1.25.1`
-on the CPU. It used a release build, batch size `8`, and LM-assisted `.ecdc` with
-chunk CRC. This test occurred after the `.ecdc` and ONNX runtime split:
-
-| Runtime | Bitrate | Encode | Decode | `.ecdc` size | vs native snapshot |
-|---|---:|---:|---:|---:|---:|
-| `encodec-rs` ONNX CPU on Apple M1 | 6 kbps | 101.44s | 105.67s | 121,816 bytes | 3.66x / 4.00x slower |
-| `encodec-rs` ONNX CPU on Apple M1 | 12 kbps | 126.48s | 143.18s | 255,061 bytes | 4.02x / 4.75x slower |
-
-This confirms that the trait and backend split did not change the neural
-runtime. Apple-native performance still needs an MLX/Metal frame backend. The
-current ONNX CPU path is not sufficient.
-
-### MLX Archive Comparison
-
-For the same frame models, the MLX archive export keeps only required files. It
-keeps the initializers for the Swift/MLX runtime. It also keeps the manifest
-that rebuilds the graph:
-
-| Bundle | Model | Initializers | Parameters | ONNX file | MLX safetensors |
-|---|---|---:|---:|---:|---:|
-| `6 kbps` | encode frame | 81 | 8,345,360 | 32M | 32M |
-| `6 kbps` | decode frame | 78 | 7,951,766 | 31M | 30M |
-| `12 kbps` | encode frame | 89 | 9,393,936 | 36M | 36M |
-| `12 kbps` | decode frame | 82 | 8,476,054 | 33M | 32M |
-
-The exported graphs still contain the same neural work as the ONNX benchmark:
-convolutions, transposed convolutions, instance normalization, LSTMs, and RVQ
-math. The Apple MLX runtime loads these archives. It evaluates native
-`encode_frame` and `decode_frame`. Swift/MLX frame callbacks bridge q8
-LM-assisted `.ecdc` encoding and decoding through Rust.
-
-The release Apple test bundle measured the full `Lori Asha - Westside` fixture.
-The test used the same Apple M1 host as the ONNX CPU check. The fixture was
-`208.509s`, 48 kHz stereo. The test used q8 LM entropy coding:
-
-| Runtime | Mode | Bitrate | Encode | Decode | `.ecdc` size |
-|---|---|---:|---:|---:|---:|
-| Swift/MLX + Rust bridge | q8 LM | 6 kbps | 36.55s | 42.02s | 107,327 bytes |
-| Swift/MLX + Rust bridge | q8 LM | 12 kbps | 43.89s | 46.76s | 232,944 bytes |
-
-The q8 LM path is the only supported `.ecdc` payload path in this checkout.
-
-## Status
-
-What is done:
-
-- pure Rust runtime path
-- pure Rust `.ecdc`
-- hosted LM-capable `6 kbps` and `12 kbps` bundles
-- CPU / CUDA / CoreML / TensorRT execution targets
-
-What is still missing:
-
-- CLI resampling
-- broader model coverage beyond the current `48 kHz` stereo family
-- further compression-ratio tuning versus upstream
-
-## Local Node Memory Benchmark
-
-On June 30, 2026, the production `encodec_48khz_12kbps_1333ms` bundle was
-measured locally from Node in this repo with:
+Run the Rust container and WASM tests:
 
 ```bash
-node --expose-gc tools/benchmark-encodec-memory.mjs
-/usr/bin/time -l node --expose-gc tools/benchmark-encodec-memory.mjs
+cargo test --lib --features wasm,ecdc
 ```
 
-This benchmark uses the production model bundle at
-`../encodec-worker/wasm/encodec_48khz_12kbps_1333ms/`, records
-`process.memoryUsage()` checkpoints plus short-interval peak sampling, and
-writes the machine-readable report to `tmp/encodec-memory-benchmark.json`.
+Run native ONNX tests after you download the bundles:
 
-The observed result was that this current local implementation does not fit
-within a `128 MiB` process budget. The peak sampled RSS was `396.453 MiB`
-(`415711232` raw bytes from `/usr/bin/time -l`), or roughly `268.453 MiB` over
-that limit. Repeated encodes did not show ongoing memory growth after warm-up:
-RSS fell after the first encode. It then stayed effectively flat from 5 to 20
-segments (`318.688 MiB` to `319.047 MiB`). After encoder release and GC, the
-final RSS was still `319.141 MiB`. A Cloudflare Worker also needs memory for the
-Workers runtime and request handling.
-
-Full timed-run output:
-
-```text
-EnCodec local memory benchmark
-Model:
-  encode_frame.onnx: 36.042 MiB (37792462 bytes)
-  lm_weights_q8.bin: 10.484 MiB (10993572 bytes)
-  total model bytes: 46.526 MiB (48786034 bytes)
-Baseline RSS: 42.453 MiB
-RSS after model load: 144.172 MiB
-RSS after encoder initialisation: 359.953 MiB
-RSS after first encode: 337.500 MiB
-RSS after 20 encodes: 319.047 MiB
-Peak sampled RSS: 396.453 MiB
-Final RSS after release and GC: 319.141 MiB
-Peak increase over baseline: 354.000 MiB
-Estimated model/init retained memory: 317.500 MiB
-Observed growth across repeated encodes: -18.453 MiB
-Initialisation time: 18214.804 ms
-First encode time: 905.591 ms
-Steady-state average encode time: 863.046 ms
-
-Checkpoints:
-1. Node process started
-  rss: 42.453 MiB (44515328 bytes, +0.000 MiB from baseline)
-  heapTotal: 6.344 MiB (6651904 bytes, +0.000 MiB from baseline)
-  heapUsed: 3.739 MiB (3920456 bytes, +0.000 MiB from baseline)
-  external: 1.652 MiB (1732062 bytes, +0.000 MiB from baseline)
-  arrayBuffers: 0.010 MiB (10475 bytes, +0.000 MiB from baseline)
-2. Encoder module imported
-  rss: 48.906 MiB (51281920 bytes, +6.453 MiB from baseline)
-  heapTotal: 6.594 MiB (6914048 bytes, +0.250 MiB from baseline)
-  heapUsed: 4.117 MiB (4316528 bytes, +0.378 MiB from baseline)
-  external: 1.909 MiB (2001512 bytes, +0.257 MiB from baseline)
-  arrayBuffers: 0.010 MiB (10475 bytes, +0.000 MiB from baseline)
-3. WASM runtime initialized
-  rss: 50.813 MiB (53280768 bytes, +8.359 MiB from baseline)
-  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
-  heapUsed: 4.196 MiB (4400192 bytes, +0.458 MiB from baseline)
-  external: 3.108 MiB (3259032 bytes, +1.456 MiB from baseline)
-  arrayBuffers: 0.421 MiB (441409 bytes, +0.411 MiB from baseline)
-4. ONNX model bytes loaded
-  rss: 123.156 MiB (129138688 bytes, +80.703 MiB from baseline)
-  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
-  heapUsed: 4.208 MiB (4412672 bytes, +0.469 MiB from baseline)
-  external: 39.150 MiB (41051494 bytes, +37.498 MiB from baseline)
-  arrayBuffers: 36.463 MiB (38233871 bytes, +36.453 MiB from baseline)
-5. LM weights loaded
-  rss: 144.172 MiB (151175168 bytes, +101.719 MiB from baseline)
-  heapTotal: 6.844 MiB (7176192 bytes, +0.500 MiB from baseline)
-  heapUsed: 4.216 MiB (4421184 bytes, +0.478 MiB from baseline)
-  external: 60.118 MiB (63038638 bytes, +58.467 MiB from baseline)
-  arrayBuffers: 46.947 MiB (49227443 bytes, +46.937 MiB from baseline)
-6. Encoder instance created
-  rss: 359.953 MiB (377438208 bytes, +317.500 MiB from baseline)
-  heapTotal: 8.406 MiB (8814592 bytes, +2.063 MiB from baseline)
-  heapUsed: 5.980 MiB (6270832 bytes, +2.241 MiB from baseline)
-  external: 62.112 MiB (65128690 bytes, +60.460 MiB from baseline)
-  arrayBuffers: 46.947 MiB (49227492 bytes, +46.937 MiB from baseline)
-7. Production PCM segment allocated
-  rss: 360.750 MiB (378273792 bytes, +318.297 MiB from baseline)
-  heapTotal: 8.406 MiB (8814592 bytes, +2.063 MiB from baseline)
-  heapUsed: 5.988 MiB (6278600 bytes, +2.249 MiB from baseline)
-  external: 50.188 MiB (52625965 bytes, +48.536 MiB from baseline)
-  arrayBuffers: 47.443 MiB (49747172 bytes, +47.433 MiB from baseline)
-8. First segment encoded
-  rss: 337.500 MiB (353894400 bytes, +295.047 MiB from baseline)
-  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
-  heapUsed: 6.130 MiB (6428176 bytes, +2.392 MiB from baseline)
-  external: 73.580 MiB (77153809 bytes, +71.928 MiB from baseline)
-  arrayBuffers: 47.459 MiB (49764552 bytes, +47.449 MiB from baseline)
-9. Five segments encoded
-  rss: 318.688 MiB (334168064 bytes, +276.234 MiB from baseline)
-  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
-  heapUsed: 6.475 MiB (6789256 bytes, +2.736 MiB from baseline)
-  external: 73.646 MiB (77223329 bytes, +71.994 MiB from baseline)
-  arrayBuffers: 47.525 MiB (49834072 bytes, +47.515 MiB from baseline)
-10. Twenty segments encoded
-  rss: 319.047 MiB (334544896 bytes, +276.594 MiB from baseline)
-  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
-  heapUsed: 6.371 MiB (6680296 bytes, +2.632 MiB from baseline)
-  external: 73.616 MiB (77191977 bytes, +71.964 MiB from baseline)
-  arrayBuffers: 47.496 MiB (49802720 bytes, +47.486 MiB from baseline)
-11. Encoder references released
-  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
-  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
-  heapUsed: 6.192 MiB (6492312 bytes, +2.453 MiB from baseline)
-  external: 73.616 MiB (77191977 bytes, +71.964 MiB from baseline)
-  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
-12. Garbage collection requested
-  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
-  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
-  heapUsed: 6.194 MiB (6494488 bytes, +2.455 MiB from baseline)
-  external: 26.541 MiB (27830715 bytes, +24.890 MiB from baseline)
-  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
-13. Final settled memory after a short delay
-  rss: 319.141 MiB (334643200 bytes, +276.688 MiB from baseline)
-  heapTotal: 7.906 MiB (8290304 bytes, +1.563 MiB from baseline)
-  heapUsed: 6.204 MiB (6505336 bytes, +2.465 MiB from baseline)
-  external: 26.541 MiB (27830715 bytes, +24.890 MiB from baseline)
-  arrayBuffers: 0.421 MiB (441458 bytes, +0.411 MiB from baseline)
-
-Peak sampled values:
-  rss: 396.453 MiB (415711232 bytes, +354.000 MiB from baseline)
-  heapTotal: 8.656 MiB (9076736 bytes, +2.313 MiB from baseline)
-  heapUsed: 6.474 MiB (6788576 bytes, +2.735 MiB from baseline)
-  external: 74.554 MiB (78175918 bytes, +72.903 MiB from baseline)
-  arrayBuffers: 71.809 MiB (75297125 bytes, +71.799 MiB from baseline)
-
-Timings:
-  Initialisation: 18214.804 ms
-  First encode: 905.591 ms
-  Average encode time for segments 2-5: 871.123 ms
-  Average encode time for segments 6-20: 863.046 ms
-
-JSON report: tmp/encodec-memory-benchmark.json
-       18.93 real        18.11 user         0.16 sys
-           415711232  maximum resident set size
-                   0  average shared memory size
-                   0  average unshared data size
-                   0  average unshared stack size
-               25857  page reclaims
-                   8  page faults
-                   0  swaps
-                   0  block input operations
-                   0  block output operations
-                   0  messages sent
-                   0  messages received
-                   0  signals received
-                  13  voluntary context switches
-               19112  involuntary context switches
-        311848026927  instructions retired
-         55398022140  cycles elapsed
-           379002176  peak memory footprint
+```bash
+cargo test --features onnx
 ```
+
+See [docs/README.md](docs/README.md) for protocol, qualification, and implementation documents.

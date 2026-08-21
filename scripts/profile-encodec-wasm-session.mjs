@@ -191,6 +191,7 @@ async function loadWave(filename, metadata) {
   return {
     id: filename === options.trackA ? "A" : "B",
     filename,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
     ...wave,
     chunkCount: Math.ceil(wave.frames / metadata.segment_stride),
   };
@@ -200,6 +201,7 @@ function summarizeTrack(id, track) {
   return {
     id,
     filename: track.filename,
+    sha256: track.sha256,
     sampleRate: track.sampleRate,
     channels: track.channels,
     bitsPerSample: track.bitsPerSample,
@@ -400,7 +402,7 @@ function performanceRecord(record) {
     chunkIndex: record.chunkIndex,
     startFrame: record.startFrame,
     ownedFrames: record.ownedFrames,
-    audioSeconds: round(record.audioSeconds),
+    audioSeconds: round(record.audioSeconds, 6),
     onnxMs: round(record.onnxMs),
     lmWasmMs: round(record.lmWasmMs),
     totalMs: round(record.totalMs),
@@ -549,4 +551,3 @@ function round(value, digits = 3) {
   const scale = 10 ** digits;
   return Math.round(Number(value) * scale) / scale;
 }
-

@@ -4,27 +4,34 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import * as ort from "../browser-smoke/node_modules/onnxruntime-web/dist/ort.wasm.min.mjs";
-import {
+const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+const options = parseArgs(process.argv.slice(2));
+const [ort, encodec] = await Promise.all([
+  import(pathToFileURL(path.join(options.wasmRoot, "onnxruntime-web/ort.wasm.min.mjs"))),
+  import(pathToFileURL(path.join(options.wasmRoot, "encodec-rs/pkg/encodec_rs.js"))),
+]);
+const {
   ecdcMetadata,
   ecdcOverlapAddForMetadata,
-  initSync,
-  initPanicHook,
   lmEcdcChunk,
   lmEcdcDecodeChunks,
   lmEcdcFixedHeaderForWeights,
   QuantizedLmChunkDecoder,
   QuantizedLmChunkEncoder,
   stableHashHex,
-} from "../pkg/encodec_rs.js";
-
-const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-
-const options = parseArgs(process.argv.slice(2));
+} = encodec;
 
 try {
   const summary = await run(options);
+  if (options.report) {
+    mkdirSync(path.dirname(options.report), { recursive: true });
+    writeFileSync(options.report, `${JSON.stringify(summary, null, 2)}\n`);
+  }
   console.log(JSON.stringify(summary, null, 2));
+  if (summary.signalIntegrity && !summary.signalIntegrity.pass) {
+    process.exitCode = 1;
+  }
 } catch (error) {
   console.error(error?.stack ?? String(error));
   process.exitCode = 1;
@@ -95,6 +102,7 @@ async function encodeFixture(options) {
     lmDeterministicMs += lmFrame.lmDeterministicMs;
     arithmeticMs += lmFrame.arithmeticMs;
     chunks.push(lmEcdcChunk(lmFrame.payload));
+    reportProgress("encode", index + 1, segments.count, encodedStarted, wav, options);
   }
 
   const ecdc = concatUint8Chunks(chunks);
@@ -114,6 +122,7 @@ async function encodeFixture(options) {
     bandwidthKbps: meta.bandwidth_kbps,
     audioSamples: wav.frames,
     audioSeconds: Number((wav.frames / meta.sample_rate).toFixed(3)),
+    sourceSignal: summarizeSignal(wav.audio, wav.channels, wav.frames),
     segments: segments.count,
     ecdcBytes: ecdc.byteLength,
     ecdcMetadata: metadata,
@@ -124,6 +133,7 @@ async function encodeFixture(options) {
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       totalEncodeMs: roundMs(totalEncodeMs),
+      realtimeFactor: roundRatio((wav.frames / meta.sample_rate) / (totalEncodeMs / 1000)),
     },
     firstFrame: summarizeFrame(frames[0]),
     lastFrame: summarizeFrame(frames[frames.length - 1]),
@@ -162,6 +172,14 @@ async function decodeFixture(options) {
       lmOnnxMs += decoded.lmOnnxMs;
       lmDeterministicMs += decoded.lmDeterministicMs;
       arithmeticMs += decoded.arithmeticMs;
+      reportProgress(
+        "entropy decode",
+        index + 1,
+        parsed.chunks.length,
+        parseStarted,
+        { frames: audioLength, sampleRate: meta.sample_rate },
+        options,
+      );
     }
   } else {
     throw new Error(`unsupported ECDC coding: acv=${acv}`);
@@ -171,16 +189,69 @@ async function decodeFixture(options) {
   const decodeSessionStarted = performance.now();
   const decodeSession = await createSession(path.join(options.bundleDir, meta.decode_model));
   const decodeSessionMs = performance.now() - decodeSessionStarted;
-  const decodedFrames = await decodeFrameBatch(decodeSession, frames, meta);
+  const decodedFrames = await decodeFrameBatch(
+    decodeSession,
+    frames,
+    meta,
+    options.decodeBatchSize,
+  );
+  let preRepairWav = null;
+  if (options.preRepairWav) {
+    const preRepairAudio = cropFixedContextWithoutRepair(
+      decodedFrames.audio,
+      audioLength,
+      meta,
+    );
+    mkdirSync(path.dirname(options.preRepairWav), { recursive: true });
+    writeWav(
+      options.preRepairWav,
+      preRepairAudio,
+      meta.channels,
+      meta.sample_rate,
+      true,
+    );
+    preRepairWav = path.relative(repoRoot, options.preRepairWav);
+  }
   const overlapStarted = performance.now();
   const decodedAudio = ecdcOverlapAddForMetadata(bundleJson, JSON.stringify(metadata), decodedFrames.audio);
   const overlapMs = performance.now() - overlapStarted;
   mkdirSync(path.dirname(options.outputWav), { recursive: true });
-  writeWav(options.outputWav, decodedAudio, meta.channels, meta.sample_rate);
+  writeWav(
+    options.outputWav,
+    decodedAudio,
+    meta.channels,
+    meta.sample_rate,
+    options.floatWav,
+  );
+
+  const decodedSignal = summarizeSignal(decodedAudio, meta.channels, audioLength);
+  let signalIntegrity = null;
+  if (options.referenceWav) {
+    const referenceBytes = readFileSync(options.referenceWav);
+    const reference = decodeWav(
+      referenceBytes.buffer.slice(
+        referenceBytes.byteOffset,
+        referenceBytes.byteOffset + referenceBytes.byteLength,
+      ),
+    );
+    signalIntegrity = compareSignalIntegrity(
+      reference,
+      {
+        sampleRate: meta.sample_rate,
+        channels: meta.channels,
+        frames: audioLength,
+        audio: decodedAudio,
+      },
+      options.levelToleranceDb,
+    );
+  }
+
+  const warmTotalDecodeMs = (parseMs - lmSessionMs) + decodedFrames.decodeOnnxMs + overlapMs;
 
   return {
     inputEcdc: path.relative(repoRoot, options.inputEcdc),
     outputWav: path.relative(repoRoot, options.outputWav),
+    preRepairWav,
     bundleDir: path.relative(repoRoot, options.bundleDir),
     runtime: "onnxruntime-web wasm",
     lmRuntime: summarizeLmRuntime(lmRuntime),
@@ -189,6 +260,11 @@ async function decodeFixture(options) {
     decodedSamples: audioLength,
     sampleRate: meta.sample_rate,
     channels: meta.channels,
+    decodedSignal,
+    referenceWav: options.referenceWav
+      ? path.relative(repoRoot, options.referenceWav)
+      : null,
+    signalIntegrity,
     timings: {
       parseMs: roundMs(parseMs),
       lmSessionMs: roundMs(lmSessionMs),
@@ -198,6 +274,8 @@ async function decodeFixture(options) {
       decodeSessionMs: roundMs(decodeSessionMs),
       decodeOnnxMs: roundMs(decodedFrames.decodeOnnxMs),
       overlapMs: roundMs(overlapMs),
+      warmTotalDecodeMs: roundMs(warmTotalDecodeMs),
+      warmRealtimeFactor: roundRatio((audioLength / meta.sample_rate) / (warmTotalDecodeMs / 1000)),
       totalDecodeMs: roundMs(performance.now() - started),
     },
     decoderBatchSize: decodedFrames.batchSize,
@@ -206,7 +284,7 @@ async function decodeFixture(options) {
   };
 }
 
-async function decodeFrameBatch(session, frames, meta, batchSize = 32) {
+async function decodeFrameBatch(session, frames, meta, batchSize) {
   const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
   const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
   let decodeOnnxMs = 0;
@@ -233,6 +311,7 @@ async function decodeFrameBatch(session, frames, meta, batchSize = 32) {
     }
     audio.set(decodedTensor.data, start * samplesPerDecodedFrame);
     outputSummary = summarizeOutputs(outputs);
+    reportProgress("neural decode", end, frames.length, null, null, options);
   }
 
   return {
@@ -252,15 +331,26 @@ function parseArgs(args) {
     inputEcdc: path.join(repoRoot, "target/wasm-smoke/westside_4s_48khz_stereo.lm.ecdc"),
     outputEcdc: path.join(repoRoot, "target/wasm-smoke/westside_4s_48khz_stereo.lm.ecdc"),
     outputWav: path.join(repoRoot, "target/wasm-smoke/westside_4s_wasm_decoded.wav"),
-    bundleDir: path.join(repoRoot, "onnx-bundles/encodec_48khz_12kbps"),
+    wasmRoot: path.resolve(repoRoot, "../vin.yl.vendor/wasm"),
+    bundleDir: null,
     coding: "lm",
     lmBackend: "q8",
+    threads: 1,
+    decodeBatchSize: 1,
+    progressEvery: 10,
+    floatWav: false,
+    report: null,
+    preRepairWav: null,
+    referenceWav: null,
+    levelToleranceDb: 1,
   };
   const positional = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--bundle") {
       out.bundleDir = path.resolve(args[++index]);
+    } else if (arg === "--wasm-root") {
+      out.wasmRoot = path.resolve(args[++index]);
     } else if (arg === "--coding") {
       out.coding = args[++index];
     } else if (arg === "--output") {
@@ -269,6 +359,22 @@ function parseArgs(args) {
       out.outputWav = output;
     } else if (arg === "--lm-backend") {
       out.lmBackend = args[++index].toLowerCase();
+    } else if (arg === "--threads") {
+      out.threads = Number(args[++index]);
+    } else if (arg === "--decode-batch-size") {
+      out.decodeBatchSize = Number(args[++index]);
+    } else if (arg === "--progress-every") {
+      out.progressEvery = Number(args[++index]);
+    } else if (arg === "--float-wav") {
+      out.floatWav = true;
+    } else if (arg === "--report") {
+      out.report = path.resolve(args[++index]);
+    } else if (arg === "--pre-repair-wav") {
+      out.preRepairWav = path.resolve(args[++index]);
+    } else if (arg === "--reference-wav") {
+      out.referenceWav = path.resolve(args[++index]);
+    } else if (arg === "--level-tolerance-db") {
+      out.levelToleranceDb = Number(args[++index]);
     } else if (arg === "--help" || arg === "-h") {
       printUsageAndExit();
     } else {
@@ -288,8 +394,28 @@ function parseArgs(args) {
       out.outputEcdc = path.resolve(positional[1]);
     }
   }
+  if (!out.bundleDir) {
+    out.bundleDir = path.join(
+      out.wasmRoot,
+      "encodec-rs/bundles/encodec_48khz_12kbps_1333ms",
+    );
+  }
   if (out.coding !== "lm") {
     throw new Error(`--coding must be "lm", got ${out.coding}`);
+  }
+  if (!Number.isInteger(out.threads) || out.threads < 1) {
+    throw new Error(`--threads must be a positive integer, got ${out.threads}`);
+  }
+  if (!Number.isInteger(out.progressEvery) || out.progressEvery < 1) {
+    throw new Error(`--progress-every must be a positive integer, got ${out.progressEvery}`);
+  }
+  if (!Number.isInteger(out.decodeBatchSize) || out.decodeBatchSize < 1) {
+    throw new Error(`--decode-batch-size must be positive, got ${out.decodeBatchSize}`);
+  }
+  if (!Number.isFinite(out.levelToleranceDb) || out.levelToleranceDb <= 0) {
+    throw new Error(
+      `--level-tolerance-db must be positive, got ${out.levelToleranceDb}`,
+    );
   }
   return out;
 }
@@ -302,10 +428,19 @@ function printUsageAndExit() {
       "  node scripts/wasm-encode-fixture.mjs decode [input.ecdc] [output.wav]",
       "",
       "Options:",
+      "  --wasm-root <dir> Production WASM asset root",
       "  --bundle <dir>    ONNX bundle directory",
       "  --coding <lm>    ECDC coding mode, fixed to q8 LM",
       "  --lm-backend <q8> LM backend for matrix runs, fixed to q8",
       "  --output <path>   Output ECDC path",
+      "  --threads <count> ONNX Runtime WASM thread count",
+      "  --decode-batch-size <count> Fixed-frame decoder batch size",
+      "  --progress-every <n> Progress interval in chunks",
+      "  --float-wav       Write IEEE float32 decoded WAV output",
+      "  --report <path>   Write the JSON timing report",
+      "  --pre-repair-wav <path> Write fixed-context PCM before seam repair",
+      "  --reference-wav <path> Compare decoded PCM with the source WAV",
+      "  --level-tolerance-db <dB> Maximum decoded RMS change per channel",
     ].join("\n"),
   );
   process.exit(0);
@@ -313,15 +448,15 @@ function printUsageAndExit() {
 
 function configureOrt() {
   ort.env.wasm.wasmPaths = pathToFileURL(
-    path.join(repoRoot, "browser-smoke/node_modules/onnxruntime-web/dist") + path.sep,
+    path.join(options.wasmRoot, "onnxruntime-web") + path.sep,
   ).href;
-  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.numThreads = options.threads;
 }
 
 function initEncodecWasm() {
-  const wasmPath = path.join(repoRoot, "pkg/encodec_rs_bg.wasm");
-  initSync({ module: readFileSync(wasmPath) });
-  initPanicHook();
+  const wasmPath = path.join(options.wasmRoot, "encodec-rs/pkg/encodec_rs_bg.wasm");
+  encodec.initSync({ module: readFileSync(wasmPath) });
+  encodec.initPanicHook?.();
 }
 
 async function getLmRuntime(bundleDir, meta, options = {}, requiredAcv = null) {
@@ -394,6 +529,13 @@ function decodeWav(bytes) {
       let sample;
       if (fmt.subFormatTag === 1 && fmt.bitsPerSample === 16) {
         sample = view.getInt16(cursor, true) / 32768;
+      } else if (fmt.subFormatTag === 1 && fmt.bitsPerSample === 24) {
+        const unsigned = view.getUint8(cursor)
+          | (view.getUint8(cursor + 1) << 8)
+          | (view.getUint8(cursor + 2) << 16);
+        sample = ((unsigned << 8) >> 8) / 8388608;
+      } else if (fmt.subFormatTag === 1 && fmt.bitsPerSample === 32) {
+        sample = view.getInt32(cursor, true) / 2147483648;
       } else if (fmt.subFormatTag === 3 && fmt.bitsPerSample === 32) {
         sample = view.getFloat32(cursor, true);
       } else {
@@ -410,6 +552,140 @@ function decodeWav(bytes) {
     frames,
     audio,
   };
+}
+
+function summarizeSignal(audio, channels, frames) {
+  const channelSignals = [];
+  let totalEnergy = 0;
+  let totalFiniteSamples = 0;
+  let peak = 0;
+  let nonFiniteSampleCount = 0;
+  let clippedSampleCount = 0;
+
+  for (let channel = 0; channel < channels; channel += 1) {
+    let energy = 0;
+    let finiteSamples = 0;
+    let channelPeak = 0;
+    let channelNonFinite = 0;
+    let channelClipped = 0;
+    const start = channel * frames;
+    const end = start + frames;
+    for (let index = start; index < end; index += 1) {
+      const sample = audio[index];
+      if (!Number.isFinite(sample)) {
+        channelNonFinite += 1;
+        continue;
+      }
+      const magnitude = Math.abs(sample);
+      energy += sample * sample;
+      finiteSamples += 1;
+      channelPeak = Math.max(channelPeak, magnitude);
+      if (magnitude >= 1) {
+        channelClipped += 1;
+      }
+    }
+    const rms = finiteSamples > 0 ? Math.sqrt(energy / finiteSamples) : null;
+    channelSignals.push({
+      channel,
+      rms: roundSignal(rms),
+      rmsDbfs: roundSignalDb(rms),
+      peak: roundSignal(channelPeak),
+      peakDbfs: roundSignalDb(channelPeak),
+      nonFiniteSampleCount: channelNonFinite,
+      clippedSampleCount: channelClipped,
+    });
+    totalEnergy += energy;
+    totalFiniteSamples += finiteSamples;
+    peak = Math.max(peak, channelPeak);
+    nonFiniteSampleCount += channelNonFinite;
+    clippedSampleCount += channelClipped;
+  }
+
+  const rms = totalFiniteSamples > 0
+    ? Math.sqrt(totalEnergy / totalFiniteSamples)
+    : null;
+  return {
+    frames,
+    channels,
+    rms: roundSignal(rms),
+    rmsDbfs: roundSignalDb(rms),
+    peak: roundSignal(peak),
+    peakDbfs: roundSignalDb(peak),
+    nonFiniteSampleCount,
+    clippedSampleCount,
+    channelSignals,
+  };
+}
+
+function compareSignalIntegrity(reference, candidate, levelToleranceDb) {
+  const referenceSignal = summarizeSignal(
+    reference.audio,
+    reference.channels,
+    reference.frames,
+  );
+  const candidateSignal = summarizeSignal(
+    candidate.audio,
+    candidate.channels,
+    candidate.frames,
+  );
+  const formatMatches = reference.sampleRate === candidate.sampleRate
+    && reference.channels === candidate.channels
+    && reference.frames === candidate.frames;
+  const channelLevelDeltasDb = [];
+  if (reference.channels === candidate.channels) {
+    for (let channel = 0; channel < reference.channels; channel += 1) {
+      channelLevelDeltasDb.push(
+        levelDeltaDb(
+          referenceSignal.channelSignals[channel].rms,
+          candidateSignal.channelSignals[channel].rms,
+        ),
+      );
+    }
+  }
+  const levelWithinTolerance = channelLevelDeltasDb.length === reference.channels
+    && channelLevelDeltasDb.every(
+      (delta) => delta !== null && Math.abs(delta) <= levelToleranceDb,
+    );
+  const finite = referenceSignal.nonFiniteSampleCount === 0
+    && candidateSignal.nonFiniteSampleCount === 0;
+  const unclipped = candidateSignal.clippedSampleCount === 0;
+
+  return {
+    pass: formatMatches && levelWithinTolerance && finite && unclipped,
+    levelToleranceDb,
+    checks: {
+      formatMatches,
+      levelWithinTolerance,
+      finite,
+      unclipped,
+    },
+    overallLevelDeltaDb: levelDeltaDb(referenceSignal.rms, candidateSignal.rms),
+    channelLevelDeltasDb,
+    peakDeltaDb: levelDeltaDb(referenceSignal.peak, candidateSignal.peak),
+    reference: {
+      sampleRate: reference.sampleRate,
+      ...referenceSignal,
+    },
+    candidate: {
+      sampleRate: candidate.sampleRate,
+      ...candidateSignal,
+    },
+  };
+}
+
+function levelDeltaDb(reference, candidate) {
+  if (!(reference > 0) || !(candidate > 0)) {
+    return reference === candidate ? 0 : null;
+  }
+  return Number((20 * Math.log10(candidate / reference)).toFixed(3));
+}
+
+function roundSignal(value) {
+  return value === null ? null : Number(value.toFixed(8));
+}
+
+function roundSignalDb(value) {
+  return value > 0 ? Number((20 * Math.log10(value)).toFixed(3)) : null;
 }
 
 function buildSegmentBatch(audio, audioLength, meta) {
@@ -665,6 +941,35 @@ function fixedContextSamples(meta) {
   return null;
 }
 
+function cropFixedContextWithoutRepair(decodedFrames, audioLength, meta) {
+  const context = fixedContextSamples(meta);
+  if (context === null) {
+    throw new Error("--pre-repair-wav requires a fixed-context bundle");
+  }
+  const frameCount = Math.ceil(audioLength / meta.segment_stride);
+  const expected = frameCount * meta.channels * meta.segment_samples;
+  if (decodedFrames.length !== expected) {
+    throw new Error(
+      `decoded frame buffer has ${decodedFrames.length} values; expected ${expected}`,
+    );
+  }
+  const output = new Float32Array(meta.channels * audioLength);
+  for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    const offset = frameIndex * meta.segment_stride;
+    const ownedSamples = Math.min(meta.segment_stride, audioLength - offset);
+    const frameBase = frameIndex * meta.channels * meta.segment_samples;
+    for (let channel = 0; channel < meta.channels; channel += 1) {
+      const sourceStart = frameBase + channel * meta.segment_samples + context;
+      const targetStart = channel * audioLength + offset;
+      output.set(
+        decodedFrames.subarray(sourceStart, sourceStart + ownedSamples),
+        targetStart,
+      );
+    }
+  }
+  return output;
+}
+
 function segmentStarts(totalSamples, stride) {
   const starts = [];
   for (let offset = 0; offset < totalSamples; offset += Math.max(1, stride)) {
@@ -681,9 +986,9 @@ function readAscii(view, offset, length) {
   return out;
 }
 
-function writeWav(outputPath, planar, channels, sampleRate) {
+function writeWav(outputPath, planar, channels, sampleRate, floatOutput = false) {
   const frames = Math.floor(planar.length / channels);
-  const bytesPerSample = 2;
+  const bytesPerSample = floatOutput ? 4 : 2;
   const dataBytes = frames * channels * bytesPerSample;
   const out = Buffer.alloc(44 + dataBytes);
   out.write("RIFF", 0, "ascii");
@@ -691,22 +996,27 @@ function writeWav(outputPath, planar, channels, sampleRate) {
   out.write("WAVE", 8, "ascii");
   out.write("fmt ", 12, "ascii");
   out.writeUInt32LE(16, 16);
-  out.writeUInt16LE(1, 20);
+  out.writeUInt16LE(floatOutput ? 3 : 1, 20);
   out.writeUInt16LE(channels, 22);
   out.writeUInt32LE(sampleRate, 24);
   out.writeUInt32LE(sampleRate * channels * bytesPerSample, 28);
   out.writeUInt16LE(channels * bytesPerSample, 32);
-  out.writeUInt16LE(16, 34);
+  out.writeUInt16LE(bytesPerSample * 8, 34);
   out.write("data", 36, "ascii");
   out.writeUInt32LE(dataBytes, 40);
   let cursor = 44;
   for (let frame = 0; frame < frames; frame += 1) {
     for (let channel = 0; channel < channels; channel += 1) {
-      const value = Math.max(-1, Math.min(1, planar[channel * frames + frame]));
-      out.writeInt16LE(
-        value < 0 ? Math.round(value * 32768) : Math.round(value * 32767),
-        cursor,
-      );
+      const sample = planar[channel * frames + frame];
+      if (floatOutput) {
+        out.writeFloatLE(sample, cursor);
+      } else {
+        const value = Math.max(-1, Math.min(1, sample));
+        out.writeInt16LE(
+          value < 0 ? Math.round(value * 32768) : Math.round(value * 32767),
+          cursor,
+        );
+      }
       cursor += bytesPerSample;
     }
   }
@@ -780,4 +1090,21 @@ function summarizeFrame(frame) {
 
 function roundMs(ms) {
   return Number(ms.toFixed(1));
+}
+
+function roundRatio(value) {
+  return Number(value.toFixed(3));
+}
+
+function reportProgress(label, completed, total, started, wav, runOptions) {
+  if (completed !== 1 && completed !== total && completed % runOptions.progressEvery !== 0) {
+    return;
+  }
+  let timing = "";
+  if (started != null && wav != null) {
+    const elapsedSeconds = (performance.now() - started) / 1000;
+    const audioSeconds = (wav.frames / wav.sampleRate) * (completed / total);
+    timing = `, ${elapsedSeconds.toFixed(1)}s wall, ${(audioSeconds / elapsedSeconds).toFixed(2)}x processed-audio realtime`;
+  }
+  process.stderr.write(`[wasm-fixture] ${label} ${completed}/${total}${timing}\n`);
 }
