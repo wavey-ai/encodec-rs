@@ -1,0 +1,136 @@
+{
+  "schema": "wavey.encodec.hf-sidecar-experiment.v1",
+  "status": "closed_no_go",
+  "date": "2026-08-22",
+  "fixture": {
+    "filename": "WESTSIDE_V2_MIX 4 CONFIRMATION_140323.wav",
+    "sample_rate": 48000,
+    "channels": 2,
+    "samples_per_channel": 9260919,
+    "duration_seconds": 192.9358125
+  },
+  "payloads": {
+    "ecdc": {
+      "bytes": 257395,
+      "effective_kbps": 10.672772324215341
+    },
+    "coarse_sidecar": {
+      "bytes": 23078,
+      "effective_kbps": 0.9569192863040914,
+      "combined_kbps": 11.629691610519432
+    },
+    "mid_grid_sidecar": {
+      "bytes": 30947,
+      "effective_kbps": 1.2832039671224855,
+      "combined_kbps": 11.955976291337826
+    }
+  },
+  "objective_full_file": {
+    "baseline": {
+      "snr_db": 8.002353004602275,
+      "si_sdr_db": 7.359924784236794,
+      "segmental_snr_db": 7.986976494565686,
+      "log_spectral_distance_db": 13.666014714296397,
+      "spectral_convergence": 0.24414048093682605,
+      "loudness_delta_lu": -0.35925371094344527
+    },
+    "hard_crop": {
+      "snr_db": 8.003890637158491,
+      "si_sdr_db": 7.36161005357604,
+      "segmental_snr_db": 7.988047516150647,
+      "log_spectral_distance_db": 13.743617124199233,
+      "spectral_convergence": 0.2441084436995041,
+      "loudness_delta_lu": -0.35934286332816967
+    },
+    "oracle": {
+      "snr_db": 8.30611089540074,
+      "si_sdr_db": 7.70639500480715,
+      "segmental_snr_db": 8.223498887085857,
+      "log_spectral_distance_db": 4.621232807234866,
+      "spectral_convergence": 0.23832263336563989,
+      "loudness_delta_lu": -0.34215170677927453
+    },
+    "envelope": {
+      "snr_db": 7.974742782279522,
+      "si_sdr_db": 7.330361168226652,
+      "segmental_snr_db": 7.9668650582347365,
+      "log_spectral_distance_db": 14.241785136594041,
+      "spectral_convergence": 0.24447153507314334,
+      "loudness_delta_lu": -0.3459235425432272
+    },
+    "excitation": {
+      "snr_db": 8.00158123484012,
+      "si_sdr_db": 7.359096802048266,
+      "segmental_snr_db": 7.986523569660082,
+      "log_spectral_distance_db": 13.763944916263174,
+      "spectral_convergence": 0.244069928872289,
+      "loudness_delta_lu": -0.35891027744430737
+    },
+    "mid_grid": {
+      "snr_db": 7.9066786220248675,
+      "si_sdr_db": 7.2577068470517485,
+      "segmental_snr_db": 7.930140944168798,
+      "log_spectral_distance_db": 11.452303883070767,
+      "spectral_convergence": 0.24598279145359553,
+      "loudness_delta_lu": -0.3118612770298199
+    }
+  },
+  "visqol": {
+    "mode": "audio",
+    "sample_subtype": "PCM_16",
+    "global_alignment": false,
+    "random_samples": {
+      "seed": 20260822,
+      "count": 4,
+      "seconds_each": 8.0,
+      "start_seconds": [38.0, 71.0, 100.0, 159.0]
+    },
+    "summary": {
+      "baseline": {
+        "mean": 4.209374675,
+        "delta_vs_baseline": 0.0,
+        "delta_ci95": [0.0, 0.0]
+      },
+      "hard_crop": {
+        "mean": 4.203169675,
+        "delta_vs_baseline": -0.006205000000000016,
+        "delta_ci95": [-0.014456227213489728, 0.002046227213489696]
+      },
+      "oracle": {
+        "mean": 4.564351975,
+        "delta_vs_baseline": 0.35497730000000005,
+        "delta_ci95": [0.21499278644648256, 0.49496181355351754]
+      },
+      "envelope": {
+        "mean": 4.2663052225,
+        "delta_vs_baseline": 0.05693054749999993,
+        "delta_ci95": [0.03125716852083239, 0.08260392647916746]
+      },
+      "excitation": {
+        "mean": 4.2435900575000005,
+        "delta_vs_baseline": 0.0342153825,
+        "delta_ci95": [0.020132424549886847, 0.04829834045011316]
+      },
+      "mid_grid": {
+        "mean": 4.2314315325,
+        "delta_vs_baseline": 0.022056857500000193,
+        "delta_ci95": [-0.04849225094866966, 0.09260596594867004]
+      },
+      "source_control": {
+        "mean": 4.73210125,
+        "delta_vs_baseline": 0.5227265750000003,
+        "delta_ci95": [0.34432150625416047, 0.7011316437458401]
+      }
+    },
+    "limitations": [
+      "Audio mode downmixes stereo to mono.",
+      "The model was trained at bitrates of 24 kbps and above.",
+      "Four random samples cannot validate small perceptual differences."
+    ]
+  },
+  "decision": {
+    "integrate_sidecar": false,
+    "replace_with_dac": false,
+    "reason": "No practical sidecar produced a material, trustworthy quality gain for its added bitrate. DAC is too large and did not meet the payload-size target."
+  }
+}
