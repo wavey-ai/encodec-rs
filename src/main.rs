@@ -195,7 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(feature = "onnx"))]
     {
         let _ = cli;
-        return Err("encodec-rs CLI requires the `onnx` or `ecdc` feature".into());
+        Err("encodec-rs CLI requires the `onnx` or `ecdc` feature".into())
     }
 
     #[cfg(feature = "onnx")]

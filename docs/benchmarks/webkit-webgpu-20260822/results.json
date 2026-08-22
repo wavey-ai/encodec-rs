@@ -1,0 +1,127 @@
+{
+  "schema": "wavey.encodec.webkit-webgpu-kernel-gate",
+  "version": 1,
+  "date": "2026-08-22",
+  "multiply_accumulates": 425721856,
+  "method": {
+    "scope": "dedicated-worker",
+    "precision": "float32",
+    "wasm_simd": "standard",
+    "webgpu_batched_dispatches": 9,
+    "setup_excluded": true,
+    "transfers_excluded_from_batched_time": true
+  },
+  "devices": [
+    {
+      "name": "Apple M1 MacBook Air",
+      "browser": "Safari 26.5",
+      "capabilities": {
+        "window_compute": true,
+        "dedicated_worker_compute": true,
+        "shader_f16": true,
+        "packed_4x8_integer_dot_product": true,
+        "timestamp_query": true,
+        "subgroups": false,
+        "max_storage_buffer_binding_size": 2147483644,
+        "max_compute_workgroup_storage_size": 32768,
+        "max_compute_invocations_per_workgroup": 1024
+      },
+      "runs": [
+        {
+          "direction": "encode",
+          "wasm_isolated_median_ms": 26,
+          "webgpu_isolated_median_ms": 9,
+          "webgpu_batched_total_ms": 51,
+          "webgpu_batched_per_dispatch_ms": 5.667,
+          "speedup_isolated": 2.889,
+          "speedup_batched": 4.588,
+          "parity_snr_db": 129.84932649581663,
+          "parity_rmse": 3.4466355631182267e-8,
+          "parity_max_abs_error": 2.384185791015625e-7
+        },
+        {
+          "direction": "decode",
+          "wasm_isolated_median_ms": 24,
+          "webgpu_isolated_median_ms": 6,
+          "webgpu_batched_total_ms": 42,
+          "webgpu_batched_per_dispatch_ms": 4.667,
+          "speedup_isolated": 4,
+          "speedup_batched": 5.143,
+          "parity_snr_db": 132.74896711421846,
+          "parity_rmse": 1.2314171513306079e-8,
+          "parity_max_abs_error": 1.0430812835693359e-7
+        }
+      ]
+    },
+    {
+      "name": "iPhone 13 mini",
+      "os": "iOS 26.5.2",
+      "browser": "Safari 26.5.2",
+      "capabilities": {
+        "window_compute": true,
+        "dedicated_worker_compute": true,
+        "shader_f16": true,
+        "packed_4x8_integer_dot_product": true,
+        "timestamp_query": true,
+        "subgroups": false,
+        "max_storage_buffer_binding_size": 715827880,
+        "max_compute_workgroup_storage_size": 32768,
+        "max_compute_invocations_per_workgroup": 1024
+      },
+      "runs": [
+        {
+          "direction": "encode",
+          "repeat": 1,
+          "wasm_isolated_median_ms": 25,
+          "webgpu_isolated_median_ms": 14,
+          "webgpu_batched_total_ms": 118,
+          "webgpu_batched_per_dispatch_ms": 13.111,
+          "speedup_isolated": 1.786,
+          "speedup_batched": 1.907,
+          "parity_snr_db": 129.84932649581663,
+          "parity_rmse": 3.4466355631182267e-8,
+          "parity_max_abs_error": 2.384185791015625e-7
+        },
+        {
+          "direction": "decode",
+          "repeat": 1,
+          "wasm_isolated_median_ms": 23,
+          "webgpu_isolated_median_ms": 14,
+          "webgpu_batched_total_ms": 115,
+          "webgpu_batched_per_dispatch_ms": 12.778,
+          "speedup_isolated": 1.643,
+          "speedup_batched": 1.8,
+          "parity_snr_db": 132.74896711421846,
+          "parity_rmse": 1.2314171513306079e-8,
+          "parity_max_abs_error": 1.0430812835693359e-7
+        },
+        {
+          "direction": "decode",
+          "repeat": 2,
+          "wasm_isolated_median_ms": 24,
+          "webgpu_isolated_median_ms": 18,
+          "webgpu_batched_total_ms": 137,
+          "webgpu_batched_per_dispatch_ms": 15.222,
+          "speedup_isolated": 1.333,
+          "speedup_batched": 1.577,
+          "parity_snr_db": 132.74896711421846,
+          "parity_rmse": 1.2314171513306079e-8,
+          "parity_max_abs_error": 1.0430812835693359e-7
+        },
+        {
+          "direction": "encode",
+          "repeat": 2,
+          "wasm_isolated_median_ms": 25,
+          "webgpu_isolated_median_ms": 15,
+          "webgpu_batched_total_ms": 125,
+          "webgpu_batched_per_dispatch_ms": 13.889,
+          "speedup_isolated": 1.667,
+          "speedup_batched": 1.8,
+          "parity_snr_db": 129.84932649581663,
+          "parity_rmse": 3.4466355631182267e-8,
+          "parity_max_abs_error": 2.384185791015625e-7
+        }
+      ]
+    }
+  ]
+}

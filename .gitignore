@@ -1,5 +1,10 @@
 target/
 build/
+apple/.build/
+apple/.swiftpm/
+apple/DeviceBench/EncodecMLXDeviceBench.xcodeproj/
+apple/DeviceBench/RustLib/
+apple/DeviceBench/build/
 __pycache__/
 *.pyc
 .wrangler/

@@ -1,0 +1,56 @@
+{
+  "schema": "wavey.encodec.webkit-webgpu-full-codec",
+  "version": 1,
+  "date": "2026-08-22",
+  "device": {
+    "name": "physical iPhone Pro Max",
+    "browser": "Safari 26.5.2",
+    "webgpu_adapter_vendor": "apple"
+  },
+  "profile": {
+    "name": "encodec_48khz_12kbps_1333ms",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_seconds": 227.863,
+    "audio_frames": 10937424,
+    "chunks": 171,
+    "ecdc_bytes": 296596
+  },
+  "encode": {
+    "model_ms": 58916,
+    "entropy_ms": 34404,
+    "pipeline_ms": 93320,
+    "rtfx": 2.442,
+    "code_count": 277704,
+    "code_mismatches": 0,
+    "scale_mismatches": 78,
+    "maximum_scale_error": 2.9802322387695312e-8,
+    "candidate_bytes": 296596,
+    "reference_bytes": 296596,
+    "byte_mismatches": 390
+  },
+  "incremental_decode": {
+    "collect_audio": false,
+    "delivered_chunks": 171,
+    "delivered_frames": 10937424,
+    "non_finite_samples": 0,
+    "setup_ms": 32812,
+    "container_ms": 12,
+    "entropy_ms": 34297,
+    "model_ms": 55266,
+    "assembly_ms": 19,
+    "delivery_ms": 670,
+    "pipeline_ms": 90389,
+    "first_playable_chunk_ms": 498,
+    "first_playable_chunk_cold_ms": 33325,
+    "rtfx": 2.521
+  },
+  "decoder_quality_gate": {
+    "duration_seconds": 4,
+    "snr_db": 80.136,
+    "rmse": 0.000009250660678721604,
+    "maximum_absolute_error": 0.00003725290298461914,
+    "maximum_error_dbfs": -88.577,
+    "non_finite_samples": 0
+  }
+}

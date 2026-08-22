@@ -17,7 +17,7 @@ It uses one CPU thread and WASM SIMD.
 | Quantized language model | Rust WASM |
 | Arithmetic coding | Rust WASM |
 | ECDC framing and CRC32 | Rust WASM |
-| Guard cropping and triangle overlap | Rust WASM |
+| Guard cropping and optional triangle overlap | Rust WASM |
 
 The custom kernels implement EnCodec convolutions, recurrent layers, normalization, and residual vector quantization.
 
@@ -32,6 +32,110 @@ The packed weights replace the ONNX weights. They are not an additional model co
 The package also removes approximately 17.7 MB of uncompressed ONNX Runtime Web payload.
 
 The optional native `onnx` feature remains available for comparison and compatibility.
+
+## Experimental Mobile Safari WebGPU backend
+
+The experimental WebGPU backend runs the complete float32 neural encoder and decoder without ONNX Runtime.
+
+Rust WASM continues to run the deterministic LM, arithmetic coder, ECDC framing, and CRC32 operations.
+
+The decoder processes each ECDC chunk in this order:
+
+1. Decode the LM and arithmetic payload.
+2. Run the neural decoder with WebGPU.
+3. Crop the private model context.
+4. Deliver the owned planar PCM.
+
+The callback also receives the complete guarded model window.
+
+The caller can use that window for optional seam repair.
+
+The runtime does not retain complete PCM unless the caller requests it.
+
+The full-track physical iPhone test used Safari 26.5.2.
+
+| Operation | Neural time | LM entropy time | Total time | RTFx |
+|---|---:|---:|---:|---:|
+| Encode | 58.916 s | 34.404 s | 93.320 s | 2.442× |
+| Incremental decode | 55.266 s | 34.297 s | 90.389 s | 2.521× |
+
+The test delivered all 171 chunks of a 227.863-second song.
+
+The first playable chunk was ready in 498 ms after prewarm.
+
+Cold decoder setup took 32.812 seconds.
+
+Applications must prewarm and retain this backend.
+
+All 277,704 encoder codes matched the frozen reference.
+
+The ECDC file size did not change.
+
+The four-second decoder gate measured 80.136 dB SNR against frozen decoded PCM.
+
+See [the WebKit WebGPU benchmark](docs/benchmarks/webkit-webgpu-20260822/README.md) for details.
+
+## Apple MLX backend
+
+The Apple package provides complete ECDC encoding and decoding without ONNX Runtime.
+
+MLX runs the neural encoder and decoder on Metal.
+
+Rust owns deterministic q8 language-model inference, arithmetic coding, ECDC framing, and CRC32.
+
+The MLX bundles contain `encode_frame.safetensors`, `decode_frame.safetensors`, and `lm_weights_q8.bin`.
+
+They do not contain or load ONNX models at runtime.
+
+One initialized backend can process many files.
+
+iOS uses one neural frame per call by default. This setting avoids the memory pressure measured with larger device batches.
+
+macOS groups up to eight compatible neural frames by default.
+
+Callers can override either default.
+
+Call `prewarm(frameBatchSize:)` before the first timed operation.
+
+Use the same batch size for prewarm and normal operation.
+
+Fixed-context in-memory decoding writes borrowed MLX windows directly to the final interleaved PCM buffer.
+
+Fixed-context file decoding writes the same windows directly to planar PCM.
+
+These paths do not allocate an intermediate complete planar track.
+
+The Apple CLI accepts RIFF PCM16, packed PCM24, PCM32, and float32 input.
+
+It also accepts PCM and float `WAVE_FORMAT_EXTENSIBLE` files.
+
+It does not resample. Current profiles require 48 kHz stereo input.
+
+Build the Rust bridge, Swift runtime, executable, and MLX Metal library with:
+
+```bash
+scripts/build-apple-mlx.sh
+```
+
+### Apple performance
+
+The Apple tests used the same 227.863-second master and 12 kbps, 1333 ms profile.
+
+| Runtime | Device path | Batch | Encode RTFx | Decode RTFx |
+|---|---|---:|---:|---:|
+| Custom WASM | Apple M1 CPU | 1 | 2.922× | 3.121× |
+| MLX | Apple M1 Metal | 8 | 8.136× | 7.252× |
+| MLX | Physical iPhone Metal | 1 | approximately 7× | approximately 5× |
+
+The iPhone row records the rounded values shown by the dedicated full-track device runner.
+
+Batch-one MLX decoding matched the frozen PCM bit-for-bit on macOS.
+
+Batch-eight decoding measured 111.27 dB SNR, 0.000000596 RMSE, and 0.000202447 maximum error against that output.
+
+MLX encoding produced the same ECDC bytes at batch one and batch eight.
+
+Decode remains slower on iPhone because it runs serial q8 entropy decoding before neural synthesis.
 
 ## Performance result
 
@@ -159,6 +263,8 @@ One initialized runtime can process independent chunks or different tracks in an
 Session reuse keeps allocations, packed weights, and prepared kernels. It changes speed, not results.
 
 The q8 language model starts with new state for each ECDC chunk.
+
+The runtime clears and reuses the state cache allocation between chunks.
 
 The arithmetic coder also starts with new state for each ECDC chunk.
 

@@ -2,7 +2,7 @@ use std::io::Cursor;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{s, Array2, Array3, Array4, ArrayView3};
 
 use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder, CdfScratch};
 use crate::binary::{
@@ -53,6 +53,26 @@ pub trait LmCodec {
         offset: i64,
         states: &[Array3<f32>],
     ) -> Result<(Array4<f32>, i64, Vec<Array3<f32>>)>;
+
+    /// Returns cardinality-major logits without requiring an ndarray owner.
+    ///
+    /// Portable runtimes can return a view of reusable internal storage. The
+    /// default implementation copies an owned tensor into caller scratch.
+    fn forward_logits_flat<'a>(
+        &'a mut self,
+        indices: &Array3<i64>,
+        offset: i64,
+        states: &[Array3<f32>],
+        scratch: &'a mut Vec<f32>,
+    ) -> Result<(&'a [f32], i64, Vec<Array3<f32>>)> {
+        let (logits, next_offset, next_states) = self.forward_logits(indices, offset, states)?;
+        let values = logits
+            .as_slice_memory_order()
+            .ok_or_else(|| anyhow::anyhow!("LM logits are not contiguous"))?;
+        scratch.clear();
+        scratch.extend_from_slice(values);
+        Ok((scratch, next_offset, next_states))
+    }
 }
 
 impl EcdcMetadata {
@@ -70,6 +90,12 @@ impl EcdcMetadata {
 pub struct DecodedEcdcAudio {
     pub metadata: EcdcMetadata,
     pub audio: Array3<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcdcDecodeProgressStage {
+    Entropy,
+    Model,
 }
 
 /// Describes the complete decoded model windows in one ECDC payload.
@@ -96,6 +122,20 @@ pub struct LmChunkEvidence {
     pub entropy: Vec<u8>,
     pub recovered_codes: Array3<i64>,
     pub recovered_scale: Array2<f32>,
+}
+
+#[derive(Default)]
+struct LmEntropyScratch {
+    logits: Vec<f32>,
+    probability: ProbabilityScratch,
+    cdf: CdfScratch,
+    symbols: Vec<usize>,
+}
+
+impl LmEntropyScratch {
+    fn prepare_symbols(&mut self, codebooks: usize) {
+        self.symbols.resize(codebooks, 0);
+    }
 }
 
 /// Encodes each neural model input and retains the tensors needed for qualification.
@@ -249,7 +289,7 @@ pub fn encode_audio_to_ecdc(
         encode_audio_to_ecdc_impl(
             codec,
             lm_codec,
-            audio,
+            audio.view(),
             source,
             frame_encode_batch_size(),
             true,
@@ -270,7 +310,7 @@ pub fn encode_audio_to_ecdc_with_batch_size(
         encode_audio_to_ecdc_impl(
             codec,
             lm_codec,
-            audio,
+            audio.view(),
             source,
             frame_batch_size.max(1),
             true,
@@ -296,7 +336,7 @@ pub fn encode_audio_to_ecdc_with_options(
         encode_audio_to_ecdc_impl(
             codec,
             lm_codec,
-            audio,
+            audio.view(),
             source,
             frame_batch_size.max(1),
             chunk_crc,
@@ -311,6 +351,63 @@ pub fn encode_audio_to_ecdc_stream_with_options<F>(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
     audio: &Array3<f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: Option<f64>,
+    mut on_bytes: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    if !chunk_crc {
+        bail!("q8 ECDC always writes CRC-wrapped chunks");
+    }
+    encode_audio_to_ecdc_impl(
+        codec,
+        lm_codec,
+        audio.view(),
+        source,
+        frame_batch_size.max(1),
+        chunk_crc,
+        chunk_ms,
+        &mut on_bytes,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_audio_view_to_ecdc_with_options(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    audio: ArrayView3<'_, f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: Option<f64>,
+) -> Result<Vec<u8>> {
+    if !chunk_crc {
+        bail!("q8 ECDC always writes CRC-wrapped chunks");
+    }
+    collect_ecdc_bytes(|emit| {
+        encode_audio_to_ecdc_impl(
+            codec,
+            lm_codec,
+            audio,
+            source,
+            frame_batch_size.max(1),
+            chunk_crc,
+            chunk_ms,
+            emit,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn encode_audio_view_to_ecdc_stream_with_options<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    audio: ArrayView3<'_, f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
@@ -374,7 +471,16 @@ pub fn encode_ecdc_segment_batch_with_options<F>(
 where
     F: FnMut(&[u8]) -> Result<()>,
 {
-    encode_ecdc_segment_batch_impl(codec, lm_codec, batch, frame_lengths, true, &mut on_bytes)
+    let mut entropy_scratch = LmEntropyScratch::default();
+    encode_ecdc_segment_batch_impl(
+        codec,
+        lm_codec,
+        batch,
+        frame_lengths,
+        true,
+        &mut entropy_scratch,
+        &mut on_bytes,
+    )
 }
 
 pub fn decode_ecdc(
@@ -382,7 +488,47 @@ pub fn decode_ecdc(
     lm_codec: &mut dyn LmCodec,
     payload: &[u8],
 ) -> Result<DecodedEcdcAudio> {
-    decode_ecdc_impl(codec, lm_codec, payload)
+    let mut ignore_progress = |_, _, _| Ok(());
+    decode_ecdc_impl(codec, lm_codec, payload, 1, &mut ignore_progress)
+}
+
+/// Decodes an ECDC payload and batches compatible neural decoder frames.
+///
+/// Entropy decoding remains ordered and deterministic. Only model frames with
+/// the same encoded length are grouped for `FrameCodec::decode_frame`.
+pub fn decode_ecdc_with_batch_size(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    frame_batch_size: usize,
+) -> Result<DecodedEcdcAudio> {
+    let mut ignore_progress = |_, _, _| Ok(());
+    decode_ecdc_impl(
+        codec,
+        lm_codec,
+        payload,
+        frame_batch_size.max(1),
+        &mut ignore_progress,
+    )
+}
+
+pub fn decode_ecdc_with_batch_size_and_progress<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    frame_batch_size: usize,
+    mut on_progress: F,
+) -> Result<DecodedEcdcAudio>
+where
+    F: FnMut(EcdcDecodeProgressStage, usize, usize) -> Result<()>,
+{
+    decode_ecdc_impl(
+        codec,
+        lm_codec,
+        payload,
+        frame_batch_size.max(1),
+        &mut on_progress,
+    )
 }
 
 /// Decodes complete model windows without cropping their context samples.
@@ -398,7 +544,74 @@ pub fn decode_ecdc_model_windows<F>(
 where
     F: FnMut(&DecodedEcdcWindowInfo, usize, usize, usize, Array3<f32>) -> Result<()>,
 {
-    decode_ecdc_model_windows_impl(codec, lm_codec, payload, on_window)
+    let mut ignore_progress = |_, _, _| Ok(());
+    let mut on_window = on_window;
+    decode_ecdc_model_window_views_impl(
+        codec,
+        lm_codec,
+        payload,
+        1,
+        |info, window_index, offset, owned_samples, window| {
+            on_window(info, window_index, offset, owned_samples, window.to_owned())
+        },
+        &mut ignore_progress,
+    )
+}
+
+/// Decodes complete model windows and batches compatible neural frames.
+pub fn decode_ecdc_model_windows_with_batch_size<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    frame_batch_size: usize,
+    on_window: F,
+) -> Result<DecodedEcdcWindowInfo>
+where
+    F: FnMut(&DecodedEcdcWindowInfo, usize, usize, usize, Array3<f32>) -> Result<()>,
+{
+    let mut ignore_progress = |_, _, _| Ok(());
+    let mut on_window = on_window;
+    decode_ecdc_model_window_views_impl(
+        codec,
+        lm_codec,
+        payload,
+        frame_batch_size.max(1),
+        |info, window_index, offset, owned_samples, window| {
+            on_window(info, window_index, offset, owned_samples, window.to_owned())
+        },
+        &mut ignore_progress,
+    )
+}
+
+/// Decodes borrowed model-window views for allocation-free consumers.
+///
+/// The callback must consume each view before it returns. The view references
+/// the current neural decoder batch and does not outlive the callback.
+pub(crate) fn decode_ecdc_model_window_views_with_batch_size_and_progress<F>(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn LmCodec,
+    payload: &[u8],
+    frame_batch_size: usize,
+    on_window: F,
+    mut on_progress: impl FnMut(EcdcDecodeProgressStage, usize, usize) -> Result<()>,
+) -> Result<DecodedEcdcWindowInfo>
+where
+    F: for<'a> FnMut(
+        &DecodedEcdcWindowInfo,
+        usize,
+        usize,
+        usize,
+        ArrayView3<'a, f32>,
+    ) -> Result<()>,
+{
+    decode_ecdc_model_window_views_impl(
+        codec,
+        lm_codec,
+        payload,
+        frame_batch_size.max(1),
+        on_window,
+        &mut on_progress,
+    )
 }
 
 fn collect_ecdc_bytes<F>(encode: F) -> Result<Vec<u8>>
@@ -418,7 +631,7 @@ where
 fn encode_audio_to_ecdc_impl(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
-    audio: &Array3<f32>,
+    audio: ArrayView3<'_, f32>,
     source: Option<&SourceAudioMetadata>,
     frame_batch_size: usize,
     chunk_crc: bool,
@@ -472,17 +685,25 @@ fn encode_audio_to_ecdc_impl(
             model_meta.frame_length,
         )
     });
-    for (batch_index, (frame_lengths, batch)) in encode_segment_batches_with_size(
-        audio,
-        &model_meta,
-        frame_batch_size,
-        chunk_layout,
-        fixed_lm_frame_length,
-    )?
-    .into_iter()
-    .enumerate()
-    {
-        encode_ecdc_segment_batch_impl(codec, lm_codec, &batch, &frame_lengths, chunk_crc, emit)?;
+    let segment_offsets = segment_starts(shape[2], chunk_layout.stride);
+    let mut entropy_scratch = LmEntropyScratch::default();
+    for (batch_index, offsets) in segment_offsets.chunks(frame_batch_size.max(1)).enumerate() {
+        let (frame_lengths, batch) = encode_segment_batch(
+            &audio,
+            &model_meta,
+            offsets,
+            chunk_layout,
+            fixed_lm_frame_length,
+        )?;
+        encode_ecdc_segment_batch_impl(
+            codec,
+            lm_codec,
+            &batch,
+            &frame_lengths,
+            chunk_crc,
+            &mut entropy_scratch,
+            emit,
+        )?;
         if profile_enabled {
             eprintln!(
                 "encode_segment_batch batch={} segments={}",
@@ -501,6 +722,7 @@ fn encode_ecdc_segment_batch_impl(
     batch: &Array3<f32>,
     frame_lengths: &[usize],
     chunk_crc: bool,
+    entropy_scratch: &mut LmEntropyScratch,
     emit: &mut dyn FnMut(&[u8]) -> Result<()>,
 ) -> Result<()> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
@@ -560,7 +782,7 @@ fn encode_ecdc_segment_batch_impl(
             );
         }
         let mut encoded_chunk = Vec::new();
-        let payload = encode_lm_chunk_payload(
+        let payload = encode_lm_chunk_payload_with_scratch(
             lm_codec,
             &codes_full,
             &scales,
@@ -569,6 +791,7 @@ fn encode_ecdc_segment_batch_impl(
             DEFAULT_FP_SCALE,
             DEFAULT_MIN_RANGE,
             1.0,
+            entropy_scratch,
         )?;
         write_chunk(&mut encoded_chunk, &payload, chunk_crc)?;
         emit(&encoded_chunk)?;
@@ -581,25 +804,29 @@ fn decode_ecdc_impl(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
     payload: &[u8],
+    frame_batch_size: usize,
+    on_progress: &mut dyn FnMut(EcdcDecodeProgressStage, usize, usize) -> Result<()>,
 ) -> Result<DecodedEcdcAudio> {
     let channels = codec.metadata().channels;
     let mut fixed_audio = None;
     let mut windows = Vec::new();
-    let info = decode_ecdc_model_windows_impl(
+    let info = decode_ecdc_model_window_views_impl(
         codec,
         lm_codec,
         payload,
+        frame_batch_size,
         |info, _window_index, offset, owned_samples, window| {
             if let Some(context) = info.context_samples {
                 let output = fixed_audio.get_or_insert_with(|| {
                     Array3::<f32>::zeros((1, channels, info.metadata.audio_length))
                 });
-                copy_owned_segment_into(&window, context, owned_samples, output, offset)?;
+                copy_owned_segment_view_into(window, context, owned_samples, output, offset)?;
             } else {
-                windows.push(window);
+                windows.push(window.to_owned());
             }
             Ok(())
         },
+        on_progress,
     )?;
 
     let audio_length = info.metadata.audio_length;
@@ -624,14 +851,22 @@ fn decode_ecdc_impl(
     })
 }
 
-fn decode_ecdc_model_windows_impl<F>(
+fn decode_ecdc_model_window_views_impl<F>(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
     payload: &[u8],
+    frame_batch_size: usize,
     mut on_window: F,
+    on_progress: &mut dyn FnMut(EcdcDecodeProgressStage, usize, usize) -> Result<()>,
 ) -> Result<DecodedEcdcWindowInfo>
 where
-    F: FnMut(&DecodedEcdcWindowInfo, usize, usize, usize, Array3<f32>) -> Result<()>,
+    F: for<'a> FnMut(
+        &DecodedEcdcWindowInfo,
+        usize,
+        usize,
+        usize,
+        ArrayView3<'a, f32>,
+    ) -> Result<()>,
 {
     let mut reader = Cursor::new(payload);
     let metadata: EcdcMetadata = read_ecdc_header(&mut reader)?;
@@ -682,6 +917,19 @@ where
         context_samples: context,
         window_count: raw_chunks.len(),
     };
+
+    struct PendingWindow {
+        window_index: usize,
+        offset: usize,
+        owned_len: usize,
+        decode_len: usize,
+        frame_length: usize,
+        codes: Array3<i64>,
+        scale: Array2<f32>,
+    }
+
+    let mut pending = Vec::with_capacity(raw_chunks.len());
+    let mut entropy_scratch = LmEntropyScratch::default();
     for (window_index, (offset, chunk)) in starts.into_iter().zip(raw_chunks).enumerate() {
         let owned_len = (info.metadata.audio_length - offset).min(info.chunk_layout.stride);
         let decode_len = if context.is_some() {
@@ -702,16 +950,93 @@ where
                 bundle_meta.frame_length,
             )
         };
-        let frame = decode_lm_chunk_payload(
-            codec,
+        let (codes, scale) = decode_lm_chunk_codes_with_scratch(
             lm_codec,
             &bundle_meta,
-            &info.metadata,
             &chunk,
+            frame_length,
+            info.metadata.fp_scale,
+            info.metadata.min_range,
+            info.metadata.lm_tau.unwrap_or(1.0) as f64,
+            &mut entropy_scratch,
+        )?;
+        pending.push(PendingWindow {
+            window_index,
+            offset,
+            owned_len,
             decode_len,
             frame_length,
+            codes,
+            scale,
+        });
+        on_progress(
+            EcdcDecodeProgressStage::Entropy,
+            window_index + 1,
+            info.window_count,
         )?;
-        on_window(&info, window_index, offset, owned_len, frame)?;
+    }
+
+    let batch_limit = frame_batch_size.max(1);
+    let mut batch_start = 0_usize;
+    while batch_start < pending.len() {
+        let frame_length = pending[batch_start].frame_length;
+        let mut batch_end = batch_start + 1;
+        while batch_end < pending.len()
+            && batch_end - batch_start < batch_limit
+            && pending[batch_end].frame_length == frame_length
+        {
+            batch_end += 1;
+        }
+
+        let batch_len = batch_end - batch_start;
+        let mut codes = Array3::<i64>::zeros((batch_len, bundle_meta.num_codebooks, frame_length));
+        let mut scales = Array2::<f32>::zeros((batch_len, 1));
+        for (batch_index, window) in pending[batch_start..batch_end].iter().enumerate() {
+            for codebook in 0..bundle_meta.num_codebooks {
+                for frame in 0..frame_length {
+                    codes[[batch_index, codebook, frame]] = window.codes[[0, codebook, frame]];
+                }
+            }
+            scales[[batch_index, 0]] = window.scale[[0, 0]];
+        }
+
+        let decoded = decode_code_batch(codec, &codes, &scales)?;
+        let decoded_shape = decoded.shape();
+        if decoded_shape.len() != 3 || decoded_shape[0] != batch_len {
+            bail!(
+                "decoded audio shape mismatch, expected batch {}, got {:?}",
+                batch_len,
+                decoded_shape,
+            );
+        }
+        let channels = decoded_shape[1];
+        for (batch_index, window) in pending[batch_start..batch_end].iter().enumerate() {
+            if decoded_shape[2] < window.decode_len {
+                bail!(
+                    "decoded audio shape {:?} cannot satisfy requested length {}",
+                    decoded_shape,
+                    window.decode_len,
+                );
+            }
+            let frame = decoded.slice(s![
+                batch_index..batch_index + 1,
+                ..channels,
+                ..window.decode_len
+            ]);
+            on_window(
+                &info,
+                window.window_index,
+                window.offset,
+                window.owned_len,
+                frame,
+            )?;
+            on_progress(
+                EcdcDecodeProgressStage::Model,
+                window.window_index + 1,
+                info.window_count,
+            )?;
+        }
+        batch_start = batch_end;
     }
     Ok(info)
 }
@@ -727,6 +1052,32 @@ pub(crate) fn encode_lm_chunk_payload(
     min_range: i64,
     lm_tau: f64,
 ) -> Result<Vec<u8>> {
+    let mut scratch = LmEntropyScratch::default();
+    encode_lm_chunk_payload_with_scratch(
+        lm_codec,
+        codes,
+        scales,
+        batch_index,
+        frame_length,
+        fp_scale,
+        min_range,
+        lm_tau,
+        &mut scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_lm_chunk_payload_with_scratch(
+    lm_codec: &mut dyn LmCodec,
+    codes: &Array3<i64>,
+    scales: &Array2<f32>,
+    batch_index: usize,
+    frame_length: usize,
+    fp_scale: i64,
+    min_range: i64,
+    lm_tau: f64,
+    entropy_scratch: &mut LmEntropyScratch,
+) -> Result<Vec<u8>> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let started = profile_enabled.then(Instant::now);
     let meta = lm_codec.metadata().clone();
@@ -738,9 +1089,7 @@ pub(crate) fn encode_lm_chunk_payload(
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, meta.num_codebooks, 1));
-    let mut symbols = vec![0_usize; meta.num_codebooks];
-    let mut scratch = ProbabilityScratch::default();
-    let mut cdf_scratch = CdfScratch::default();
+    entropy_scratch.prepare_symbols(meta.num_codebooks);
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     if frame_length > lm_window_frame_length {
         bail!(
@@ -756,18 +1105,23 @@ pub(crate) fn encode_lm_chunk_payload(
     for t in 0..frame_length {
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
-            lm_codec.forward_logits(&input, offset, &states)?;
+            lm_codec.forward_logits_flat(&input, offset, &states, &mut entropy_scratch.logits)?;
         if let Some(lm_started) = lm_started {
             lm_elapsed += lm_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         let pdf_started = profile_enabled.then(Instant::now);
-        let pdf = probability_columns_from_logits(
-            &logits,
-            lm_tau,
-            meta.lm_entropy_logit_step(),
-            fp_scale,
-            &mut scratch,
+        let pdf = probability_columns_from_flat_logits(
+            logits,
+            meta.lm_cardinality(),
+            meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: lm_tau,
+                logit_step: meta.lm_entropy_logit_step(),
+                fp_scale,
+            },
+            &mut entropy_scratch.probability,
         )?;
         if let Some(pdf_started) = pdf_started {
             pdf_elapsed += pdf_started.elapsed().as_secs_f64() * 1000.0;
@@ -778,19 +1132,19 @@ pub(crate) fn encode_lm_chunk_payload(
             if value < 0 {
                 bail!("code symbol must be non-negative, got {value}");
             }
-            symbols[codebook] = value as usize;
+            entropy_scratch.symbols[codebook] = value as usize;
             input[[0, codebook, 0]] = value + 1;
         }
 
         let arithmetic_started = profile_enabled.then(Instant::now);
-        encoder.push_pdf_symbols_with_scratch(
+        encoder.push_valid_pdf_symbols_with_scratch(
             pdf,
             meta.lm_cardinality(),
             meta.num_codebooks,
-            &symbols,
+            &entropy_scratch.symbols,
             fp_scale,
             min_range,
-            &mut cdf_scratch,
+            &mut entropy_scratch.cdf,
         )?;
         if let Some(arithmetic_started) = arithmetic_started {
             arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
@@ -889,37 +1243,6 @@ pub fn encode_lm_chunk_evidence(
     })
 }
 
-fn decode_lm_chunk_payload(
-    codec: &mut dyn FrameCodec,
-    lm_codec: &mut dyn LmCodec,
-    model_meta: &OnnxFrameBundleMetadata,
-    metadata: &EcdcMetadata,
-    payload: &[u8],
-    this_len: usize,
-    frame_length: usize,
-) -> Result<Array3<f32>> {
-    let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
-    let started = profile_enabled.then(Instant::now);
-    let (codes, scale) = decode_lm_chunk_codes(
-        lm_codec,
-        model_meta,
-        payload,
-        frame_length,
-        metadata.fp_scale,
-        metadata.min_range,
-        metadata.lm_tau.unwrap_or(1.0) as f64,
-    )?;
-    let decoded = decode_codes(codec, &codes, &scale, this_len)?;
-    if let Some(started) = started {
-        eprintln!(
-            "decode_lm_chunk_payload frame_length={} total_ms={:.3}",
-            frame_length,
-            started.elapsed().as_secs_f64() * 1000.0,
-        );
-    }
-    Ok(decoded)
-}
-
 fn decode_lm_chunk_codes(
     lm_codec: &mut dyn LmCodec,
     model_meta: &OnnxFrameBundleMetadata,
@@ -928,6 +1251,30 @@ fn decode_lm_chunk_codes(
     fp_scale: i64,
     min_range: i64,
     lm_tau: f64,
+) -> Result<(Array3<i64>, Array2<f32>)> {
+    let mut scratch = LmEntropyScratch::default();
+    decode_lm_chunk_codes_with_scratch(
+        lm_codec,
+        model_meta,
+        payload,
+        frame_length,
+        fp_scale,
+        min_range,
+        lm_tau,
+        &mut scratch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_lm_chunk_codes_with_scratch(
+    lm_codec: &mut dyn LmCodec,
+    model_meta: &OnnxFrameBundleMetadata,
+    payload: &[u8],
+    frame_length: usize,
+    fp_scale: i64,
+    min_range: i64,
+    lm_tau: f64,
+    entropy_scratch: &mut LmEntropyScratch,
 ) -> Result<(Array3<i64>, Array2<f32>)> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let mut cursor = Cursor::new(payload);
@@ -948,9 +1295,9 @@ fn decode_lm_chunk_codes(
     let mut states = lm_codec.initial_states(1)?;
     let mut offset = 0_i64;
     let mut input = Array3::<i64>::zeros((1, model_meta.num_codebooks, 1));
-    let mut scratch = ProbabilityScratch::default();
-    let mut cdf_scratch = CdfScratch::default();
+    entropy_scratch.prepare_symbols(model_meta.num_codebooks);
     let lm_logit_step = lm_codec.metadata().lm_entropy_logit_step();
+    let lm_cardinality = lm_codec.metadata().lm_cardinality();
     let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
     if frame_length > lm_window_frame_length {
         bail!(
@@ -966,38 +1313,44 @@ fn decode_lm_chunk_codes(
     for t in 0..frame_length {
         let lm_started = profile_enabled.then(Instant::now);
         let (logits, next_offset, next_states) =
-            lm_codec.forward_logits(&input, offset, &states)?;
+            lm_codec.forward_logits_flat(&input, offset, &states, &mut entropy_scratch.logits)?;
         if let Some(lm_started) = lm_started {
             lm_elapsed += lm_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         let pdf_started = profile_enabled.then(Instant::now);
-        let pdf = probability_columns_from_logits(
-            &logits,
-            lm_tau,
-            lm_logit_step,
-            fp_scale,
-            &mut scratch,
+        let pdf = probability_columns_from_flat_logits(
+            logits,
+            lm_cardinality,
+            model_meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: lm_tau,
+                logit_step: lm_logit_step,
+                fp_scale,
+            },
+            &mut entropy_scratch.probability,
         )?;
         if let Some(pdf_started) = pdf_started {
             pdf_elapsed += pdf_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         let arithmetic_started = profile_enabled.then(Instant::now);
-        let symbols = decoder.pull_symbols_with_scratch(
+        decoder.pull_valid_pdf_symbols_into_with_scratch(
             pdf,
-            lm_codec.metadata().lm_cardinality(),
+            lm_cardinality,
             model_meta.num_codebooks,
             fp_scale,
             min_range,
-            &mut cdf_scratch,
+            &mut entropy_scratch.cdf,
+            &mut entropy_scratch.symbols,
         )?;
         if let Some(arithmetic_started) = arithmetic_started {
             arithmetic_elapsed += arithmetic_started.elapsed().as_secs_f64() * 1000.0;
         }
 
         for codebook in 0..model_meta.num_codebooks {
-            let value = symbols[codebook] as i64;
+            let value = entropy_scratch.symbols[codebook] as i64;
             codes[[0, codebook, t]] = value;
             input[[0, codebook, 0]] = value + 1;
         }
@@ -1014,91 +1367,59 @@ fn decode_lm_chunk_codes(
     Ok((codes, scale))
 }
 
-fn decode_codes(
+fn decode_code_batch(
     codec: &mut dyn FrameCodec,
     codes: &Array3<i64>,
     scale: &Array2<f32>,
-    this_len: usize,
 ) -> Result<Array3<f32>> {
     let profile_enabled = std::env::var_os("ENCODEC_RS_PROFILE").is_some();
     let frame_started = profile_enabled.then(Instant::now);
     let decoded = codec.decode_frame(codes, scale)?;
     if let Some(frame_started) = frame_started {
         eprintln!(
-            "decode_codes batch={} frame_decode_ms={:.3}",
+            "decode_code_batch batch={} frame_decode_ms={:.3}",
             codes.shape()[0],
             frame_started.elapsed().as_secs_f64() * 1000.0,
         );
     }
-
-    let decoded_shape = decoded.shape();
-    if decoded_shape.len() != 3 || decoded_shape[0] != 1 || decoded_shape[2] < this_len {
-        bail!(
-            "decoded audio shape {:?} cannot satisfy requested length {}",
-            decoded_shape,
-            this_len
-        );
-    }
-
-    let trim_started = profile_enabled.then(Instant::now);
-    let channels = decoded.shape()[1];
-    let mut trimmed = Array3::<f32>::zeros((1, channels, this_len));
-    for channel in 0..channels {
-        for index in 0..this_len {
-            trimmed[[0, channel, index]] = decoded[[0, channel, index]];
-        }
-    }
-    if let Some(trim_started) = trim_started {
-        eprintln!(
-            "decode_codes batch={} trim_ms={:.3}",
-            codes.shape()[0],
-            trim_started.elapsed().as_secs_f64() * 1000.0,
-        );
-    }
-    Ok(trimmed)
+    Ok(decoded)
 }
 
-fn encode_segment_batches_with_size(
-    audio: &Array3<f32>,
+fn encode_segment_batch(
+    audio: &ArrayView3<'_, f32>,
     meta: &OnnxFrameBundleMetadata,
-    batch_size: usize,
+    offsets: &[usize],
     chunk_layout: EcdcChunkLayout,
     fixed_lm_frame_length: Option<usize>,
-) -> Result<Vec<(Vec<usize>, Array3<f32>)>> {
+) -> Result<(Vec<usize>, Array3<f32>)> {
     let total_samples = audio.shape()[2];
-    let starts = segment_starts(total_samples, chunk_layout.stride);
     let context = fixed_context_samples(chunk_layout.samples, chunk_layout.stride)?;
-    let batch_size = batch_size.max(1);
-    let mut batches = Vec::new();
-    for offsets in starts.chunks(batch_size) {
-        let mut frame_lengths = Vec::with_capacity(offsets.len());
-        let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, chunk_layout.samples));
-        for (batch_index, offset) in offsets.iter().copied().enumerate() {
-            let owned_len = (total_samples - offset).min(chunk_layout.stride);
-            let frame_length = fixed_lm_frame_length.unwrap_or_else(|| {
-                if context.is_some() {
-                    meta.frame_length
+    let mut frame_lengths = Vec::with_capacity(offsets.len());
+    let mut batch = Array3::<f32>::zeros((offsets.len(), meta.channels, chunk_layout.samples));
+    for (batch_index, offset) in offsets.iter().copied().enumerate() {
+        let owned_len = (total_samples - offset).min(chunk_layout.stride);
+        let frame_length = fixed_lm_frame_length.unwrap_or_else(|| {
+            if context.is_some() {
+                meta.frame_length
+            } else {
+                segment_frame_length(owned_len, meta.segment_samples, meta.frame_length)
+            }
+        });
+        frame_lengths.push(frame_length);
+        let context = context.unwrap_or(0);
+        for channel in 0..meta.channels {
+            for index in 0..chunk_layout.samples {
+                let src_index = offset as isize - context as isize + index as isize;
+                let value = if src_index >= 0 && (src_index as usize) < total_samples {
+                    audio[[0, channel, src_index as usize]]
                 } else {
-                    segment_frame_length(owned_len, meta.segment_samples, meta.frame_length)
-                }
-            });
-            frame_lengths.push(frame_length);
-            let context = context.unwrap_or(0);
-            for channel in 0..meta.channels {
-                for index in 0..chunk_layout.samples {
-                    let src_index = offset as isize - context as isize + index as isize;
-                    let value = if src_index >= 0 && (src_index as usize) < total_samples {
-                        audio[[0, channel, src_index as usize]]
-                    } else {
-                        0.0
-                    };
-                    batch[[batch_index, channel, index]] = value;
-                }
+                    0.0
+                };
+                batch[[batch_index, channel, index]] = value;
             }
         }
-        batches.push((frame_lengths, batch));
     }
-    Ok(batches)
+    Ok((frame_lengths, batch))
 }
 
 fn frame_encode_batch_size() -> usize {
@@ -1157,8 +1478,8 @@ pub fn deterministic_pdf_from_logits(
 }
 
 /// Copies one decoded model window into its final owned sample range.
-fn copy_owned_segment_into(
-    frame: &Array3<f32>,
+fn copy_owned_segment_view_into(
+    frame: ArrayView3<'_, f32>,
     context: usize,
     owned_len: usize,
     output: &mut Array3<f32>,
@@ -1314,6 +1635,11 @@ mod tests {
         meta: OnnxFrameBundleMetadata,
     }
 
+    struct BatchFrameCodec {
+        meta: OnnxFrameBundleMetadata,
+        decode_batches: Vec<usize>,
+    }
+
     impl FrameCodec for EvidenceFrameCodec {
         fn metadata(&self) -> &OnnxFrameBundleMetadata {
             &self.meta
@@ -1348,6 +1674,49 @@ mod tests {
                 self.meta.channels,
                 self.meta.segment_samples,
             )))
+        }
+    }
+
+    impl FrameCodec for BatchFrameCodec {
+        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+            &self.meta
+        }
+
+        fn encode_frame(&mut self, audio: &Array3<f32>) -> Result<(Array3<i64>, Array2<f32>)> {
+            let frame_length = segment_frame_length(
+                audio.shape()[2],
+                self.meta.segment_samples,
+                self.meta.frame_length,
+            );
+            let mut codes =
+                Array3::<i64>::zeros((audio.shape()[0], self.meta.num_codebooks, frame_length));
+            for batch in 0..audio.shape()[0] {
+                let symbol = (batch as i64).clamp(0, 3);
+                for codebook in 0..self.meta.num_codebooks {
+                    for frame in 0..frame_length {
+                        codes[[batch, codebook, frame]] = symbol;
+                    }
+                }
+            }
+            Ok((codes, Array2::from_elem((audio.shape()[0], 1), 1.0)))
+        }
+
+        fn decode_frame(
+            &mut self,
+            codes: &Array3<i64>,
+            _scale: &Array2<f32>,
+        ) -> Result<Array3<f32>> {
+            let batch = codes.shape()[0];
+            self.decode_batches.push(batch);
+            let samples = codes.shape()[2] * self.meta.segment_samples / self.meta.frame_length;
+            let mut audio = Array3::<f32>::zeros((batch, self.meta.channels, samples));
+            for batch_index in 0..batch {
+                let value = codes[[batch_index, 0, 0]] as f32;
+                for sample in 0..samples {
+                    audio[[batch_index, 0, sample]] = value;
+                }
+            }
+            Ok(audio)
         }
     }
 
@@ -1391,6 +1760,10 @@ mod tests {
 
         fn lm_window_frame_length(&self) -> usize {
             self.capacity
+        }
+
+        fn bitstream_lm_hash(&self) -> Option<&str> {
+            Some("test-q8-lm")
         }
 
         fn initial_states(&self, _batch: usize) -> Result<Vec<Array3<f32>>> {
@@ -1451,6 +1824,13 @@ mod tests {
         meta
     }
 
+    fn batch_decode_meta() -> OnnxFrameBundleMetadata {
+        let mut meta = TracingLm::new(4).meta;
+        meta.segment_samples = 64_960;
+        meta.segment_stride = 64_000;
+        meta
+    }
+
     /// 2 full owned chunks (64,000 each) plus a final partial chunk of
     /// 2,000 owned samples: 130,000 logical samples total.
     fn indexed_audio(total_samples: usize) -> Array3<f32> {
@@ -1474,13 +1854,13 @@ mod tests {
             stride,
         };
 
-        let batches = encode_segment_batches_with_size(&audio, &meta, 8, layout, None).unwrap();
-        assert_eq!(batches.len(), 1);
-        let (frame_lengths, batch) = &batches[0];
+        let offsets = segment_starts(total_samples, stride);
+        let (frame_lengths, batch) =
+            encode_segment_batch(&audio.view(), &meta, &offsets, layout, None).unwrap();
         assert_eq!(batch.shape(), &[3, 1, window]);
         // Every chunk, including the final partial one, encodes the full
         // bundle frame length -- never a reduced owned-region count.
-        assert_eq!(frame_lengths, &vec![meta.frame_length; 3]);
+        assert_eq!(frame_lengths, vec![meta.frame_length; 3]);
 
         // Chunk 0: start of track, left context zero-filled.
         for index in 0..context {
@@ -1568,6 +1948,115 @@ mod tests {
     }
 
     #[test]
+    fn decode_batches_equal_length_frames_without_changing_assembly() {
+        let meta = batch_decode_meta();
+        let audio = indexed_audio(128_010);
+        let mut encode_codec = BatchFrameCodec {
+            meta: meta.clone(),
+            decode_batches: Vec::new(),
+        };
+        let mut encode_lm = TracingLm::new(4);
+        let payload = encode_audio_to_ecdc_with_batch_size(
+            &mut encode_codec,
+            &mut encode_lm,
+            &audio,
+            None,
+            8,
+        )
+        .unwrap();
+
+        let mut scalar_codec = BatchFrameCodec {
+            meta: meta.clone(),
+            decode_batches: Vec::new(),
+        };
+        let mut scalar_lm = TracingLm::new(4);
+        let scalar = decode_ecdc(&mut scalar_codec, &mut scalar_lm, &payload).unwrap();
+
+        let mut batched_codec = BatchFrameCodec {
+            meta,
+            decode_batches: Vec::new(),
+        };
+        let mut batched_lm = TracingLm::new(4);
+        let batched =
+            decode_ecdc_with_batch_size(&mut batched_codec, &mut batched_lm, &payload, 8).unwrap();
+
+        assert_eq!(scalar_codec.decode_batches, vec![1, 1, 1]);
+        assert_eq!(batched_codec.decode_batches, vec![3]);
+        assert_eq!(batched.audio, scalar.audio);
+        assert_eq!(batched.audio.shape(), &[1, 1, 128_010]);
+        assert_eq!(batched.audio[[0, 0, 0]], 0.0);
+        assert_eq!(batched.audio[[0, 0, 64_000]], 1.0);
+        assert_eq!(batched.audio[[0, 0, 128_000]], 2.0);
+    }
+
+    #[test]
+    fn borrowed_decode_windows_reconstruct_exact_fixed_context_audio() {
+        let meta = batch_decode_meta();
+        let audio = indexed_audio(128_010);
+        let mut encode_codec = BatchFrameCodec {
+            meta: meta.clone(),
+            decode_batches: Vec::new(),
+        };
+        let mut encode_lm = TracingLm::new(4);
+        let payload = encode_audio_to_ecdc_with_batch_size(
+            &mut encode_codec,
+            &mut encode_lm,
+            &audio,
+            None,
+            8,
+        )
+        .unwrap();
+
+        let mut expected_codec = BatchFrameCodec {
+            meta: meta.clone(),
+            decode_batches: Vec::new(),
+        };
+        let mut expected_lm = TracingLm::new(4);
+        let expected =
+            decode_ecdc_with_batch_size(&mut expected_codec, &mut expected_lm, &payload, 8)
+                .unwrap();
+
+        let mut streamed = Array3::<f32>::zeros((1, meta.channels, audio.shape()[2]));
+        let mut streamed_codec = BatchFrameCodec {
+            meta,
+            decode_batches: Vec::new(),
+        };
+        let mut streamed_lm = TracingLm::new(4);
+        let mut progress = Vec::new();
+        let info = decode_ecdc_model_window_views_with_batch_size_and_progress(
+            &mut streamed_codec,
+            &mut streamed_lm,
+            &payload,
+            8,
+            |info, _window_index, offset, owned_samples, window| {
+                let context = info.context_samples.expect("fixed context");
+                copy_owned_segment_view_into(window, context, owned_samples, &mut streamed, offset)
+            },
+            |stage, completed, total| {
+                progress.push((stage, completed, total));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(info.metadata.audio_length, audio.shape()[2]);
+        assert_eq!(info.context_samples, Some(480));
+        assert_eq!(streamed, expected.audio);
+        assert_eq!(streamed_codec.decode_batches, vec![3]);
+        assert_eq!(
+            progress,
+            vec![
+                (EcdcDecodeProgressStage::Entropy, 1, 3),
+                (EcdcDecodeProgressStage::Entropy, 2, 3),
+                (EcdcDecodeProgressStage::Entropy, 3, 3),
+                (EcdcDecodeProgressStage::Model, 1, 3),
+                (EcdcDecodeProgressStage::Model, 2, 3),
+                (EcdcDecodeProgressStage::Model, 3, 3),
+            ],
+        );
+    }
+
+    #[test]
     fn owned_segments_copy_directly_without_overlap() {
         let context = 480usize;
         let stride = 64_000usize;
@@ -1590,8 +2079,14 @@ mod tests {
         let mut concatenated = Array3::<f32>::zeros((1, 1, audio_length));
         let mut output_offset = 0;
         for (frame, owned_len) in frames.iter().zip(owned_lens) {
-            copy_owned_segment_into(frame, context, owned_len, &mut concatenated, output_offset)
-                .unwrap();
+            copy_owned_segment_view_into(
+                frame.view(),
+                context,
+                owned_len,
+                &mut concatenated,
+                output_offset,
+            )
+            .unwrap();
             output_offset += owned_len;
         }
         assert_eq!(concatenated.shape(), &[1, 1, audio_length]);
@@ -1626,7 +2121,7 @@ mod tests {
     fn owned_segment_copy_rejects_short_decoded_output() {
         let frame = Array3::<f32>::zeros((1, 1, 500));
         let mut output = Array3::<f32>::zeros((1, 1, 64_000));
-        assert!(copy_owned_segment_into(&frame, 480, 64_000, &mut output, 0).is_err());
+        assert!(copy_owned_segment_view_into(frame.view(), 480, 64_000, &mut output, 0).is_err());
     }
 
     #[test]

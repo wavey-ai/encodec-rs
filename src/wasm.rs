@@ -415,7 +415,7 @@ impl QuantizedLmChunkEncoder {
             },
             &mut self.probability_scratch,
         )?;
-        self.encoder.push_pdf_symbols_with_scratch(
+        self.encoder.push_valid_pdf_symbols_with_scratch(
             pdf,
             self.meta.lm_cardinality(),
             self.meta.num_codebooks,
@@ -567,7 +567,7 @@ impl QuantizedLmChunkDecoder {
         )
         .map_err(to_js_error)?;
         self.decoder
-            .pull_symbols_into_with_scratch(
+            .pull_valid_pdf_symbols_into_with_scratch(
                 pdf,
                 self.meta.lm_cardinality(),
                 self.meta.num_codebooks,

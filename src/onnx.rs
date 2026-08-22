@@ -299,7 +299,13 @@ impl OnnxLmCodec {
         if shape[0] != 1 || shape[2] != 1 {
             bail!("q8 LM only supports shape [1, codebooks, 1]");
         }
-        if offset == 0 || state.is_none() {
+        if offset == 0 {
+            if let Some(state) = state {
+                lm.reset_state(state);
+            } else {
+                *state = Some(lm.initial_state());
+            }
+        } else if state.is_none() {
             *state = Some(lm.initial_state());
         }
         let state = state.as_mut().expect("state initialized");

@@ -27,8 +27,10 @@ pub struct CdfScratch {
 }
 
 impl CdfScratch {
-    fn prepare(&mut self, pdf_len: usize, n_bins: usize) {
-        self.normalized.resize(pdf_len, 0.0);
+    fn prepare(&mut self, pdf_len: usize, n_bins: usize, needs_normalized: bool) {
+        if needs_normalized {
+            self.normalized.resize(pdf_len, 0.0);
+        }
         self.counts.resize(pdf_len, 0);
         self.cdf.resize(pdf_len, 0);
         self.base.resize(n_bins, 0);
@@ -86,6 +88,46 @@ pub fn deterministic_cdf_multi_with_scratch<'a>(
     min_range: i64,
     scratch: &'a mut CdfScratch,
 ) -> Result<&'a [i64]> {
+    deterministic_cdf_multi_impl::<false>(
+        pdf,
+        n_bins,
+        n_cols,
+        total_range_bits,
+        fp_scale,
+        min_range,
+        scratch,
+    )
+}
+
+pub(crate) fn deterministic_cdf_multi_from_valid_pdf_with_scratch<'a>(
+    pdf: &[f64],
+    n_bins: usize,
+    n_cols: usize,
+    total_range_bits: u32,
+    fp_scale: i64,
+    min_range: i64,
+    scratch: &'a mut CdfScratch,
+) -> Result<&'a [i64]> {
+    deterministic_cdf_multi_impl::<true>(
+        pdf,
+        n_bins,
+        n_cols,
+        total_range_bits,
+        fp_scale,
+        min_range,
+        scratch,
+    )
+}
+
+fn deterministic_cdf_multi_impl<'a, const VALID_PDF: bool>(
+    pdf: &[f64],
+    n_bins: usize,
+    n_cols: usize,
+    total_range_bits: u32,
+    fp_scale: i64,
+    min_range: i64,
+    scratch: &'a mut CdfScratch,
+) -> Result<&'a [i64]> {
     if n_bins == 0 || n_cols == 0 {
         bail!("pdf matrix must be non-empty");
     }
@@ -106,7 +148,7 @@ pub fn deterministic_cdf_multi_with_scratch<'a>(
         bail!("invalid total_range_bits/min_range combination");
     }
 
-    scratch.prepare(pdf.len(), n_bins);
+    scratch.prepare(pdf.len(), n_bins, !VALID_PDF);
     let CdfScratch {
         normalized,
         counts,
@@ -114,29 +156,33 @@ pub fn deterministic_cdf_multi_with_scratch<'a>(
         base,
         order,
     } = scratch;
-    for col in 0..n_cols {
-        let mut sum = 0.0_f64;
-        for row in 0..n_bins {
-            let value = pdf[row * n_cols + col].max(0.0);
-            normalized[row * n_cols + col] = value;
-            sum += value;
-        }
-        if !sum.is_finite() || sum <= 0.0 {
+    if VALID_PDF {
+        counts_from_pdf_flat(pdf, fp_scale, counts);
+    } else {
+        for col in 0..n_cols {
+            let mut sum = 0.0_f64;
             for row in 0..n_bins {
-                normalized[row * n_cols + col] = 1.0;
+                let value = pdf[row * n_cols + col].max(0.0);
+                normalized[row * n_cols + col] = value;
+                sum += value;
+            }
+            if !sum.is_finite() || sum <= 0.0 {
+                for row in 0..n_bins {
+                    normalized[row * n_cols + col] = 1.0;
+                }
             }
         }
-    }
 
-    counts_from_pdf_flat(normalized, fp_scale, counts);
-    for col in 0..n_cols {
-        let mut sum = 0_i64;
-        for row in 0..n_bins {
-            sum += counts[row * n_cols + col];
-        }
-        if sum <= 0 {
+        counts_from_pdf_flat(normalized, fp_scale, counts);
+        for col in 0..n_cols {
+            let mut sum = 0_i64;
             for row in 0..n_bins {
-                counts[row * n_cols + col] = 1;
+                sum += counts[row * n_cols + col];
+            }
+            if sum <= 0 {
+                for row in 0..n_bins {
+                    counts[row * n_cols + col] = 1;
+                }
             }
         }
     }
@@ -326,6 +372,39 @@ impl ArithmeticEncoder {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_valid_pdf_symbols_with_scratch(
+        &mut self,
+        pdf: &[f64],
+        n_bins: usize,
+        n_cols: usize,
+        symbols: &[usize],
+        fp_scale: i64,
+        min_range: i64,
+        scratch: &mut CdfScratch,
+    ) -> Result<()> {
+        if symbols.len() != n_cols {
+            bail!(
+                "symbol length {} does not match pdf column count {}",
+                symbols.len(),
+                n_cols
+            );
+        }
+        let cdf = deterministic_cdf_multi_from_valid_pdf_with_scratch(
+            pdf,
+            n_bins,
+            n_cols,
+            self.total_range_bits,
+            fp_scale,
+            min_range,
+            scratch,
+        )?;
+        for (col, symbol) in symbols.iter().copied().enumerate() {
+            self.push_symbol(symbol, cdf, n_bins, n_cols, col)?;
+        }
+        Ok(())
+    }
+
     pub fn finish(&mut self) -> Vec<u8> {
         while self.max_bit >= 0 {
             let bit = ((self.low >> self.max_bit as u32) & 1) as u8;
@@ -471,6 +550,39 @@ impl ArithmeticDecoder {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pull_valid_pdf_symbols_into_with_scratch(
+        &mut self,
+        pdf: &[f64],
+        n_bins: usize,
+        n_cols: usize,
+        fp_scale: i64,
+        min_range: i64,
+        scratch: &mut CdfScratch,
+        out: &mut [usize],
+    ) -> Result<()> {
+        if out.len() != n_cols {
+            bail!(
+                "output symbol count {} does not match pdf column count {}",
+                out.len(),
+                n_cols,
+            );
+        }
+        let cdf = deterministic_cdf_multi_from_valid_pdf_with_scratch(
+            pdf,
+            n_bins,
+            n_cols,
+            self.total_range_bits,
+            fp_scale,
+            min_range,
+            scratch,
+        )?;
+        for (col, symbol) in out.iter_mut().enumerate() {
+            *symbol = self.pull_symbol(cdf, n_bins, n_cols, col)?;
+        }
+        Ok(())
+    }
+
     fn delta(&self) -> u64 {
         self.high - self.low + 1
     }
@@ -544,6 +656,53 @@ impl ArithmeticDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn valid_pdf_fast_path_matches_the_defensive_cdf_path() {
+        let mut seed = 0x517c_c1b7_2722_0a95_u64;
+        for (n_bins, n_cols) in [(1_usize, 1_usize), (7, 3), (31, 8), (1024, 8)] {
+            let mut pdf = vec![0.0_f64; n_bins * n_cols];
+            for col in 0..n_cols {
+                let mut sum = 0.0_f64;
+                for row in 0..n_bins {
+                    seed = seed
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    let value = ((seed >> 32) as f64 + 1.0) / (u32::MAX as f64 + 1.0);
+                    pdf[row * n_cols + col] = value;
+                    sum += value;
+                }
+                for row in 0..n_bins {
+                    pdf[row * n_cols + col] /= sum;
+                }
+            }
+
+            let mut defensive_scratch = CdfScratch::default();
+            let defensive = deterministic_cdf_multi_with_scratch(
+                &pdf,
+                n_bins,
+                n_cols,
+                24,
+                1 << 13,
+                2,
+                &mut defensive_scratch,
+            )
+            .unwrap()
+            .to_vec();
+            let mut valid_scratch = CdfScratch::default();
+            let valid = deterministic_cdf_multi_from_valid_pdf_with_scratch(
+                &pdf,
+                n_bins,
+                n_cols,
+                24,
+                1 << 13,
+                2,
+                &mut valid_scratch,
+            )
+            .unwrap();
+            assert_eq!(defensive, valid);
+        }
+    }
 
     fn increment_largest_remainders_by_full_sort(
         base: &mut [i64],

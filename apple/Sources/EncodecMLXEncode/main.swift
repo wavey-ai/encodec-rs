@@ -92,7 +92,7 @@ func usage() -> String {
     """
     Usage:
       EncodecMLXEncode [--encode] --bundle DIR --input INPUT.wav --output OUTPUT.ecdc [--progress PROGRESS.json] [--batch-size N] [--chunk-ms MS] [--no-lm] [--no-stream]
-      EncodecMLXEncode --decode --bundle DIR --input INPUT.ecdc --output OUTPUT.f32le
+      EncodecMLXEncode --decode --bundle DIR --input INPUT.ecdc --output OUTPUT.f32le [--batch-size N]
     """
 }
 
@@ -114,6 +114,7 @@ func readWav(_ url: URL) throws -> WavAudio {
     var channels: Int?
     var sampleRate: Int?
     var bitsPerSample: UInt16?
+    var validBitsPerSample: UInt16?
     var dataOffset: Int?
     var dataSize: Int?
 
@@ -128,10 +129,31 @@ func readWav(_ url: URL) throws -> WavAudio {
             guard chunkSize >= 16 else {
                 throw CliError.usage("short WAV fmt chunk: \(url.path)")
             }
-            audioFormat = readUInt16LE(data, body)
+            var resolvedAudioFormat = readUInt16LE(data, body)
             channels = Int(readUInt16LE(data, body + 2))
             sampleRate = Int(readUInt32LE(data, body + 4))
-            bitsPerSample = readUInt16LE(data, body + 14)
+            let containerBits = readUInt16LE(data, body + 14)
+            bitsPerSample = containerBits
+            validBitsPerSample = containerBits
+
+            if resolvedAudioFormat == 0xfffe {
+                guard chunkSize >= 40, readUInt16LE(data, body + 16) >= 22 else {
+                    throw CliError.usage("short WAVE_FORMAT_EXTENSIBLE fmt chunk: \(url.path)")
+                }
+                let subformatTail: [UInt8] = [
+                    0x00, 0x00, 0x10, 0x00, 0x80, 0x00,
+                    0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71,
+                ]
+                let subformat = readUInt32LE(data, body + 24)
+                guard subformat <= UInt16.max,
+                      Array(data[body + 28 ..< body + 40]) == subformatTail
+                else {
+                    throw CliError.usage("unsupported WAVE_FORMAT_EXTENSIBLE subtype: \(url.path)")
+                }
+                resolvedAudioFormat = UInt16(subformat)
+                validBitsPerSample = readUInt16LE(data, body + 18)
+            }
+            audioFormat = resolvedAudioFormat
         } else if chunkID == "data" {
             dataOffset = body
             dataSize = chunkSize
@@ -139,20 +161,64 @@ func readWav(_ url: URL) throws -> WavAudio {
         offset = body + chunkSize + (chunkSize & 1)
     }
 
-    guard let audioFormat, let channels, let sampleRate, let bitsPerSample, let dataOffset, let dataSize else {
+    guard let audioFormat,
+          let channels,
+          let sampleRate,
+          let bitsPerSample,
+          let validBitsPerSample,
+          let dataOffset,
+          let dataSize
+    else {
         throw CliError.usage("missing WAV fmt/data chunk: \(url.path)")
     }
     guard channels > 0 else {
         throw CliError.usage("WAV channel count must be positive: \(url.path)")
     }
+    guard validBitsPerSample > 0, validBitsPerSample <= bitsPerSample else {
+        throw CliError.usage(
+            "invalid WAV valid/container bit depths \(validBitsPerSample)/\(bitsPerSample): \(url.path)"
+        )
+    }
 
     let samples: [Float]
     switch (audioFormat, bitsPerSample) {
     case (1, 16):
+        guard dataSize % 2 == 0 else {
+            throw CliError.usage("unaligned 16-bit WAV data: \(url.path)")
+        }
+        let shift = Int(bitsPerSample - validBitsPerSample)
+        let denominator = Float(1 << (Int(validBitsPerSample) - 1))
         samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 2).map { index in
-            Float(Int16(bitPattern: readUInt16LE(data, index))) / Float(Int16.max)
+            let sample = Int32(Int16(bitPattern: readUInt16LE(data, index))) >> shift
+            return Float(sample) / denominator
+        }
+    case (1, 24):
+        guard dataSize % 3 == 0 else {
+            throw CliError.usage("unaligned 24-bit WAV data: \(url.path)")
+        }
+        let shift = Int(bitsPerSample - validBitsPerSample)
+        let denominator = Float(1 << (Int(validBitsPerSample) - 1))
+        samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 3).map { index in
+            let packed = UInt32(data[index])
+                | (UInt32(data[index + 1]) << 8)
+                | (UInt32(data[index + 2]) << 16)
+            let sample = (Int32(bitPattern: packed << 8) >> 8) >> shift
+            return Float(sample) / denominator
+        }
+    case (1, 32):
+        guard dataSize % 4 == 0 else {
+            throw CliError.usage("unaligned 32-bit PCM WAV data: \(url.path)")
+        }
+        let shift = Int(bitsPerSample - validBitsPerSample)
+        let denominator = Float(UInt64(1) << UInt64(validBitsPerSample - 1))
+        samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 4).map { index in
+            let sample = Int32(bitPattern: readUInt32LE(data, index)) >> shift
+            return Float(sample) / denominator
         }
     case (3, 32):
+        guard validBitsPerSample == 32, dataSize % 4 == 0 else {
+            throw CliError.usage("invalid 32-bit float WAV data: \(url.path)")
+        }
         samples = stride(from: dataOffset, to: dataOffset + dataSize, by: 4).map { index in
             Float(bitPattern: readUInt32LE(data, index))
         }
@@ -218,7 +284,7 @@ do {
     if options.mode == .decode {
         let payload = try Data(contentsOf: input)
         let started = DispatchTime.now().uptimeNanoseconds
-        let decoded = try pipeline.decodeEcdc(payload)
+        let decoded = try pipeline.decodeEcdc(payload, frameBatchSize: options.batchSize)
         let bytes = try writePcmF32LE(output, samples: decoded.samples)
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
         let sampleRate = pipeline.summary.sampleRate

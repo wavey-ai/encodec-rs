@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 
 const EXACT_EXP_CACHE_SLOTS: usize = 4096;
+const LOGIT_ROUND_EPSILON: f64 = f64::from_bits(0x3d70_0000_0000_0000);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProbabilityParameters {
@@ -31,7 +32,7 @@ pub struct ProbabilityScratch {
     probs: Vec<f64>,
     exp_cache_keys: Vec<u64>,
     exp_cache_values: Vec<f64>,
-    exp_cache_valid: Vec<bool>,
+    exp_cache_valid: Vec<u8>,
 }
 
 impl ProbabilityScratch {
@@ -42,23 +43,23 @@ impl ProbabilityScratch {
         if self.exp_cache_keys.is_empty() {
             self.exp_cache_keys.resize(EXACT_EXP_CACHE_SLOTS, 0);
             self.exp_cache_values.resize(EXACT_EXP_CACHE_SLOTS, 0.0);
-            self.exp_cache_valid.resize(EXACT_EXP_CACHE_SLOTS, false);
+            self.exp_cache_valid.resize(EXACT_EXP_CACHE_SLOTS, 0);
         }
     }
 }
 
-fn exact_cached_exp(value: f64, keys: &mut [u64], values: &mut [f64], valid: &mut [bool]) -> f64 {
+fn exact_cached_exp(value: f64, keys: &mut [u64], values: &mut [f64], valid: &mut [u8]) -> f64 {
     let key = value.to_bits();
     let folded = (key as u32) ^ ((key >> 32) as u32);
     let slot = folded.wrapping_mul(0x9e37_79b1) as usize & (EXACT_EXP_CACHE_SLOTS - 1);
-    if valid[slot] && keys[slot] == key {
+    if valid[slot] != 0 && keys[slot] == key {
         return values[slot];
     }
 
     let result = libm::exp(value);
     keys[slot] = key;
     values[slot] = result;
-    valid[slot] = true;
+    valid[slot] = 1;
     result
 }
 
@@ -121,6 +122,7 @@ fn probability_columns_from_flat_logits_impl<'a, const OPTIMIZED: bool>(
     let exp_cache_valid = &mut scratch.exp_cache_valid;
     let uniform = 1.0 / cardinality as f64;
     let near_pdf_threshold = 0.25 / parameters.fp_scale as f64;
+    let unit_tau = parameters.tau == 1.0;
 
     for step in 0..steps {
         for codebook in 0..codebooks {
@@ -128,7 +130,8 @@ fn probability_columns_from_flat_logits_impl<'a, const OPTIMIZED: bool>(
             let mut min_value = f64::INFINITY;
             for (bin, quantized_value) in quantized.iter_mut().enumerate().take(cardinality) {
                 let input_index = (bin * codebooks + codebook) * steps + step;
-                let raw = logits[input_index] as f64 / parameters.tau;
+                let raw = logits[input_index] as f64;
+                let raw = if unit_tau { raw } else { raw / parameters.tau };
                 let value = quantize_logit(raw, parameters.logit_step);
                 *quantized_value = value;
                 max_value = max_value.max(value);
@@ -186,9 +189,8 @@ fn probability_columns_from_flat_logits_impl<'a, const OPTIMIZED: bool>(
 }
 
 fn quantize_logit(value: f64, step: f64) -> f64 {
-    let epsilon = 2_f64.powi(-40);
     let scaled = value / step;
-    (scaled + 0.5 - epsilon).floor() * step
+    (scaled + 0.5 - LOGIT_ROUND_EPSILON).floor() * step
 }
 
 #[cfg(test)]
@@ -199,7 +201,7 @@ mod tests {
     fn exact_exp_cache_matches_uncached_libm_bits() {
         let mut keys = vec![0_u64; EXACT_EXP_CACHE_SLOTS];
         let mut values = vec![0.0_f64; EXACT_EXP_CACHE_SLOTS];
-        let mut valid = vec![false; EXACT_EXP_CACHE_SLOTS];
+        let mut valid = vec![0_u8; EXACT_EXP_CACHE_SLOTS];
         let inputs = [
             0.0,
             -0.0,

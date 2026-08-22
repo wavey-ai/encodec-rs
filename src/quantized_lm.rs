@@ -15,6 +15,7 @@ pub struct QuantizedLmWeights {
     pub cardinality: usize,
     pub frame_length: usize,
     pub past_context: usize,
+    attention_scale: f64,
     norm_in_weight: Vec<f32>,
     norm_in_bias: Vec<f32>,
     pos_emb: Vec<f32>,
@@ -46,6 +47,10 @@ struct QuantizedLinear {
     cols: usize,
     scales: Vec<f32>,
     weights: Vec<i8>,
+    #[cfg(target_arch = "aarch64")]
+    row_sums: Vec<i32>,
+    #[cfg(target_arch = "aarch64")]
+    use_dotprod: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -77,9 +82,20 @@ struct QuantizedLmScratch {
     attn: Vec<f32>,
     ff: Vec<f32>,
     scores: Vec<f64>,
-    input_q: Vec<i16>,
+    quantized_input: QuantizedInputScratch,
     logit_column: Vec<f32>,
     logits: Vec<f32>,
+}
+
+#[derive(Debug, Default)]
+struct QuantizedInputScratch {
+    values: Vec<i16>,
+    #[cfg(target_arch = "aarch64")]
+    dotprod_low: Vec<i8>,
+    #[cfg(target_arch = "aarch64")]
+    dotprod_high: Vec<i8>,
+    #[cfg(target_arch = "aarch64")]
+    dotprod_prepared: bool,
 }
 
 impl QuantizedLmWeights {
@@ -108,6 +124,7 @@ impl QuantizedLmWeights {
             bail!("quantized LM dim {dim} is not divisible by heads {heads}");
         }
         let hidden_dim = dim * 4;
+        let attention_scale = 1.0 / ((dim / heads) as f64).sqrt();
 
         let norm_in_weight = reader.read_f32_vec(dim)?;
         let norm_in_bias = reader.read_f32_vec(dim)?;
@@ -158,6 +175,7 @@ impl QuantizedLmWeights {
             cardinality,
             frame_length,
             past_context,
+            attention_scale,
             norm_in_weight,
             norm_in_bias,
             pos_emb,
@@ -237,12 +255,13 @@ impl QuantizedLm {
 
     pub fn initial_state(&self) -> QuantizedLmState {
         let dim = self.weights.dim;
+        let cache_capacity = self.state_cache_capacity();
         let mut layers = Vec::with_capacity(self.weights.layers);
         for layer in &self.weights.layer_weights {
-            let mut keys = vec![0.0_f32; dim];
-            let mut values = vec![0.0_f32; dim];
-            keys.copy_from_slice(&layer.in_proj_bias[dim..2 * dim]);
-            values.copy_from_slice(&layer.in_proj_bias[2 * dim..3 * dim]);
+            let mut keys = Vec::with_capacity(cache_capacity);
+            let mut values = Vec::with_capacity(cache_capacity);
+            keys.extend_from_slice(&layer.in_proj_bias[dim..2 * dim]);
+            values.extend_from_slice(&layer.in_proj_bias[2 * dim..3 * dim]);
             layers.push(LayerState {
                 keys,
                 values,
@@ -250,6 +269,47 @@ impl QuantizedLm {
             });
         }
         QuantizedLmState { offset: 0, layers }
+    }
+
+    pub(crate) fn reset_state(&self, state: &mut QuantizedLmState) {
+        if state.layers.len() != self.weights.layers {
+            *state = self.initial_state();
+            return;
+        }
+
+        let dim = self.weights.dim;
+        let cache_capacity = self.state_cache_capacity();
+        state.offset = 0;
+        for (layer_state, layer) in state.layers.iter_mut().zip(&self.weights.layer_weights) {
+            layer_state.keys.clear();
+            layer_state.values.clear();
+            if layer_state.keys.capacity() < cache_capacity {
+                layer_state
+                    .keys
+                    .reserve(cache_capacity - layer_state.keys.capacity());
+            }
+            if layer_state.values.capacity() < cache_capacity {
+                layer_state
+                    .values
+                    .reserve(cache_capacity - layer_state.values.capacity());
+            }
+            layer_state
+                .keys
+                .extend_from_slice(&layer.in_proj_bias[dim..2 * dim]);
+            layer_state
+                .values
+                .extend_from_slice(&layer.in_proj_bias[2 * dim..3 * dim]);
+            layer_state.len = 1;
+        }
+    }
+
+    fn state_cache_capacity(&self) -> usize {
+        let cached_steps = self
+            .weights
+            .frame_length
+            .saturating_add(1)
+            .min(self.weights.past_context.saturating_add(1));
+        cached_steps.saturating_mul(self.weights.dim)
     }
 
     pub fn forward_step(
@@ -331,9 +391,9 @@ impl QuantizedLm {
             bail!("LM layer state exceeded past_context");
         }
 
-        let input_scale = quantize_input_i16(&self.scratch.x, &mut self.scratch.input_q);
+        let input_scale = self.scratch.quantized_input.quantize(&self.scratch.x);
         quantized_linear_part_with_input(
-            &self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             input_scale,
             &layer.in_proj_weight,
             &layer.in_proj_bias,
@@ -342,7 +402,7 @@ impl QuantizedLm {
             &mut self.scratch.q,
         );
         quantized_linear_part_with_input(
-            &self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             input_scale,
             &layer.in_proj_weight,
             &layer.in_proj_bias,
@@ -351,7 +411,7 @@ impl QuantizedLm {
             &mut self.scratch.k,
         );
         quantized_linear_part_with_input(
-            &self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             input_scale,
             &layer.in_proj_weight,
             &layer.in_proj_bias,
@@ -377,6 +437,7 @@ impl QuantizedLm {
             &layer_state.values,
             layer_state.len,
             self.weights.heads,
+            self.weights.attention_scale,
             &mut self.scratch.attn,
             &mut self.scratch.scores,
         )?;
@@ -385,7 +446,7 @@ impl QuantizedLm {
             &self.scratch.attn,
             &layer.out_proj_weight,
             &layer.out_proj_bias,
-            &mut self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             &mut self.scratch.y,
         );
         for d in 0..dim {
@@ -402,7 +463,7 @@ impl QuantizedLm {
             &self.scratch.x,
             &layer.linear1_weight,
             &layer.linear1_bias,
-            &mut self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             &mut self.scratch.ff,
         );
         for value in &mut self.scratch.ff {
@@ -412,7 +473,7 @@ impl QuantizedLm {
             &self.scratch.ff,
             &layer.linear2_weight,
             &layer.linear2_bias,
-            &mut self.scratch.input_q,
+            &mut self.scratch.quantized_input,
             &mut self.scratch.y,
         );
         for d in 0..dim {
@@ -430,12 +491,12 @@ impl QuantizedLm {
     fn output_logits(&mut self, codebooks: usize) {
         let card = self.weights.cardinality;
         self.scratch.logits.resize(card * codebooks, 0.0);
-        let input_scale = quantize_input_i16(&self.scratch.x, &mut self.scratch.input_q);
+        let input_scale = self.scratch.quantized_input.quantize(&self.scratch.x);
         for codebook in 0..codebooks {
             let weight = &self.weights.output_weights[codebook];
             let bias = &self.weights.output_biases[codebook];
             quantized_linear_part_with_input(
-                &self.scratch.input_q,
+                &mut self.scratch.quantized_input,
                 input_scale,
                 weight,
                 bias,
@@ -458,19 +519,44 @@ impl QuantizedLinear {
     }
 }
 
+impl QuantizedInputScratch {
+    fn quantize(&mut self, input: &[f32]) -> f32 {
+        let scale = quantize_input_i16(input, &mut self.values);
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.dotprod_prepared = false;
+        }
+        scale
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn prepare_dotprod(&mut self) {
+        if self.dotprod_prepared {
+            return;
+        }
+        self.dotprod_low.resize(self.values.len(), 0);
+        self.dotprod_high.resize(self.values.len(), 0);
+        for (index, value) in self.values.iter().copied().enumerate() {
+            self.dotprod_low[index] = (((value as i32) & 0xff) - 128) as i8;
+            self.dotprod_high[index] = (value >> 8) as i8;
+        }
+        self.dotprod_prepared = true;
+    }
+}
+
 fn quantized_linear(
     input: &[f32],
     weight: &QuantizedLinear,
     bias: &[f32],
-    input_q: &mut Vec<i16>,
+    input_q: &mut QuantizedInputScratch,
     out: &mut Vec<f32>,
 ) {
-    let input_scale = quantize_input_i16(input, input_q);
+    let input_scale = input_q.quantize(input);
     quantized_linear_part_with_input(input_q, input_scale, weight, bias, 0, weight.rows, out);
 }
 
 fn quantized_linear_part_with_input(
-    input_q: &[i16],
+    input_q: &mut QuantizedInputScratch,
     input_scale: f32,
     weight: &QuantizedLinear,
     bias: &[f32],
@@ -479,7 +565,7 @@ fn quantized_linear_part_with_input(
     out: &mut Vec<f32>,
 ) {
     debug_assert!(row_offset + out_dim <= weight.rows);
-    debug_assert_eq!(input_q.len(), weight.cols);
+    debug_assert_eq!(input_q.values.len(), weight.cols);
     out.resize(out_dim, 0.0);
 
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -488,16 +574,80 @@ fn quantized_linear_part_with_input(
         // eight-column vectors before each unaligned load. It handles all
         // remaining rows and columns with the checked one-row path.
         unsafe {
-            quantized_linear_part_wasm_simd128(input_q, input_scale, weight, bias, row_offset, out);
+            quantized_linear_part_wasm_simd128(
+                &input_q.values,
+                input_scale,
+                weight,
+                bias,
+                row_offset,
+                out,
+            );
         }
         return;
     }
 
-    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: the helper checks complete eight-row tiles and complete
+        // eight-column vectors before each unaligned load. It handles all
+        // remaining rows and columns with the checked one-row path.
+        unsafe {
+            quantized_linear_part_aarch64(input_q, input_scale, weight, bias, row_offset, out);
+        }
+    }
+
+    #[cfg(all(
+        not(target_arch = "aarch64"),
+        not(all(target_arch = "wasm32", target_feature = "simd128"))
+    ))]
     for (row, output) in out.iter_mut().enumerate() {
         let source_row = row_offset + row;
-        let acc = dot_i8_i16(weight.row(source_row), input_q);
+        let acc = dot_i8_i16(weight.row(source_row), &input_q.values);
         *output = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn quantized_linear_part_aarch64(
+    input_q: &mut QuantizedInputScratch,
+    input_scale: f32,
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    row_offset: usize,
+    out: &mut [f32],
+) {
+    if weight.use_dotprod {
+        input_q.prepare_dotprod();
+    }
+    let input_values = &input_q.values;
+    let mut row = 0_usize;
+    while row + 8 <= out.len() {
+        let source_row = row_offset + row;
+        let accumulators = if weight.use_dotprod {
+            dot_i8_i16_8_rows_dotprod_packed_aarch64(
+                &weight.weights,
+                &weight.row_sums,
+                source_row,
+                weight.cols,
+                &input_q.dotprod_low,
+                &input_q.dotprod_high,
+            )
+        } else {
+            dot_i8_i16_8_rows_aarch64(&weight.weights, source_row, weight.cols, input_values)
+        };
+        for lane in 0..8 {
+            let output_row = source_row + lane;
+            out[row + lane] = bias[output_row]
+                + (accumulators[lane] as f32) * input_scale * weight.scales[output_row];
+        }
+        row += 8;
+    }
+
+    while row < out.len() {
+        let source_row = row_offset + row;
+        let acc = dot_i8_i16_aarch64(weight.row(source_row), input_values);
+        out[row] = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+        row += 1;
     }
 }
 
@@ -553,7 +703,10 @@ fn quantize_input_i16(input: &[f32], out: &mut Vec<i16>) -> f32 {
 }
 
 #[cfg_attr(
-    all(target_arch = "wasm32", target_feature = "simd128"),
+    any(
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ),
     allow(dead_code)
 )]
 fn dot_i8_i16(weights: &[i8], input: &[i16]) -> i64 {
@@ -754,6 +907,347 @@ unsafe fn dot_i8_i16_wasm_simd128(weights: &[i8], input: &[i16]) -> i64 {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn sum_aarch64_i32x4_pair(
+    low: core::arch::aarch64::int32x4_t,
+    high: core::arch::aarch64::int32x4_t,
+) -> i64 {
+    use core::arch::aarch64::vaddvq_s32;
+
+    vaddvq_s32(low) as i64 + vaddvq_s32(high) as i64
+}
+
+#[cfg(target_arch = "aarch64")]
+unsafe fn dot_i8_i16_8_rows_aarch64(
+    weights: &[i8],
+    first_row: usize,
+    cols: usize,
+    input: &[i16],
+) -> [i64; 8] {
+    use core::arch::aarch64::{
+        vdupq_n_s32, vget_high_s16, vget_high_s8, vget_low_s16, vget_low_s8, vld1_s8, vld1q_s16,
+        vld1q_s8, vmlal_s16, vmovl_s8,
+    };
+
+    const VECTORS_PER_FLUSH: usize = 128;
+
+    debug_assert_eq!(input.len(), cols);
+    debug_assert!((first_row + 8) * cols <= weights.len());
+
+    let row0 = weights.as_ptr().add(first_row * cols);
+    let row1 = row0.add(cols);
+    let row2 = row1.add(cols);
+    let row3 = row2.add(cols);
+    let row4 = row3.add(cols);
+    let row5 = row4.add(cols);
+    let row6 = row5.add(cols);
+    let row7 = row6.add(cols);
+    let mut low0 = vdupq_n_s32(0);
+    let mut low1 = vdupq_n_s32(0);
+    let mut low2 = vdupq_n_s32(0);
+    let mut low3 = vdupq_n_s32(0);
+    let mut low4 = vdupq_n_s32(0);
+    let mut low5 = vdupq_n_s32(0);
+    let mut low6 = vdupq_n_s32(0);
+    let mut low7 = vdupq_n_s32(0);
+    let mut high0 = vdupq_n_s32(0);
+    let mut high1 = vdupq_n_s32(0);
+    let mut high2 = vdupq_n_s32(0);
+    let mut high3 = vdupq_n_s32(0);
+    let mut high4 = vdupq_n_s32(0);
+    let mut high5 = vdupq_n_s32(0);
+    let mut high6 = vdupq_n_s32(0);
+    let mut high7 = vdupq_n_s32(0);
+    let mut accumulators = [0_i64; 8];
+    let mut index = 0_usize;
+    let mut vectors = 0_usize;
+
+    macro_rules! flush_accumulators {
+        () => {{
+            accumulators[0] += sum_aarch64_i32x4_pair(low0, high0);
+            accumulators[1] += sum_aarch64_i32x4_pair(low1, high1);
+            accumulators[2] += sum_aarch64_i32x4_pair(low2, high2);
+            accumulators[3] += sum_aarch64_i32x4_pair(low3, high3);
+            accumulators[4] += sum_aarch64_i32x4_pair(low4, high4);
+            accumulators[5] += sum_aarch64_i32x4_pair(low5, high5);
+            accumulators[6] += sum_aarch64_i32x4_pair(low6, high6);
+            accumulators[7] += sum_aarch64_i32x4_pair(low7, high7);
+            low0 = vdupq_n_s32(0);
+            low1 = vdupq_n_s32(0);
+            low2 = vdupq_n_s32(0);
+            low3 = vdupq_n_s32(0);
+            low4 = vdupq_n_s32(0);
+            low5 = vdupq_n_s32(0);
+            low6 = vdupq_n_s32(0);
+            low7 = vdupq_n_s32(0);
+            high0 = vdupq_n_s32(0);
+            high1 = vdupq_n_s32(0);
+            high2 = vdupq_n_s32(0);
+            high3 = vdupq_n_s32(0);
+            high4 = vdupq_n_s32(0);
+            high5 = vdupq_n_s32(0);
+            high6 = vdupq_n_s32(0);
+            high7 = vdupq_n_s32(0);
+            vectors = 0;
+        }};
+    }
+
+    while index + 16 <= cols {
+        let input0 = vld1q_s16(input.as_ptr().add(index));
+        let input1 = vld1q_s16(input.as_ptr().add(index + 8));
+        let input0_low = vget_low_s16(input0);
+        let input0_high = vget_high_s16(input0);
+        let input1_low = vget_low_s16(input1);
+        let input1_high = vget_high_s16(input1);
+
+        macro_rules! accumulate_row {
+            ($row:expr, $low:ident, $high:ident) => {{
+                let packed = vld1q_s8($row.add(index));
+                let first = vmovl_s8(vget_low_s8(packed));
+                let second = vmovl_s8(vget_high_s8(packed));
+                $low = vmlal_s16($low, vget_low_s16(first), input0_low);
+                $high = vmlal_s16($high, vget_high_s16(first), input0_high);
+                $low = vmlal_s16($low, vget_low_s16(second), input1_low);
+                $high = vmlal_s16($high, vget_high_s16(second), input1_high);
+            }};
+        }
+
+        accumulate_row!(row0, low0, high0);
+        accumulate_row!(row1, low1, high1);
+        accumulate_row!(row2, low2, high2);
+        accumulate_row!(row3, low3, high3);
+        accumulate_row!(row4, low4, high4);
+        accumulate_row!(row5, low5, high5);
+        accumulate_row!(row6, low6, high6);
+        accumulate_row!(row7, low7, high7);
+
+        vectors += 2;
+        index += 16;
+        if vectors == VECTORS_PER_FLUSH {
+            flush_accumulators!();
+        }
+    }
+
+    if index + 8 <= cols {
+        let input_i16 = vld1q_s16(input.as_ptr().add(index));
+        let input_low = vget_low_s16(input_i16);
+        let input_high = vget_high_s16(input_i16);
+
+        macro_rules! accumulate_half_row {
+            ($row:expr, $low:ident, $high:ident) => {{
+                let packed = vmovl_s8(vld1_s8($row.add(index)));
+                $low = vmlal_s16($low, vget_low_s16(packed), input_low);
+                $high = vmlal_s16($high, vget_high_s16(packed), input_high);
+            }};
+        }
+
+        accumulate_half_row!(row0, low0, high0);
+        accumulate_half_row!(row1, low1, high1);
+        accumulate_half_row!(row2, low2, high2);
+        accumulate_half_row!(row3, low3, high3);
+        accumulate_half_row!(row4, low4, high4);
+        accumulate_half_row!(row5, low5, high5);
+        accumulate_half_row!(row6, low6, high6);
+        accumulate_half_row!(row7, low7, high7);
+
+        index += 8;
+    }
+
+    accumulators[0] += sum_aarch64_i32x4_pair(low0, high0);
+    accumulators[1] += sum_aarch64_i32x4_pair(low1, high1);
+    accumulators[2] += sum_aarch64_i32x4_pair(low2, high2);
+    accumulators[3] += sum_aarch64_i32x4_pair(low3, high3);
+    accumulators[4] += sum_aarch64_i32x4_pair(low4, high4);
+    accumulators[5] += sum_aarch64_i32x4_pair(low5, high5);
+    accumulators[6] += sum_aarch64_i32x4_pair(low6, high6);
+    accumulators[7] += sum_aarch64_i32x4_pair(low7, high7);
+
+    while index < cols {
+        let value = *input.get_unchecked(index) as i64;
+        accumulators[0] += (*row0.add(index) as i64) * value;
+        accumulators[1] += (*row1.add(index) as i64) * value;
+        accumulators[2] += (*row2.add(index) as i64) * value;
+        accumulators[3] += (*row3.add(index) as i64) * value;
+        accumulators[4] += (*row4.add(index) as i64) * value;
+        accumulators[5] += (*row5.add(index) as i64) * value;
+        accumulators[6] += (*row6.add(index) as i64) * value;
+        accumulators[7] += (*row7.add(index) as i64) * value;
+        index += 1;
+    }
+    accumulators
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+#[target_feature(enable = "dotprod")]
+unsafe fn dotprod_accumulate_aarch64(
+    mut accumulator: core::arch::aarch64::int32x4_t,
+    weights: core::arch::aarch64::int8x16_t,
+    input: core::arch::aarch64::int8x16_t,
+) -> core::arch::aarch64::int32x4_t {
+    use core::arch::asm;
+
+    asm!(
+        "sdot {accumulator:v}.4s, {weights:v}.16b, {input:v}.16b",
+        accumulator = inout(vreg) accumulator,
+        weights = in(vreg) weights,
+        input = in(vreg) input,
+        options(pure, nomem, nostack, preserves_flags)
+    );
+    accumulator
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_i8_i16_8_rows_dotprod_packed_aarch64(
+    weights: &[i8],
+    row_sums: &[i32],
+    first_row: usize,
+    cols: usize,
+    input_low: &[i8],
+    input_high: &[i8],
+) -> [i64; 8] {
+    use core::arch::aarch64::{vcombine_s8, vdup_n_s8, vdupq_n_s32, vld1_s8, vld1q_s8};
+
+    debug_assert_eq!(input_low.len(), cols);
+    debug_assert_eq!(input_high.len(), cols);
+    debug_assert!((first_row + 8) * cols <= weights.len());
+    debug_assert!(first_row + 8 <= row_sums.len());
+
+    let row0 = weights.as_ptr().add(first_row * cols);
+    let row1 = row0.add(cols);
+    let row2 = row1.add(cols);
+    let row3 = row2.add(cols);
+    let row4 = row3.add(cols);
+    let row5 = row4.add(cols);
+    let row6 = row5.add(cols);
+    let row7 = row6.add(cols);
+    let mut low0 = vdupq_n_s32(0);
+    let mut low1 = vdupq_n_s32(0);
+    let mut low2 = vdupq_n_s32(0);
+    let mut low3 = vdupq_n_s32(0);
+    let mut low4 = vdupq_n_s32(0);
+    let mut low5 = vdupq_n_s32(0);
+    let mut low6 = vdupq_n_s32(0);
+    let mut low7 = vdupq_n_s32(0);
+    let mut high0 = vdupq_n_s32(0);
+    let mut high1 = vdupq_n_s32(0);
+    let mut high2 = vdupq_n_s32(0);
+    let mut high3 = vdupq_n_s32(0);
+    let mut high4 = vdupq_n_s32(0);
+    let mut high5 = vdupq_n_s32(0);
+    let mut high6 = vdupq_n_s32(0);
+    let mut high7 = vdupq_n_s32(0);
+    let zero_i8x8 = vdup_n_s8(0);
+    let mut index = 0_usize;
+
+    macro_rules! accumulate_row_16 {
+        ($row:expr, $input_low:expr, $input_high:expr, $low:ident, $high:ident) => {{
+            let packed = vld1q_s8($row.add(index));
+            $low = dotprod_accumulate_aarch64($low, packed, $input_low);
+            $high = dotprod_accumulate_aarch64($high, packed, $input_high);
+        }};
+    }
+
+    while index + 16 <= cols {
+        let input_low = vld1q_s8(input_low.as_ptr().add(index));
+        let input_high = vld1q_s8(input_high.as_ptr().add(index));
+
+        accumulate_row_16!(row0, input_low, input_high, low0, high0);
+        accumulate_row_16!(row1, input_low, input_high, low1, high1);
+        accumulate_row_16!(row2, input_low, input_high, low2, high2);
+        accumulate_row_16!(row3, input_low, input_high, low3, high3);
+        accumulate_row_16!(row4, input_low, input_high, low4, high4);
+        accumulate_row_16!(row5, input_low, input_high, low5, high5);
+        accumulate_row_16!(row6, input_low, input_high, low6, high6);
+        accumulate_row_16!(row7, input_low, input_high, low7, high7);
+        index += 16;
+    }
+
+    if index + 8 <= cols {
+        let input_low = vcombine_s8(vld1_s8(input_low.as_ptr().add(index)), zero_i8x8);
+        let input_high = vcombine_s8(vld1_s8(input_high.as_ptr().add(index)), zero_i8x8);
+
+        macro_rules! accumulate_row_8 {
+            ($row:expr, $low:ident, $high:ident) => {{
+                let packed = vcombine_s8(vld1_s8($row.add(index)), zero_i8x8);
+                $low = dotprod_accumulate_aarch64($low, packed, input_low);
+                $high = dotprod_accumulate_aarch64($high, packed, input_high);
+            }};
+        }
+
+        accumulate_row_8!(row0, low0, high0);
+        accumulate_row_8!(row1, low1, high1);
+        accumulate_row_8!(row2, low2, high2);
+        accumulate_row_8!(row3, low3, high3);
+        accumulate_row_8!(row4, low4, high4);
+        accumulate_row_8!(row5, low5, high5);
+        accumulate_row_8!(row6, low6, high6);
+        accumulate_row_8!(row7, low7, high7);
+        index += 8;
+    }
+
+    let vector_end = index;
+    let mut tail_weight_sums = [0_i32; 8];
+    let mut accumulators = [0_i64; 8];
+    while index < cols {
+        let value = *input_low.get_unchecked(index) as i64
+            + 128
+            + 256 * *input_high.get_unchecked(index) as i64;
+        let weights = [
+            *row0.add(index),
+            *row1.add(index),
+            *row2.add(index),
+            *row3.add(index),
+            *row4.add(index),
+            *row5.add(index),
+            *row6.add(index),
+            *row7.add(index),
+        ];
+        for row in 0..8 {
+            tail_weight_sums[row] += weights[row] as i32;
+            accumulators[row] += weights[row] as i64 * value;
+        }
+        index += 1;
+    }
+
+    debug_assert_eq!(vector_end, cols - (cols % 8));
+    let low = [low0, low1, low2, low3, low4, low5, low6, low7];
+    let high = [high0, high1, high2, high3, high4, high5, high6, high7];
+    for row in 0..8 {
+        let vector_weight_sum = row_sums[first_row + row] - tail_weight_sums[row];
+        accumulators[row] += sum_aarch64_i32x4_pair(low[row], high[row])
+            + 255 * core::arch::aarch64::vaddvq_s32(high[row]) as i64
+            + 128 * vector_weight_sum as i64;
+    }
+    accumulators
+}
+
+#[cfg(all(target_arch = "aarch64", test))]
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_i8_i16_8_rows_dotprod_aarch64(
+    weights: &[i8],
+    row_sums: &[i32],
+    first_row: usize,
+    cols: usize,
+    input: &[i16],
+) -> [i64; 8] {
+    let mut scratch = QuantizedInputScratch {
+        values: input.to_vec(),
+        ..QuantizedInputScratch::default()
+    };
+    scratch.prepare_dotprod();
+    dot_i8_i16_8_rows_dotprod_packed_aarch64(
+        weights,
+        row_sums,
+        first_row,
+        cols,
+        &scratch.dotprod_low,
+        &scratch.dotprod_high,
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
 unsafe fn dot_i8_i16_aarch64(weights: &[i8], input: &[i16]) -> i64 {
     use core::arch::aarch64::{
         vaddvq_s32, vget_high_s16, vget_low_s16, vld1_s8, vld1q_s16, vmovl_s8, vmull_s16,
@@ -808,6 +1302,7 @@ fn attention_into(
     values: &[f32],
     len: usize,
     heads: usize,
+    scale: f64,
     out: &mut Vec<f32>,
     scores: &mut Vec<f64>,
 ) -> Result<()> {
@@ -819,7 +1314,6 @@ fn attention_into(
         bail!("attention cache shape mismatch");
     }
     let head_dim = dim / heads;
-    let scale = 1.0 / (head_dim as f64).sqrt();
     out.clear();
     out.resize(dim, 0.0);
     scores.resize(len, 0.0);
@@ -906,12 +1400,21 @@ impl<'a> WeightReader<'a> {
     fn read_quantized_linear(&mut self, rows: usize, cols: usize) -> Result<QuantizedLinear> {
         let scales = self.read_f32_vec(rows)?;
         let bytes = self.read_bytes(rows * cols)?;
-        let weights = bytes.iter().map(|value| *value as i8).collect();
+        let weights: Vec<i8> = bytes.iter().map(|value| *value as i8).collect();
+        #[cfg(target_arch = "aarch64")]
+        let row_sums = weights
+            .chunks_exact(cols)
+            .map(|row| row.iter().map(|value| *value as i32).sum())
+            .collect();
         Ok(QuantizedLinear {
             rows,
             cols,
             scales,
             weights,
+            #[cfg(target_arch = "aarch64")]
+            row_sums,
+            #[cfg(target_arch = "aarch64")]
+            use_dotprod: aarch64_dotprod_enabled(),
         })
     }
 
@@ -920,9 +1423,84 @@ impl<'a> WeightReader<'a> {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn aarch64_dotprod_enabled() -> bool {
+    std::arch::is_aarch64_feature_detected!("dotprod")
+        && std::env::var_os("BITNEEDLE_LM_DISABLE_DOTPROD").is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_state_reuses_cache_storage_and_matches_a_fresh_state() -> Result<()> {
+        let bundle_dir = std::path::Path::new("onnx-bundles/encodec_48khz_6kbps_1333ms");
+        if !bundle_dir.exists() {
+            eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
+            return Ok(());
+        }
+        let metadata: OnnxFrameBundleMetadata =
+            serde_json::from_str(&std::fs::read_to_string(bundle_dir.join("bundle.json"))?)?;
+        let weight_name = metadata
+            .lm_quant_weight_model
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no q8 LM weights"))?;
+        let weights =
+            QuantizedLmWeights::from_bytes(&std::fs::read(bundle_dir.join(weight_name))?)?;
+        let mut reused_lm = QuantizedLm::new(weights.clone());
+        let mut fresh_lm = QuantizedLm::new(weights);
+        let mut reused_state = reused_lm.initial_state();
+        let initial_storage = reused_state
+            .layers
+            .iter()
+            .map(|layer| {
+                (
+                    layer.keys.as_ptr(),
+                    layer.keys.capacity(),
+                    layer.values.as_ptr(),
+                    layer.values.capacity(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        for step in 0..8 {
+            let symbols = (0..metadata.num_codebooks)
+                .map(|codebook| (step * 17 + codebook * 31) % metadata.lm_cardinality())
+                .collect::<Vec<_>>();
+            reused_lm.forward_step_borrowed(&mut reused_state, &symbols)?;
+        }
+        reused_lm.reset_state(&mut reused_state);
+
+        for (layer, (keys, keys_capacity, values, values_capacity)) in
+            reused_state.layers.iter().zip(initial_storage)
+        {
+            assert_eq!(layer.keys.as_ptr(), keys);
+            assert_eq!(layer.keys.capacity(), keys_capacity);
+            assert_eq!(layer.values.as_ptr(), values);
+            assert_eq!(layer.values.capacity(), values_capacity);
+            assert_eq!(layer.len, 1);
+        }
+
+        let mut fresh_state = fresh_lm.initial_state();
+        for step in 0..8 {
+            let symbols = (0..metadata.num_codebooks)
+                .map(|codebook| (step * 43 + codebook * 13) % metadata.lm_cardinality())
+                .collect::<Vec<_>>();
+            let reused = reused_lm
+                .forward_step_borrowed(&mut reused_state, &symbols)?
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            let fresh = fresh_lm
+                .forward_step_borrowed(&mut fresh_state, &symbols)?
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>();
+            assert_eq!(reused, fresh, "logits differ after reset at step {step}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn optimized_dot_matches_scalar_for_extreme_and_tail_lengths() {
@@ -947,6 +1525,83 @@ mod tests {
                 dot_i8_i16(&weights, &input),
                 dot_i8_i16_scalar(&weights, &input)
             );
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn eight_row_aarch64_dot_matches_scalar_for_extreme_and_tail_lengths() {
+        for len in [0, 1, 7, 8, 9, 25, 200, 800, 1025] {
+            let weights: Vec<i8> = (0..8 * len)
+                .map(|index| match index % 4 {
+                    0 => i8::MIN,
+                    1 => i8::MAX,
+                    2 => -1,
+                    _ => 1,
+                })
+                .collect();
+            let input: Vec<i16> = (0..len)
+                .map(|index| match index % 4 {
+                    0 => i16::MIN,
+                    1 => i16::MAX,
+                    2 => -17_123,
+                    _ => 19_937,
+                })
+                .collect();
+
+            // SAFETY: the test provides eight complete rows and an input with
+            // exactly the declared column count.
+            let actual = unsafe { dot_i8_i16_8_rows_aarch64(&weights, 0, len, &input) };
+            for row in 0..8 {
+                assert_eq!(
+                    actual[row],
+                    dot_i8_i16_scalar(&weights[row * len..(row + 1) * len], &input)
+                );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn eight_row_aarch64_dotprod_matches_scalar_for_extreme_and_tail_lengths() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+
+        for len in [0, 1, 7, 8, 9, 25, 200, 800, 1025] {
+            let weights: Vec<i8> = (0..8 * len)
+                .map(|index| match index % 4 {
+                    0 => i8::MIN,
+                    1 => i8::MAX,
+                    2 => -1,
+                    _ => 1,
+                })
+                .collect();
+            let row_sums: Vec<i32> = weights
+                .chunks_exact(len.max(1))
+                .take(8)
+                .map(|row| row.iter().map(|value| *value as i32).sum())
+                .collect();
+            let row_sums = if len == 0 { vec![0; 8] } else { row_sums };
+            let input: Vec<i16> = (0..len)
+                .map(|index| match index % 4 {
+                    0 => i16::MIN,
+                    1 => i16::MAX,
+                    2 => -17_123,
+                    _ => 19_937,
+                })
+                .collect();
+
+            // SAFETY: feature detection passed and the test provides eight
+            // complete rows, row sums, and the declared input column count.
+            let actual =
+                unsafe { dot_i8_i16_8_rows_dotprod_aarch64(&weights, &row_sums, 0, len, &input) };
+            for row in 0..8 {
+                assert_eq!(
+                    actual[row],
+                    dot_i8_i16_scalar(&weights[row * len..(row + 1) * len], &input)
+                );
+            }
         }
     }
 }

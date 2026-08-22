@@ -3,6 +3,16 @@ import MLX
 import MLXNN
 import CEncodecMLXBridge
 
+public enum EncodecMLXRuntimeDefaults {
+    public static var frameBatchSize: Int {
+        #if os(iOS)
+        1
+        #else
+        8
+        #endif
+    }
+}
+
 public struct EncodecFrameMetadata: Decodable, Sendable {
     public let schemaVersion: Int
     public let modelName: String
@@ -142,10 +152,12 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
     public let metadata: EncodecFrameMetadata
     public let manifest: EncodecMLXWeightManifest
 
-    private let encodeWeights: [String: MLXArray]
-    private let decodeWeights: [String: MLXArray]
+    private let encodeTensorCount: Int
+    private let decodeTensorCount: Int
     private let encoder: MLXEncodecFrameEncoder
     private let decoder: MLXEncodecFrameDecoder
+    private let compiledEncoder: (@Sendable ([MLXArray]) -> [MLXArray])?
+    private let compiledDecoder: (@Sendable ([MLXArray]) -> [MLXArray])?
 
     public init(bundleURL: URL) throws {
         self.metadata = try EncodecFrameMetadata.load(from: bundleURL)
@@ -158,10 +170,10 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
             throw EncodecMLXRuntimeError.missingModel("decode_frame")
         }
 
-        self.encodeWeights = try Self.loadWeightArrays(
+        let encodeWeights = try Self.loadWeightArrays(
             from: bundleURL.appendingPathComponent(encodeModel.safetensors)
         )
-        self.decodeWeights = try Self.loadWeightArrays(
+        let decodeWeights = try Self.loadWeightArrays(
             from: bundleURL.appendingPathComponent(decodeModel.safetensors)
         )
 
@@ -171,9 +183,26 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
         guard !decodeWeights.isEmpty else {
             throw EncodecMLXRuntimeError.emptyWeights("decode_frame")
         }
+        self.encodeTensorCount = encodeWeights.count
+        self.decodeTensorCount = decodeWeights.count
 
-        self.encoder = try MLXEncodecFrameEncoder(metadata: metadata, weights: encodeWeights)
-        self.decoder = try MLXEncodecFrameDecoder(metadata: metadata, weights: decodeWeights)
+        let encoder = try MLXEncodecFrameEncoder(metadata: metadata, weights: encodeWeights)
+        let decoder = try MLXEncodecFrameDecoder(metadata: metadata, weights: decodeWeights)
+        self.encoder = encoder
+        self.decoder = decoder
+
+        if ProcessInfo.processInfo.environment["BITNEEDLE_MLX_COMPILE"] == "1" {
+            self.compiledEncoder = compile { inputs in
+                let encoded = try! encoder.encodeFrame(audio: inputs[0])
+                return [encoded.codes, encoded.scale]
+            }
+            self.compiledDecoder = compile { inputs in
+                [try! decoder.decodeFrame(codes: inputs[0], scale: inputs[1])]
+            }
+        } else {
+            self.compiledEncoder = nil
+            self.compiledDecoder = nil
+        }
     }
 
     private static func loadWeightArrays(from url: URL) throws -> [String: MLXArray] {
@@ -192,19 +221,26 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
             channels: metadata.channels,
             numCodebooks: metadata.numCodebooks,
             frameLength: metadata.frameLength,
-            encodeTensorCount: encodeWeights.count,
-            decodeTensorCount: decodeWeights.count,
+            encodeTensorCount: encodeTensorCount,
+            decodeTensorCount: decodeTensorCount,
             encodeParameterCount: manifest.models["encode_frame"]?.parameterCount ?? 0,
             decodeParameterCount: manifest.models["decode_frame"]?.parameterCount ?? 0
         )
     }
 
     public func encodeFrame(audio: MLXArray) throws -> (codes: MLXArray, scale: MLXArray) {
-        try encoder.encodeFrame(audio: audio)
+        if let compiledEncoder {
+            let encoded = compiledEncoder([audio])
+            return (encoded[0], encoded[1])
+        }
+        return try encoder.encodeFrame(audio: audio)
     }
 
     public func decodeFrame(codes: MLXArray, scale: MLXArray) throws -> MLXArray {
-        try decoder.decodeFrame(codes: codes, scale: scale)
+        if let compiledDecoder {
+            return compiledDecoder([codes, scale])[0]
+        }
+        return try decoder.decodeFrame(codes: codes, scale: scale)
     }
 }
 
@@ -221,17 +257,38 @@ public final class MLXEncodecNativePipeline {
         backend.summary
     }
 
-    public func decodeEcdc(_ payload: Data) throws -> EncodecNativeDecodedAudio {
+    /// Evaluates one encoder and decoder batch to load weights and compile GPU kernels.
+    public func prewarm(
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize
+    ) throws {
+        let batch = max(frameBatchSize, 1)
+        let audio = zeros(
+            [batch, backend.metadata.channels, backend.metadata.segmentSamples],
+            type: Float.self
+        )
+        let encoded = try backend.encodeFrame(audio: audio)
+        let codes = encoded.codes.asType(Int64.self)
+        eval(codes, encoded.scale)
+
+        let decoded = try backend.decodeFrame(codes: codes, scale: encoded.scale)
+        eval(decoded)
+    }
+
+    public func decodeEcdc(
+        _ payload: Data,
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize
+    ) throws -> EncodecNativeDecodedAudio {
         let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
         let callbacks = callbackBox.callbacks()
         let result = withExtendedLifetime(callbackBox) {
             bundleURL.path.withCString { bundlePath in
                 payload.withUnsafeBytes { payloadBuffer in
                     let payloadBytes = payloadBuffer.bindMemory(to: UInt8.self)
-                    return encodec_rs_mlx_decode_ecdc(
+                    return encodec_rs_mlx_decode_ecdc_interleaved(
                         bundlePath,
                         payloadBytes.baseAddress,
                         payloadBytes.count,
+                        max(frameBatchSize, 1),
                         callbacks
                     )
                 }
@@ -248,12 +305,7 @@ public final class MLXEncodecNativePipeline {
         }
         defer { encodec_rs_mlx_free_audio(ptr, result.len) }
 
-        let planarSamples = Array(UnsafeBufferPointer(start: ptr, count: result.len))
-        let samples = try encodecPlanarToInterleaved(
-            planarSamples,
-            channels: result.channels,
-            frames: result.samples
-        )
+        let samples = Array(UnsafeBufferPointer(start: ptr, count: result.len))
         return EncodecNativeDecodedAudio(
             samples: samples,
             channels: result.channels,
@@ -261,11 +313,66 @@ public final class MLXEncodecNativePipeline {
         )
     }
 
+    /// Decodes ECDC into contiguous channel-major f32le samples.
+    public func decodeEcdcToPlanarF32File(
+        _ payload: Data,
+        outputURL: URL,
+        progressURL: URL? = nil,
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize
+    ) throws -> EncodecNativeStreamResult {
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if let progressURL {
+            try FileManager.default.createDirectory(
+                at: progressURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        }
+
+        let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
+        let callbacks = callbackBox.callbacks()
+        let result = withExtendedLifetime(callbackBox) {
+            bundleURL.path.withCString { bundlePath in
+                outputURL.path.withCString { outputPath in
+                    let invoke = { (progressPath: UnsafePointer<CChar>?) in
+                        payload.withUnsafeBytes { payloadBuffer in
+                            let payloadBytes = payloadBuffer.bindMemory(to: UInt8.self)
+                            return encodec_rs_mlx_decode_ecdc_planar_f32le_to_path(
+                                bundlePath,
+                                payloadBytes.baseAddress,
+                                payloadBytes.count,
+                                max(frameBatchSize, 1),
+                                outputPath,
+                                progressPath,
+                                callbacks
+                            )
+                        }
+                    }
+                    if let progressURL {
+                        return progressURL.path.withCString { progressPath in
+                            invoke(progressPath)
+                        }
+                    }
+                    return invoke(nil)
+                }
+            }
+        }
+
+        guard result.ok else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                Self.bridgeError(result.error, callbackError: callbackBox.lastError)
+            )
+        }
+        return EncodecNativeStreamResult(bytesWritten: result.len)
+    }
+
     public func encodeEcdc(
         samples: [Float],
         channels: Int,
         useLM: Bool = true,
-        frameBatchSize: Int = 1,
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize,
         chunkMilliseconds: Double? = nil,
         chunkCRC: Bool = true
     ) throws -> Data {
@@ -281,17 +388,16 @@ public final class MLXEncodecNativePipeline {
         let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
         let callbacks = callbackBox.callbacks()
         let frames = samples.count / channels
-        let planarSamples = try encodecInterleavedToPlanar(samples, channels: channels)
         let result = withExtendedLifetime(callbackBox) {
             bundleURL.path.withCString { bundlePath in
-                planarSamples.withUnsafeBufferPointer { sampleBuffer in
-                    encodec_rs_mlx_encode_ecdc(
+                samples.withUnsafeBufferPointer { sampleBuffer in
+                    encodec_rs_mlx_encode_ecdc_interleaved(
                         bundlePath,
                         sampleBuffer.baseAddress,
                         channels,
                         frames,
                         useLM,
-                        frameBatchSize,
+                        max(frameBatchSize, 1),
                         chunkCRC,
                         chunkMilliseconds ?? 0.0,
                         chunkMilliseconds != nil,
@@ -320,7 +426,7 @@ public final class MLXEncodecNativePipeline {
         outputURL: URL,
         progressURL: URL? = nil,
         useLM: Bool = true,
-        frameBatchSize: Int = 1,
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize,
         chunkMilliseconds: Double? = nil,
         chunkCRC: Bool = true
     ) throws -> EncodecNativeStreamResult {
@@ -347,19 +453,18 @@ public final class MLXEncodecNativePipeline {
         let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
         let callbacks = callbackBox.callbacks()
         let frames = samples.count / channels
-        let planarSamples = try encodecInterleavedToPlanar(samples, channels: channels)
         let result = withExtendedLifetime(callbackBox) {
             bundleURL.path.withCString { bundlePath in
                 outputURL.path.withCString { outputPath in
                     let invoke = { (progressPath: UnsafePointer<CChar>?) in
-                        planarSamples.withUnsafeBufferPointer { sampleBuffer in
-                            encodec_rs_mlx_encode_ecdc_stream_to_path(
+                        samples.withUnsafeBufferPointer { sampleBuffer in
+                            encodec_rs_mlx_encode_ecdc_interleaved_stream_to_path(
                                 bundlePath,
                                 sampleBuffer.baseAddress,
                                 channels,
                                 frames,
                                 useLM,
-                                frameBatchSize,
+                                max(frameBatchSize, 1),
                                 chunkCRC,
                                 chunkMilliseconds ?? 0.0,
                                 chunkMilliseconds != nil,
@@ -475,6 +580,29 @@ private final class MLXNativeFrameCallbackBox {
     }
 }
 
+private func mlxCopyData(
+    _ data: Data,
+    to destination: UnsafeMutableRawPointer,
+    byteCount: Int
+) -> Bool {
+    guard data.count == byteCount else {
+        return false
+    }
+    guard byteCount > 0 else {
+        return true
+    }
+    return data.withUnsafeBytes { source in
+        guard let baseAddress = source.baseAddress else {
+            return false
+        }
+        destination.copyMemory(from: baseAddress, byteCount: byteCount)
+        return true
+    }
+}
+
+// `asyncEval` measures host-side graph traversal/submission. The following
+// synchronization bucket includes any outstanding device execution; neither is
+// presented as isolated GPU kernel time.
 private let mlxNativeEncodeFrameCallback: EncodecRsMlxEncodeFrameFn = { userData, audio, batch, channels, samples, codesOut, codesLen, scalesOut, scalesLen in
     guard let userData, let audio, let codesOut, let scalesOut else {
         return -1
@@ -484,32 +612,52 @@ private let mlxNativeEncodeFrameCallback: EncodecRsMlxEncodeFrameFn = { userData
         let profileStarted = mlxNativeProfileStarted()
         let box = Unmanaged<MLXNativeFrameCallbackBox>.fromOpaque(userData).takeUnretainedValue()
         let audioCount = batch * channels * samples
-        let audioValues = Array(UnsafeBufferPointer(start: audio, count: audioCount))
-        let audioArray = MLXArray(audioValues, [batch, channels, samples])
+        let audioArray = MLXArray(
+            UnsafeBufferPointer(start: audio, count: audioCount),
+            [batch, channels, samples]
+        )
         let inputDone = mlxNativeProfileNow()
         let encoded = try box.backend.encodeFrame(audio: audioArray)
-        let graphDone = mlxNativeProfileNow()
-        let codeValues = encoded.codes.asArray(Int64.self)
-        let scaleValues = encoded.scale.asArray(Float.self)
+        let callbackCodes = encoded.codes.asType(Int64.self)
+        let graphConstructionDone = mlxNativeProfileNow()
+        let executionSubmitted: UInt64
+        let synchronizationDone: UInt64
+        if mlxNativeProfileEnabled {
+            asyncEval([callbackCodes, encoded.scale])
+            executionSubmitted = mlxNativeProfileNow()
+            Stream.gpu.synchronize()
+            synchronizationDone = mlxNativeProfileNow()
+        } else {
+            executionSubmitted = graphConstructionDone
+            synchronizationDone = graphConstructionDone
+        }
+        let codeData = callbackCodes.asData(access: .noCopyIfContiguous).data
+        let scaleData = encoded.scale.asData(access: .noCopyIfContiguous).data
         let readbackDone = mlxNativeProfileNow()
-        guard codeValues.count == codesLen, scaleValues.count == scalesLen else {
+        let codeBytes = codesLen * MemoryLayout<Int64>.stride
+        let scaleBytes = scalesLen * MemoryLayout<Float>.stride
+        guard codeData.count == codeBytes, scaleData.count == scaleBytes else {
             box.record(
-                "encode callback produced \(codeValues.count) codes and \(scaleValues.count) scales, expected \(codesLen) and \(scalesLen)"
+                "encode callback produced \(codeData.count) code bytes and \(scaleData.count) scale bytes, expected \(codeBytes) and \(scaleBytes)"
             )
             return -2
         }
-        for index in 0 ..< codesLen {
-            codesOut[index] = codeValues[index]
+        guard mlxCopyData(codeData, to: UnsafeMutableRawPointer(codesOut), byteCount: codeBytes),
+              mlxCopyData(scaleData, to: UnsafeMutableRawPointer(scalesOut), byteCount: scaleBytes)
+        else {
+            box.record("encode callback could not copy contiguous MLX output")
+            return -2
         }
-        for index in 0 ..< scalesLen {
-            scalesOut[index] = scaleValues[index]
-        }
+        let ffiCopyDone = mlxNativeProfileNow()
         mlxNativeProfilePrint(
-            "encode_callback batch=\(batch) input_ms=\(mlxNativeProfileMillis(profileStarted, inputDone)) " +
-            "graph_ms=\(mlxNativeProfileMillis(inputDone, graphDone)) " +
-            "readback_ms=\(mlxNativeProfileMillis(graphDone, readbackDone)) " +
-            "copy_ms=\(mlxNativeProfileMillis(readbackDone, mlxNativeProfileNow())) " +
-            "total_ms=\(mlxNativeProfileMillis(profileStarted, mlxNativeProfileNow()))"
+            "encode_callback batch=\(batch) " +
+            "host_input_copy_ms=\(mlxNativeProfileMillis(profileStarted, inputDone)) " +
+            "graph_construction_ms=\(mlxNativeProfileMillis(inputDone, graphConstructionDone)) " +
+            "execution_submit_ms=\(mlxNativeProfileMillis(graphConstructionDone, executionSubmitted)) " +
+            "synchronization_wait_ms=\(mlxNativeProfileMillis(executionSubmitted, synchronizationDone)) " +
+            "host_readback_ms=\(mlxNativeProfileMillis(synchronizationDone, readbackDone)) " +
+            "ffi_output_copy_ms=\(mlxNativeProfileMillis(readbackDone, ffiCopyDone)) " +
+            "total_ms=\(mlxNativeProfileMillis(profileStarted, ffiCopyDone))"
         )
         return 0
     } catch {
@@ -528,30 +676,53 @@ private let mlxNativeDecodeFrameCallback: EncodecRsMlxDecodeFrameFn = { userData
         let profileStarted = mlxNativeProfileStarted()
         let box = Unmanaged<MLXNativeFrameCallbackBox>.fromOpaque(userData).takeUnretainedValue()
         let codeCount = batch * codebooks * frames
-        let codeValues = Array(UnsafeBufferPointer(start: codes, count: codeCount)).map(Int32.init)
-        let scaleValues = Array(UnsafeBufferPointer(start: scales, count: scalesLen))
+        let codeValues = UnsafeBufferPointer(start: codes, count: codeCount).map(Int32.init)
         let codeArray = MLXArray(codeValues, [batch, codebooks, frames])
-        let scaleArray = MLXArray(scaleValues, [batch, max(scalesLen / max(batch, 1), 1)])
+        let scaleArray = MLXArray(
+            UnsafeBufferPointer(start: scales, count: scalesLen),
+            [batch, max(scalesLen / max(batch, 1), 1)]
+        )
         let inputDone = mlxNativeProfileNow()
         let decoded = try box.backend.decodeFrame(codes: codeArray, scale: scaleArray)
-        let graphDone = mlxNativeProfileNow()
-        let audioValues = decoded.asArray(Float.self)
+        let graphConstructionDone = mlxNativeProfileNow()
+        let executionSubmitted: UInt64
+        let synchronizationDone: UInt64
+        if mlxNativeProfileEnabled {
+            asyncEval([decoded])
+            executionSubmitted = mlxNativeProfileNow()
+            Stream.gpu.synchronize()
+            synchronizationDone = mlxNativeProfileNow()
+        } else {
+            executionSubmitted = graphConstructionDone
+            synchronizationDone = graphConstructionDone
+        }
+        let audioData = decoded.asData(access: .noCopyIfContiguous).data
         let readbackDone = mlxNativeProfileNow()
-        guard audioValues.count == audioLen else {
+        let audioBytes = audioLen * MemoryLayout<Float>.stride
+        guard audioData.count == audioBytes else {
             box.record(
-                "decode callback produced \(audioValues.count) samples, expected \(audioLen)"
+                "decode callback produced \(audioData.count) bytes, expected \(audioBytes)"
             )
             return -2
         }
-        for index in 0 ..< audioLen {
-            audioOut[index] = audioValues[index]
+        guard mlxCopyData(
+            audioData,
+            to: UnsafeMutableRawPointer(audioOut),
+            byteCount: audioBytes
+        ) else {
+            box.record("decode callback could not copy contiguous MLX output")
+            return -2
         }
+        let ffiCopyDone = mlxNativeProfileNow()
         mlxNativeProfilePrint(
-            "decode_callback batch=\(batch) input_ms=\(mlxNativeProfileMillis(profileStarted, inputDone)) " +
-            "graph_ms=\(mlxNativeProfileMillis(inputDone, graphDone)) " +
-            "readback_ms=\(mlxNativeProfileMillis(graphDone, readbackDone)) " +
-            "copy_ms=\(mlxNativeProfileMillis(readbackDone, mlxNativeProfileNow())) " +
-            "total_ms=\(mlxNativeProfileMillis(profileStarted, mlxNativeProfileNow()))"
+            "decode_callback batch=\(batch) " +
+            "host_input_copy_ms=\(mlxNativeProfileMillis(profileStarted, inputDone)) " +
+            "graph_construction_ms=\(mlxNativeProfileMillis(inputDone, graphConstructionDone)) " +
+            "execution_submit_ms=\(mlxNativeProfileMillis(graphConstructionDone, executionSubmitted)) " +
+            "synchronization_wait_ms=\(mlxNativeProfileMillis(executionSubmitted, synchronizationDone)) " +
+            "host_readback_ms=\(mlxNativeProfileMillis(synchronizationDone, readbackDone)) " +
+            "ffi_output_copy_ms=\(mlxNativeProfileMillis(readbackDone, ffiCopyDone)) " +
+            "total_ms=\(mlxNativeProfileMillis(profileStarted, ffiCopyDone))"
         )
         return 0
     } catch {
@@ -592,16 +763,23 @@ private struct MLXEncodecFrameEncoder {
     }
 
     private struct LstmLayer {
-        let inputWeight: String
-        let recurrentWeight: String
-        let bias: String
+        let inputWeight: MLXArray
+        let recurrentWeight: MLXArray
+        let bias: MLXArray
+    }
+
+    private struct Quantizer {
+        let columns: MLXArray
+        let columnNorm: MLXArray
+        let codebook: MLXArray
     }
 
     private let metadata: EncodecFrameMetadata
-    private let weights: [String: MLXArray]
+    private let convolutionWeights: [String: MLXArray]
+    private let convolutionBiases: [String: MLXArray]
     private let norms: [Norm]
     private let lstmLayers: [LstmLayer]
-    private let codebookMatMulNames: [String]
+    private let quantizers: [Quantizer]
 
     init(metadata: EncodecFrameMetadata, weights: [String: MLXArray]) throws {
         guard metadata.modelName == "encodec_48khz" else {
@@ -616,7 +794,25 @@ private struct MLXEncodecFrameEncoder {
         }
 
         self.metadata = metadata
-        self.weights = weights
+        self.convolutionWeights = Dictionary(
+            uniqueKeysWithValues: weights.compactMap { name, value in
+                guard name.hasPrefix("model.encoder."), name.hasSuffix(".conv.conv.weight") else {
+                    return nil
+                }
+                return (name, value.transposed(0, 2, 1))
+            }
+        )
+        self.convolutionBiases = Dictionary(
+            uniqueKeysWithValues: weights.compactMap { name, value in
+                guard name.hasPrefix("model.encoder."),
+                      name.hasSuffix(".conv.conv.bias"),
+                      value.shape.count == 1
+                else {
+                    return nil
+                }
+                return (name, value.reshaped([1, value.shape[0], 1]))
+            }
+        )
 
         let lstmNames = generatedTensorNames(weights: weights, prefix: "onnx::LSTM_")
         guard lstmNames.count == 6 else {
@@ -624,11 +820,16 @@ private struct MLXEncodecFrameEncoder {
                 "MLX encode expected 6 generated LSTM tensors, got \(lstmNames.count)."
             )
         }
-        self.lstmLayers = stride(from: 0, to: lstmNames.count, by: 3).map { index in
-            LstmLayer(
-                inputWeight: lstmNames[index],
-                recurrentWeight: lstmNames[index + 1],
-                bias: lstmNames[index + 2]
+        self.lstmLayers = try stride(from: 0, to: lstmNames.count, by: 3).map { index in
+            let inputWeight = try Self.required(weights, lstmNames[index])[0, 0..., 0...]
+            let recurrentWeight = try Self.required(weights, lstmNames[index + 1])[0, 0..., 0...]
+            let rawBias = try Self.required(weights, lstmNames[index + 2])[0, 0...]
+            let hiddenSize = inputWeight.shape[0] / 4
+            return LstmLayer(
+                inputWeight: inputWeight.T,
+                recurrentWeight: recurrentWeight.T,
+                bias: rawBias[..<(4 * hiddenSize)]
+                    + rawBias[(4 * hiddenSize)..<(8 * hiddenSize)]
             )
         }
 
@@ -640,9 +841,11 @@ private struct MLXEncodecFrameEncoder {
             )
         }
         self.norms = try (0 ..< 18).map { index in
-            Norm(
-                scale: try Self.required(weights, scaleNames[index]),
-                bias: try Self.required(weights, biasNames[index])
+            let scale = try Self.required(weights, scaleNames[index])
+            let bias = try Self.required(weights, biasNames[index])
+            return Norm(
+                scale: scale.reshaped([1, scale.shape[0], 1]),
+                bias: bias.reshaped([1, bias.shape[0], 1])
             )
         }
 
@@ -652,7 +855,17 @@ private struct MLXEncodecFrameEncoder {
                 "MLX encode expected at least \(metadata.numCodebooks) quantizer MatMul tensors, got \(matMulNames.count)."
             )
         }
-        self.codebookMatMulNames = Array(matMulNames.prefix(metadata.numCodebooks))
+        self.quantizers = try Array(matMulNames.prefix(metadata.numCodebooks)).enumerated().map {
+            index, name in
+            let columns = try Self.required(weights, name)
+            let directName = "model.quantizer.vq.layers.\(index)._codebook.embed"
+            return Quantizer(
+                columns: columns,
+                columnNorm: (columns * columns).sum(axis: 0, keepDims: true),
+                codebook: weights[directName] ?? columns.T
+            )
+        }
+
     }
 
     func encodeFrame(audio: MLXArray) throws -> (codes: MLXArray, scale: MLXArray) {
@@ -797,15 +1010,19 @@ private struct MLXEncodecFrameEncoder {
         let paddingLeft = paddingTotal - paddingRight
         let paddedInput = reflectPad1d(input, left: paddingLeft, right: paddingRight)
         let nlc = paddedInput.transposed(0, 2, 1)
-        let weight = try tensor(weightName).transposed(0, 2, 1)
-        let bias = try tensor(biasName)
+        guard let weight = convolutionWeights[weightName] else {
+            throw EncodecMLXRuntimeError.missingTensor(weightName)
+        }
+        guard let bias = convolutionBiases[biasName] else {
+            throw EncodecMLXRuntimeError.missingTensor(biasName)
+        }
         var y = conv1d(nlc, weight, stride: stride).transposed(0, 2, 1)
-        guard y.shape[1] == bias.shape[0] else {
+        guard y.shape[1] == bias.shape[1] else {
             throw EncodecMLXRuntimeError.unsupportedBundle(
                 "MLX encode convolution \(weightName) produced shape \(y.shape), but bias \(biasName) has shape \(bias.shape)."
             )
         }
-        y = y + bias.reshaped([1, bias.shape[0], 1])
+        y = y + bias
         return groupNorm(y, norm: norm)
     }
 
@@ -813,8 +1030,7 @@ private struct MLXEncodecFrameEncoder {
         let mean = input.mean(axes: [1, 2], keepDims: true)
         let variance = input.variance(axes: [1, 2], keepDims: true)
         let normalized = (input - mean) / sqrt(variance + 0.00001)
-        return normalized * norms[index].scale.reshaped([1, norms[index].scale.shape[0], 1])
-            + norms[index].bias.reshaped([1, norms[index].bias.shape[0], 1])
+        return normalized * norms[index].scale + norms[index].bias
     }
 
     private func slstm(_ input: MLXArray) throws -> MLXArray {
@@ -825,12 +1041,7 @@ private struct MLXEncodecFrameEncoder {
     }
 
     private func onnxLstm(_ input: MLXArray, layer: LstmLayer) throws -> MLXArray {
-        let w = try tensor(layer.inputWeight)[0, 0..., 0...]
-        let r = try tensor(layer.recurrentWeight)[0, 0..., 0...]
-        let b = try tensor(layer.bias)[0, 0...]
-        let hiddenSize = w.shape[0] / 4
-        let bias = b[..<(4 * hiddenSize)] + b[(4 * hiddenSize)..<(8 * hiddenSize)]
-        let projectedInput = matmul(input, w.T) + bias
+        let projectedInput = matmul(input, layer.inputWeight) + layer.bias
 
         var hidden: MLXArray?
         var cell: MLXArray?
@@ -840,7 +1051,7 @@ private struct MLXEncodecFrameEncoder {
         for index in 0 ..< input.shape[1] {
             var gates = projectedInput[0..., index, 0...]
             if let hidden {
-                gates = gates + matmul(hidden, r.T)
+                gates = gates + matmul(hidden, layer.recurrentWeight)
             }
 
             let pieces = gates.split(parts: 4, axis: -1)
@@ -869,32 +1080,21 @@ private struct MLXEncodecFrameEncoder {
         codes.reserveCapacity(metadata.numCodebooks)
 
         for index in 0 ..< metadata.numCodebooks {
-            let codebookColumns = try tensor(codebookMatMulNames[index])
+            let quantizer = quantizers[index]
             let residualFlat = residual.reshaped([-1, residual.shape[2]])
             let residualNorm = (residualFlat * residualFlat).sum(axis: 1, keepDims: true)
-            let codebookNorm = (codebookColumns * codebookColumns).sum(axis: 0, keepDims: true)
-            let distances = residualNorm - matmul(residualFlat * 2.0, codebookColumns) + codebookNorm
+            let distances = residualNorm - matmul(residualFlat * 2.0, quantizer.columns)
+                + quantizer.columnNorm
             let indices = argMax(-distances, axis: -1).reshaped([residual.shape[0], residual.shape[1]])
             codes.append(indices)
 
             if index + 1 < metadata.numCodebooks {
-                let codebook = try quantizerCodebook(index)
-                let quantized = codebook.take(indices, axis: 0)
+                let quantized = quantizer.codebook.take(indices, axis: 0)
                 residual = residual - quantized
             }
         }
 
         return stacked(codes, axis: 1)
-    }
-
-    private func quantizerCodebook(_ index: Int) throws -> MLXArray {
-        let directName = "model.quantizer.vq.layers.\(index)._codebook.embed"
-        if let direct = weights[directName] {
-            return direct
-        }
-
-        let columns = try tensor(codebookMatMulNames[index])
-        return columns.T
     }
 
     private func reflectPad1d(_ input: MLXArray, left: Int, right: Int) -> MLXArray {
@@ -908,10 +1108,6 @@ private struct MLXEncodecFrameEncoder {
             pieces.append(input[0..., 0..., .stride(from: length - 2, to: length - right - 2, by: -1)])
         }
         return concatenated(pieces, axis: 2)
-    }
-
-    private func tensor(_ name: String) throws -> MLXArray {
-        try Self.required(weights, name)
     }
 
     private static func required(_ weights: [String: MLXArray], _ name: String) throws -> MLXArray {
@@ -963,13 +1159,15 @@ private struct MLXEncodecFrameDecoder {
     }
 
     private struct LstmLayer {
-        let inputWeight: String
-        let recurrentWeight: String
-        let bias: String
+        let inputWeight: MLXArray
+        let recurrentWeight: MLXArray
+        let bias: MLXArray
     }
 
     private let metadata: EncodecFrameMetadata
-    private let weights: [String: MLXArray]
+    private let convolutionWeights: [String: MLXArray]
+    private let convolutionBiases: [String: MLXArray]
+    private let codebooks: [MLXArray]
     private let norms: [Norm]
     private let lstmLayers: [LstmLayer]
 
@@ -986,7 +1184,34 @@ private struct MLXEncodecFrameDecoder {
         }
 
         self.metadata = metadata
-        self.weights = weights
+        self.convolutionWeights = Dictionary(
+            uniqueKeysWithValues: weights.compactMap { name, value in
+                guard name.hasPrefix("model.decoder.") else {
+                    return nil
+                }
+                if name.hasSuffix(".conv.conv.weight") {
+                    return (name, value.transposed(0, 2, 1))
+                }
+                if name.hasSuffix(".convtr.convtr.weight") {
+                    return (name, value.transposed(1, 2, 0))
+                }
+                return nil
+            }
+        )
+        self.convolutionBiases = Dictionary(
+            uniqueKeysWithValues: weights.compactMap { name, value in
+                guard name.hasPrefix("model.decoder."),
+                      name.hasSuffix(".bias"),
+                      value.shape.count == 1
+                else {
+                    return nil
+                }
+                return (name, value.reshaped([1, value.shape[0], 1]))
+            }
+        )
+        self.codebooks = try (0 ..< metadata.numCodebooks).map { index in
+            try Self.required(weights, "model.quantizer.vq.layers.\(index)._codebook.embed")
+        }
 
         let lstmNames = generatedTensorNames(weights: weights, prefix: "onnx::LSTM_")
         guard lstmNames.count == 6 else {
@@ -994,11 +1219,16 @@ private struct MLXEncodecFrameDecoder {
                 "MLX decode expected 6 generated LSTM tensors, got \(lstmNames.count)."
             )
         }
-        self.lstmLayers = stride(from: 0, to: lstmNames.count, by: 3).map { index in
-            LstmLayer(
-                inputWeight: lstmNames[index],
-                recurrentWeight: lstmNames[index + 1],
-                bias: lstmNames[index + 2]
+        self.lstmLayers = try stride(from: 0, to: lstmNames.count, by: 3).map { index in
+            let inputWeight = try Self.required(weights, lstmNames[index])[0, 0..., 0...]
+            let recurrentWeight = try Self.required(weights, lstmNames[index + 1])[0, 0..., 0...]
+            let rawBias = try Self.required(weights, lstmNames[index + 2])[0, 0...]
+            let hiddenSize = inputWeight.shape[0] / 4
+            return LstmLayer(
+                inputWeight: inputWeight.T,
+                recurrentWeight: recurrentWeight.T,
+                bias: rawBias[..<(4 * hiddenSize)]
+                    + rawBias[(4 * hiddenSize)..<(8 * hiddenSize)]
             )
         }
 
@@ -1010,11 +1240,14 @@ private struct MLXEncodecFrameDecoder {
             )
         }
         self.norms = try (0 ..< 18).map { index in
-            Norm(
-                scale: try Self.required(weights, scaleNames[index]),
-                bias: try Self.required(weights, biasNames[index])
+            let scale = try Self.required(weights, scaleNames[index])
+            let bias = try Self.required(weights, biasNames[index])
+            return Norm(
+                scale: scale.reshaped([1, scale.shape[0], 1]),
+                bias: bias.reshaped([1, bias.shape[0], 1])
             )
         }
+
     }
 
     func decodeFrame(codes: MLXArray, scale: MLXArray) throws -> MLXArray {
@@ -1040,9 +1273,8 @@ private struct MLXEncodecFrameDecoder {
         var z = zeros([batch, frames, 128], type: Float.self)
 
         for index in 0 ..< metadata.numCodebooks {
-            let codebook = try tensor("model.quantizer.vq.layers.\(index)._codebook.embed")
             let codebookIndices = codes[0..., index, 0...]
-            z = z + codebook.take(codebookIndices, axis: 0)
+            z = z + codebooks[index].take(codebookIndices, axis: 0)
         }
 
         return z.transposed(0, 2, 1)
@@ -1151,10 +1383,14 @@ private struct MLXEncodecFrameDecoder {
     ) throws -> MLXArray {
         let paddedInput = reflectPad1d(input, left: (kernelSize - 1) - ((kernelSize - 1) / 2), right: (kernelSize - 1) / 2)
         let nlc = paddedInput.transposed(0, 2, 1)
-        let weight = try tensor(weightName).transposed(0, 2, 1)
-        let bias = try tensor(biasName)
+        guard let weight = convolutionWeights[weightName] else {
+            throw EncodecMLXRuntimeError.missingTensor(weightName)
+        }
+        guard let bias = convolutionBiases[biasName] else {
+            throw EncodecMLXRuntimeError.missingTensor(biasName)
+        }
         var y = conv1d(nlc, weight).transposed(0, 2, 1)
-        y = y + bias.reshaped([1, bias.shape[0], 1])
+        y = y + bias
         return groupNorm(y, norm: norm)
     }
 
@@ -1167,10 +1403,14 @@ private struct MLXEncodecFrameDecoder {
         norm: Int
     ) throws -> MLXArray {
         let nlc = input.transposed(0, 2, 1)
-        let weight = try tensor(weightName).transposed(1, 2, 0)
-        let bias = try tensor(biasName)
+        guard let weight = convolutionWeights[weightName] else {
+            throw EncodecMLXRuntimeError.missingTensor(weightName)
+        }
+        guard let bias = convolutionBiases[biasName] else {
+            throw EncodecMLXRuntimeError.missingTensor(biasName)
+        }
         var y = convTransposed1d(nlc, weight, stride: stride).transposed(0, 2, 1)
-        y = y + bias.reshaped([1, bias.shape[0], 1])
+        y = y + bias
         y = groupNorm(y, norm: norm)
 
         let paddingTotal = kernelSize - stride
@@ -1184,8 +1424,7 @@ private struct MLXEncodecFrameDecoder {
         let mean = input.mean(axes: [1, 2], keepDims: true)
         let variance = input.variance(axes: [1, 2], keepDims: true)
         let normalized = (input - mean) / sqrt(variance + 0.00001)
-        return normalized * norms[index].scale.reshaped([1, norms[index].scale.shape[0], 1])
-            + norms[index].bias.reshaped([1, norms[index].bias.shape[0], 1])
+        return normalized * norms[index].scale + norms[index].bias
     }
 
     private func slstm(_ input: MLXArray) throws -> MLXArray {
@@ -1196,12 +1435,7 @@ private struct MLXEncodecFrameDecoder {
     }
 
     private func onnxLstm(_ input: MLXArray, layer: LstmLayer) throws -> MLXArray {
-        let w = try tensor(layer.inputWeight)[0, 0..., 0...]
-        let r = try tensor(layer.recurrentWeight)[0, 0..., 0...]
-        let b = try tensor(layer.bias)[0, 0...]
-        let hiddenSize = w.shape[0] / 4
-        let bias = b[..<(4 * hiddenSize)] + b[(4 * hiddenSize)..<(8 * hiddenSize)]
-        let projectedInput = matmul(input, w.T) + bias
+        let projectedInput = matmul(input, layer.inputWeight) + layer.bias
 
         var hidden: MLXArray?
         var cell: MLXArray?
@@ -1211,7 +1445,7 @@ private struct MLXEncodecFrameDecoder {
         for index in 0 ..< input.shape[1] {
             var gates = projectedInput[0..., index, 0...]
             if let hidden {
-                gates = gates + matmul(hidden, r.T)
+                gates = gates + matmul(hidden, layer.recurrentWeight)
             }
 
             let pieces = gates.split(parts: 4, axis: -1)
@@ -1245,10 +1479,6 @@ private struct MLXEncodecFrameDecoder {
             pieces.append(input[0..., 0..., .stride(from: length - 2, to: length - right - 2, by: -1)])
         }
         return concatenated(pieces, axis: 2)
-    }
-
-    private func tensor(_ name: String) throws -> MLXArray {
-        try Self.required(weights, name)
     }
 
     private static func required(_ weights: [String: MLXArray], _ name: String) throws -> MLXArray {

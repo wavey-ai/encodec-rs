@@ -14,6 +14,7 @@ pub struct PortableLmCodec {
     metadata: OnnxFrameBundleMetadata,
     lm_window_frame_length: usize,
     backend: PortableLmBackend,
+    input_symbols: Vec<usize>,
 }
 
 enum PortableLmBackend {
@@ -57,6 +58,7 @@ impl PortableLmCodec {
             .context("failed to parse quantized LM weights")?;
         weights.validate_for_metadata(&metadata)?;
         let lm_window_frame_length = weights.frame_length.max(1);
+        let num_codebooks = metadata.num_codebooks;
         Ok(Self {
             bundle_dir: None,
             metadata,
@@ -66,6 +68,7 @@ impl PortableLmCodec {
                 state: None,
                 hash,
             },
+            input_symbols: Vec::with_capacity(num_codebooks),
         })
     }
 
@@ -135,7 +138,13 @@ impl LmCodec for PortableLmCodec {
         }
         let logits = match &mut self.backend {
             PortableLmBackend::Q8 { lm, state, .. } => {
-                if offset == 0 || state.is_none() {
+                if offset == 0 {
+                    if let Some(state) = state {
+                        lm.reset_state(state);
+                    } else {
+                        *state = Some(lm.initial_state());
+                    }
+                } else if state.is_none() {
                     *state = Some(lm.initial_state());
                 }
                 let state = state.as_mut().expect("state initialized");
@@ -148,16 +157,67 @@ impl LmCodec for PortableLmCodec {
             .map_err(|error| anyhow::anyhow!("invalid LM logit shape: {error}"))?;
         Ok((logits, offset + 1, self.initial_states(shape[0])?))
     }
+
+    fn forward_logits_flat<'a>(
+        &'a mut self,
+        indices: &Array3<i64>,
+        offset: i64,
+        _states: &[Array3<f32>],
+        _scratch: &'a mut Vec<f32>,
+    ) -> Result<(&'a [f32], i64, Vec<Array3<f32>>)> {
+        let shape = indices.shape();
+        if shape.len() != 3 {
+            bail!("LM indices must have shape [batch, codebooks, steps]");
+        }
+        if shape[0] != 1 || shape[2] != 1 {
+            bail!("q8 LM only supports shape [1, codebooks, 1]");
+        }
+        if shape[1] != self.metadata.num_codebooks {
+            bail!(
+                "LM indices use {} codebooks, but bundle requires {}",
+                shape[1],
+                self.metadata.num_codebooks
+            );
+        }
+
+        self.input_symbols.clear();
+        for codebook in 0..shape[1] {
+            let value = indices[[0, codebook, 0]];
+            if value < 0 {
+                bail!("LM input symbol must be non-negative, got {value}");
+            }
+            self.input_symbols.push(value as usize);
+        }
+        let input_symbols = &self.input_symbols;
+        let logits = match &mut self.backend {
+            PortableLmBackend::Q8 { lm, state, .. } => {
+                if offset == 0 {
+                    if let Some(state) = state {
+                        lm.reset_state(state);
+                    } else {
+                        *state = Some(lm.initial_state());
+                    }
+                } else if state.is_none() {
+                    *state = Some(lm.initial_state());
+                }
+                let state = state.as_mut().expect("state initialized");
+                lm.forward_step_borrowed(state, input_symbols)?
+            }
+        };
+        Ok((logits, offset + 1, Vec::new()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::from_str;
+    use std::fs;
     use std::path::Path;
 
     #[test]
     fn downloaded_lm_weights_run_without_onnx() -> Result<()> {
-        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_6kbps");
+        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_6kbps_1333ms");
         if !bundle_dir.exists() {
             eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
             return Ok(());
@@ -175,6 +235,49 @@ mod tests {
         );
         assert_eq!(next_offset, 1);
         assert_eq!(next_states.len(), meta.lm_num_layers()?);
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_logits_match_the_owned_portable_path_bit_for_bit() -> Result<()> {
+        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_6kbps_1333ms");
+        if !bundle_dir.exists() {
+            eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
+            return Ok(());
+        }
+        let metadata: OnnxFrameBundleMetadata =
+            from_str(&fs::read_to_string(bundle_dir.join("bundle.json"))?)?;
+        let weight_name = metadata
+            .lm_quant_weight_model
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("fixture has no q8 LM weights"))?;
+        let weights = fs::read(bundle_dir.join(weight_name))?;
+        let mut owned = PortableLmCodec::from_quantized_weights(metadata.clone(), &weights)?;
+        let mut borrowed = PortableLmCodec::from_quantized_weights(metadata.clone(), &weights)?;
+        let mut owned_states = owned.initial_states(1)?;
+        let mut borrowed_states = borrowed.initial_states(1)?;
+        let mut flat_scratch = Vec::new();
+        let mut indices = Array3::<i64>::zeros((1, metadata.num_codebooks, 1));
+
+        for offset in 0..4_i64 {
+            let (owned_logits, owned_offset, next_owned_states) =
+                owned.forward_logits(&indices, offset, &owned_states)?;
+            let (flat_logits, flat_offset, next_borrowed_states) = borrowed.forward_logits_flat(
+                &indices,
+                offset,
+                &borrowed_states,
+                &mut flat_scratch,
+            )?;
+            assert_eq!(owned_logits.as_slice().expect("contiguous"), flat_logits);
+            assert_eq!(owned_offset, flat_offset);
+
+            for codebook in 0..metadata.num_codebooks {
+                indices[[0, codebook, 0]] =
+                    ((offset as usize * 17 + codebook * 31) % metadata.lm_cardinality()) as i64;
+            }
+            owned_states = next_owned_states;
+            borrowed_states = next_borrowed_states;
+        }
         Ok(())
     }
 }

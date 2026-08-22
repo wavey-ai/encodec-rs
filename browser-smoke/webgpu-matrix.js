@@ -11,6 +11,9 @@ import init, {
 } from "../pkg/encodec_rs.js";
 import { createCustomDecoder } from "../browser-runtime/custom-decoder-runtime.js";
 import { createCustomEncoder } from "../browser-runtime/custom-encoder-runtime.js";
+import { createWebGpuDecoder } from "../browser-runtime/webgpu-decoder-runtime.js";
+import { createWebGpuEcdcDecoder } from "../browser-runtime/webgpu-ecdc-decoder-runtime.js";
+import { createWebGpuEncoder } from "../browser-runtime/webgpu-encoder-runtime.js";
 
 let wasmReady;
 let ort = null;
@@ -25,6 +28,8 @@ window.webgpuMatrix = {
   readyCustom,
   customRoundTrip,
   customRuntimeChunk,
+  webGpuRoundTrip,
+  webGpuDecodeEcdc,
 };
 
 async function ready() {
@@ -406,6 +411,336 @@ async function customRoundTrip(options) {
   };
 }
 
+async function webGpuRoundTrip(options) {
+  await initWasm();
+  const {
+    bundleName,
+    inputWavUrl,
+    expectedEcdcUrl = null,
+    decodeEcdcUrl = null,
+    referenceWavUrl = null,
+    bundleRootUrl = new URL(
+      `../dist/wasm-fixed-bundles/bundles/${bundleName}/`,
+      window.location.href,
+    ).href,
+    downloadPrefix = null,
+    onDecodedChunk = null,
+  } = options;
+  const bundleRoot = new URL(bundleRootUrl, window.location.href);
+  const bundleJson = await fetchText(new URL("bundle.json", bundleRoot).href);
+  const meta = JSON.parse(bundleJson);
+  const lmWeights = new Uint8Array(
+    await fetchArrayBuffer(new URL(meta.lm_quant_weight_model, bundleRoot).href),
+  );
+  const wav = decodeWav(await fetchArrayBuffer(inputWavUrl));
+  if (wav.sampleRate !== meta.sample_rate || wav.channels !== meta.channels) {
+    throw new Error("WebGPU input WAV does not match the fixed bundle");
+  }
+  const audioSeconds = wav.frames / meta.sample_rate;
+  const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
+  const chunks = [lmEcdcFixedHeaderForWeights(bundleJson, wav.frames, 2, lmWeights)];
+  const encodedFrames = [];
+  const encodeScales = [];
+  let minimumCode = Infinity;
+  let maximumCode = -Infinity;
+
+  reportWebGpuProgress("encoder setup", 0, segments.count);
+  const encoder = await createWebGpuEncoder({
+    assetRoot: new URL("encoder/", bundleRoot),
+    bundleMetadata: meta,
+  });
+  let encodeModelMs = 0;
+  let encodeEntropyMs = 0;
+  try {
+    for (let index = 0; index < segments.count; index += 1) {
+      const segment = buildSingleSegment(wav.audio, wav.frames, segments, index, meta);
+      const encoded = await encoder.encode(segment.audio);
+      encodeModelMs += encoded.elapsedMs;
+      encodeScales.push(encoded.scale);
+      for (const code of encoded.codes) {
+        minimumCode = Math.min(minimumCode, code);
+        maximumCode = Math.max(maximumCode, code);
+      }
+      const frame = buildRawFrame(
+        encoded.codes,
+        new Float32Array([encoded.scale]),
+        segment,
+        meta,
+        index,
+      );
+      encodedFrames.push(frame);
+      const entropyStarted = performance.now();
+      chunks.push(lmEcdcChunk(encodeQ8LmFrame(bundleJson, lmWeights, frame, meta)));
+      encodeEntropyMs += performance.now() - entropyStarted;
+      reportWebGpuProgress("encode", index + 1, segments.count);
+      await yieldToPage();
+    }
+  } finally {
+    encoder.release();
+  }
+  const encodedEcdc = concatUint8Chunks(chunks);
+  const expectedEcdc = expectedEcdcUrl
+    ? new Uint8Array(await fetchArrayBuffer(expectedEcdcUrl))
+    : null;
+  const encodedParity = expectedEcdc ? compareBytes(expectedEcdc, encodedEcdc) : null;
+  const encodedFrameParity = expectedEcdc
+    ? compareEncodedFrames(
+      encodedFrames,
+      lmEcdcDecodeChunks(bundleJson, expectedEcdc).chunks.map((chunk) =>
+        decodeQ8LmFrame(bundleJson, lmWeights, meta, chunk)),
+      meta,
+    )
+    : null;
+
+  const decodeEcdc = decodeEcdcUrl
+    ? new Uint8Array(await fetchArrayBuffer(decodeEcdcUrl))
+    : encodedEcdc;
+
+  const decodeRequestStarted = performance.now();
+  reportWebGpuProgress("decoder setup", 0, segments.count);
+  const decoder = await createWebGpuEcdcDecoder({
+    encodecModule: {
+      lmEcdcDecodeChunks,
+      ecdcMetadata,
+      QuantizedLmChunkDecoder,
+    },
+    bundleJson,
+    lmWeights,
+    assetRoot: new URL("decoder/", bundleRoot),
+  });
+  let firstPlayableChunkColdMs = null;
+  let decoded;
+  try {
+    decoded = await decoder.decode(decodeEcdc, {
+      collectAudio: true,
+      async onChunk(chunk) {
+        if (firstPlayableChunkColdMs === null) {
+          firstPlayableChunkColdMs = performance.now() - decodeRequestStarted;
+        }
+        if (onDecodedChunk) await onDecodedChunk(chunk);
+      },
+      onProgress(progress) {
+        reportWebGpuProgress("decode", progress.completed, progress.total);
+      },
+      yieldControl: yieldToPage,
+    });
+  } finally {
+    decoder.release();
+  }
+  const decodedAudio = decoded.audio;
+  const referenceWav = referenceWavUrl
+    ? decodeWav(await fetchArrayBuffer(referenceWavUrl))
+    : wav;
+  const decodedParity = comparePcm(referenceWav.audio, decodedAudio);
+  if (downloadPrefix) {
+    const encodedWav = writeWavBytes(decodedAudio, meta.channels, meta.sample_rate);
+    downloadBytes(`${downloadPrefix}.ecdc`, encodedEcdc, "application/octet-stream");
+    downloadBytes(`${downloadPrefix}.decoded.wav`, encodedWav, "audio/wav");
+  }
+  reportWebGpuProgress("complete", decoded.chunkCount, decoded.chunkCount);
+  return {
+    runtime: "Mobile Safari WebGPU (ONNX-free)",
+    userAgent: navigator.userAgent,
+    bundleName,
+    inputFrames: wav.frames,
+    audioSeconds,
+    chunks: decoded.chunkCount,
+    ecdcBytes: encodedEcdc.byteLength,
+    encodedParity,
+    encodedFrameParity,
+    decodeSource: decodeEcdcUrl ? "external ECDC" : "WebGPU encode",
+    encodeDiagnostics: {
+      scales: encodeScales,
+      minimumCode,
+      maximumCode,
+    },
+    decodedParity,
+    nonFiniteSamples: countNonFinite(decodedAudio),
+    setupMs: {
+      encoder: roundMs(encoder.setupMs),
+      decoder: roundMs(decoder.setupMs),
+    },
+    timings: {
+      encodeModelMs: roundMs(encodeModelMs),
+      encodeEntropyMs: roundMs(encodeEntropyMs),
+      decodeContainerMs: roundMs(decoded.timings.containerMs),
+      decodeEntropyMs: roundMs(decoded.timings.entropyMs),
+      decodeModelMs: roundMs(decoded.timings.modelMs),
+      decodeAssemblyMs: roundMs(decoded.timings.assemblyMs),
+      decodeDeliveryMs: roundMs(decoded.timings.deliveryMs),
+      decodePipelineMs: roundMs(decoded.timings.pipelineMs),
+      firstPlayableChunkMs: roundMs(decoded.timings.firstChunkMs),
+      firstPlayableChunkColdMs: roundMs(firstPlayableChunkColdMs),
+    },
+    realtimeFactor: {
+      encode: roundRatio(audioSeconds / ((encodeModelMs + encodeEntropyMs) / 1000)),
+      decode: roundRatio(audioSeconds / (decoded.timings.pipelineMs / 1000)),
+    },
+    adapter: decoder.adapter,
+  };
+}
+
+async function webGpuDecodeEcdc(options) {
+  await initWasm();
+  const {
+    bundleName,
+    ecdcUrl,
+    referenceWavUrl = null,
+    bundleRootUrl = new URL(
+      `../dist/wasm-fixed-bundles/bundles/${bundleName}/`,
+      window.location.href,
+    ).href,
+    collectAudio = Boolean(referenceWavUrl),
+    onDecodedChunk = null,
+  } = options;
+  const bundleRoot = new URL(bundleRootUrl, window.location.href);
+  const [bundleJson, ecdcBuffer, referenceBuffer] = await Promise.all([
+    fetchText(new URL("bundle.json", bundleRoot).href),
+    fetchArrayBuffer(ecdcUrl),
+    referenceWavUrl ? fetchArrayBuffer(referenceWavUrl) : Promise.resolve(null),
+  ]);
+  const meta = JSON.parse(bundleJson);
+  const lmWeights = new Uint8Array(
+    await fetchArrayBuffer(new URL(meta.lm_quant_weight_model, bundleRoot).href),
+  );
+  const ecdc = new Uint8Array(ecdcBuffer);
+  const decodeRequestStarted = performance.now();
+  reportWebGpuProgress("decoder setup", 0, 1);
+  const decoder = await createWebGpuEcdcDecoder({
+    encodecModule: {
+      lmEcdcDecodeChunks,
+      ecdcMetadata,
+      QuantizedLmChunkDecoder,
+    },
+    bundleJson,
+    lmWeights,
+    assetRoot: new URL("decoder/", bundleRoot),
+  });
+  let firstPlayableChunkColdMs = null;
+  let deliveredChunks = 0;
+  let deliveredFrames = 0;
+  let nonFiniteSamples = 0;
+  let decoded;
+  try {
+    decoded = await decoder.decode(ecdc, {
+      collectAudio,
+      async onChunk(chunk) {
+        if (firstPlayableChunkColdMs === null) {
+          firstPlayableChunkColdMs = performance.now() - decodeRequestStarted;
+        }
+        deliveredChunks += 1;
+        deliveredFrames += chunk.samples;
+        nonFiniteSamples += countNonFinite(chunk.pcm);
+        if (onDecodedChunk) await onDecodedChunk(chunk);
+      },
+      onProgress(progress) {
+        reportWebGpuProgress("decode", progress.completed, progress.total);
+      },
+      yieldControl: yieldToPage,
+    });
+  } finally {
+    decoder.release();
+  }
+
+  const audioSeconds = decoded.audioLength / meta.sample_rate;
+  const referenceWav = referenceBuffer ? decodeWav(referenceBuffer) : null;
+  const decodedParity = referenceWav && decoded.audio
+    ? comparePcm(referenceWav.audio, decoded.audio)
+    : null;
+  reportWebGpuProgress("complete", decoded.chunkCount, decoded.chunkCount);
+  return {
+    runtime: "Mobile Safari WebGPU incremental decode (ONNX-free)",
+    userAgent: navigator.userAgent,
+    bundleName,
+    audioSeconds,
+    chunks: decoded.chunkCount,
+    ecdcBytes: ecdc.byteLength,
+    collectedAudio: Boolean(decoded.audio),
+    deliveredChunks,
+    deliveredFrames,
+    nonFiniteSamples,
+    decodedParity,
+    setupMs: roundMs(decoder.setupMs),
+    timings: {
+      decodeContainerMs: roundMs(decoded.timings.containerMs),
+      decodeEntropyMs: roundMs(decoded.timings.entropyMs),
+      decodeModelMs: roundMs(decoded.timings.modelMs),
+      decodeAssemblyMs: roundMs(decoded.timings.assemblyMs),
+      decodeDeliveryMs: roundMs(decoded.timings.deliveryMs),
+      decodePipelineMs: roundMs(decoded.timings.pipelineMs),
+      firstPlayableChunkMs: roundMs(decoded.timings.firstChunkMs),
+      firstPlayableChunkColdMs: roundMs(firstPlayableChunkColdMs),
+    },
+    realtimeFactor: roundRatio(audioSeconds / (decoded.timings.pipelineMs / 1000)),
+    adapter: decoder.adapter,
+  };
+}
+
+function reportWebGpuProgress(phase, completed, total) {
+  const detail = { phase, completed, total };
+  window.dispatchEvent(new CustomEvent("encodec-webgpu-progress", { detail }));
+  console.log(`${phase} ${completed}/${total}`);
+}
+
+function yieldToPage() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function countNonFinite(values) {
+  let count = 0;
+  for (const value of values) {
+    if (!Number.isFinite(value)) count += 1;
+  }
+  return count;
+}
+
+function compareEncodedFrames(candidate, reference, meta) {
+  if (candidate.length !== reference.length) {
+    return {
+      comparable: false,
+      candidateFrames: candidate.length,
+      referenceFrames: reference.length,
+    };
+  }
+  let comparedCodes = 0;
+  let codeMismatches = 0;
+  let firstCodeMismatch = null;
+  let scaleMismatches = 0;
+  let maximumScaleError = 0;
+  for (let frame = 0; frame < candidate.length; frame += 1) {
+    const left = candidate[frame];
+    const right = reference[frame];
+    const frameLength = Math.min(left.frameLength, right.frameLength);
+    const scaleError = Math.abs(Number(left.scale) - Number(right.scale));
+    maximumScaleError = Math.max(maximumScaleError, scaleError);
+    if (scaleError !== 0) scaleMismatches += 1;
+    for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+      for (let step = 0; step < frameLength; step += 1) {
+        const index = codebook * meta.frame_length + step;
+        comparedCodes += 1;
+        if (left.codes[index] === right.codes[index]) continue;
+        codeMismatches += 1;
+        firstCodeMismatch ??= {
+          frame,
+          codebook,
+          step,
+          candidate: left.codes[index],
+          reference: right.codes[index],
+        };
+      }
+    }
+  }
+  return {
+    comparable: true,
+    exact: codeMismatches === 0 && scaleMismatches === 0,
+    comparedCodes,
+    codeMismatches,
+    firstCodeMismatch,
+    scaleMismatches,
+    maximumScaleError,
+  };
+}
+
 async function customRuntimeChunk(options) {
   await initWasm();
   const {
@@ -493,10 +828,22 @@ function decodeQ8LmFrame(bundleJson, weights, meta, chunk) {
   const decoder = new QuantizedLmChunkDecoder(bundleJson, weights, Uint8Array.from(chunk.payload));
   try {
     const codes = new Uint16Array(meta.num_codebooks * meta.frame_length);
-    for (let step = 0; step < chunk.frameLength; step += 1) {
-      const symbols = decoder.pull();
+    if (typeof decoder.pullAll === "function") {
+      const activeCodes = decoder.pullAll(chunk.frameLength);
       for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
-        codes[codebook * meta.frame_length + step] = symbols[codebook];
+        const sourceOffset = codebook * chunk.frameLength;
+        const targetOffset = codebook * meta.frame_length;
+        codes.set(
+          activeCodes.subarray(sourceOffset, sourceOffset + chunk.frameLength),
+          targetOffset,
+        );
+      }
+    } else {
+      for (let step = 0; step < chunk.frameLength; step += 1) {
+        const symbols = decoder.pull();
+        for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+          codes[codebook * meta.frame_length + step] = symbols[codebook];
+        }
       }
     }
     return {

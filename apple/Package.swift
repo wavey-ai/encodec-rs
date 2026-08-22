@@ -5,6 +5,7 @@ let package = Package(
     name: "EncodecMLXRuntime",
     platforms: [
         .macOS(.v14),
+        .iOS(.v17),
     ],
     products: [
         .library(name: "EncodecMLXRuntime", targets: ["EncodecMLXRuntime"]),
@@ -26,16 +27,7 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
             ],
-            path: "Sources/EncodecMLXRuntime",
-            linkerSettings: [
-                .unsafeFlags([
-                    "-L../target/release/deps",
-                    "-L../target/release",
-                    "-L../target/debug/deps",
-                    "-L../target/debug",
-                ]),
-                .linkedLibrary("encodec_rs"),
-            ]
+            path: "Sources/EncodecMLXRuntime"
         ),
         .testTarget(
             name: "EncodecMLXRuntimeTests",
@@ -48,13 +40,22 @@ let package = Package(
                     "-L../target/debug/deps",
                     "-L../target/debug",
                 ]),
-                .linkedLibrary("encodec_rs"),
+                .linkedLibrary("encodec_rs", .when(platforms: [.macOS])),
             ]
         ),
         .executableTarget(
             name: "EncodecMLXEncode",
             dependencies: ["EncodecMLXRuntime"],
-            path: "Sources/EncodecMLXEncode"
+            path: "Sources/EncodecMLXEncode",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L../target/release/deps",
+                    "-L../target/release",
+                    "-L../target/debug/deps",
+                    "-L../target/debug",
+                ]),
+                .linkedLibrary("encodec_rs", .when(platforms: [.macOS])),
+            ]
         ),
     ]
 )
