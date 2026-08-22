@@ -288,6 +288,21 @@ The arithmetic coder also starts with new state for each ECDC chunk.
 
 It does not reset at each code timestep or codebook.
 
+## Runtime-change compatibility
+
+Replacing ONNX Runtime with the custom WASM or MLX neural backend does not change
+the fixed-profile ECDC format. Existing ECDC files written by the former
+ONNX-WASM encoder remain decodable when their recorded profile and q8 language
+model are available.
+
+The compatibility gate decoded a complete 192.936-second, 145-chunk ECDC file
+produced by the former ONNX Runtime Web encoder with the new MLX decoder. It
+recovered all 9,260,919 stereo frames.
+
+This guarantee applies to the current fixed-profile ECDC envelope. It does not
+add support for the older raw payloads or floating-point language-model payloads
+listed as unsupported in [ECDC layout](#ecdc-layout).
+
 A randomized audit interleaved two tracks through one session.
 
 All 316 interleaved chunk hashes matched their isolated-session hashes.
