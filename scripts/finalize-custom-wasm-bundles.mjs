@@ -104,12 +104,21 @@ for (const name of bundleNames) {
 }
 
 writeJson(path.join(outputRoot, "manifest.json"), {
-  schemaVersion: 2,
+  schemaVersion: 3,
   pkg: "pkg",
   runtimeModule: "encodec-ecdc-runtime.js",
+  browserNeuralRuntimeModule: "browser-neural-runtime.js",
   encoderRuntimeModule: "custom-encoder-runtime.js",
   decoderRuntimeModule: "custom-decoder-runtime.js",
-  neuralRuntime: "custom_wasm_simd",
+  webGpuEncoderRuntimeModule: "webgpu-encoder-runtime.js",
+  webGpuDecoderRuntimeModule: "webgpu-decoder-runtime.js",
+  webGpuEcdcDecoderRuntimeModule: "webgpu-ecdc-decoder-runtime.js",
+  neuralRuntime: "browser_selector",
+  neuralRuntimes: ["webgpu", "wasm-simd"],
+  defaultBackends: {
+    encoder: "wasm-simd",
+    decoder: "auto",
+  },
   bundles: summaries,
 });
 

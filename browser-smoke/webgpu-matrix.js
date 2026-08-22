@@ -749,6 +749,7 @@ async function customRuntimeChunk(options) {
     runtimeRootUrl,
     inputWavUrl,
     expectedEcdcUrl,
+    neuralBackend = "auto",
   } = options;
   const bundleJson = await fetchText(new URL("bundle.json", bundleRootUrl).href);
   const meta = JSON.parse(bundleJson);
@@ -761,6 +762,7 @@ async function customRuntimeChunk(options) {
   const module = await import(runtimeModuleUrl);
   const runtime = module.createEncodecEcdcRuntime({
     encodecWasmBaseUrl: runtimeRootUrl,
+    neuralBackend,
   });
   const chunk = await runtime.encodeEcdcChunk({
     sessionKey: "production-runtime-smoke",
@@ -776,13 +778,33 @@ async function customRuntimeChunk(options) {
   const expectedFrames = lmEcdcDecodeChunks(bundleJson, expectedEcdc);
   const expectedChunk = lmEcdcChunk(expectedFrames.chunks[0].payload);
   const parity = compareBytes(expectedChunk, chunk);
+  const candidateLength = new DataView(
+    chunk.buffer,
+    chunk.byteOffset,
+    chunk.byteLength,
+  ).getUint32(0, false);
+  if (candidateLength + 8 !== chunk.byteLength) {
+    throw new Error("Production runtime returned an invalid framed ECDC chunk");
+  }
+  const candidateFrame = decodeQ8LmFrame(bundleJson, lmWeights, meta, {
+    ...expectedFrames.chunks[0],
+    payload: chunk.subarray(8),
+  });
+  const referenceFrame = decodeQ8LmFrame(
+    bundleJson,
+    lmWeights,
+    meta,
+    expectedFrames.chunks[0],
+  );
+  const frameParity = compareEncodedFrames([candidateFrame], [referenceFrame], meta);
   const diagnosticsBeforeRelease = runtime.diagnostics();
   runtime.releaseJobState("production-runtime-smoke");
   await runtime.clearSessionCache();
   return {
-    runtime: "browser production custom WASM",
+    runtime: "browser production selector",
     ortLoaded: ort !== null,
     parity,
+    frameParity,
     diagnosticsBeforeRelease,
     diagnosticsAfterRelease: runtime.diagnostics(),
   };

@@ -24,6 +24,7 @@ const inputEcdcPath =
   process.env.BROWSER_BENCH_INPUT ??
   "target/performance/custom-encoder/conv-kernel-v1/westside-onnx-control.ecdc";
 const mode = process.env.BROWSER_BENCH_MODE ?? "compare";
+const neuralBackend = process.env.BROWSER_NEURAL_BACKEND ?? "auto";
 const customEncoderRoot =
   process.env.BROWSER_CUSTOM_ENCODER_ROOT ??
   "target/performance/custom-encoder/browser-clean/";
@@ -66,10 +67,29 @@ try {
   });
   await page.waitForFunction(() => window.webgpuMatrix, { timeout: 0 });
   const ready = await page.evaluate((selectedMode) =>
-    selectedMode === "roundtrip" || selectedMode === "runtime-chunk"
+    selectedMode === "roundtrip"
+      || selectedMode === "runtime-chunk"
+      || selectedMode === "webgpu-roundtrip"
       ? window.webgpuMatrix.readyCustom()
       : window.webgpuMatrix.ready(), mode);
-  const result = mode === "runtime-chunk"
+  const result = mode === "webgpu-roundtrip"
+    ? await page.evaluate(
+      async (options) => window.webgpuMatrix.webGpuRoundTrip(options),
+      {
+        bundleName: "encodec_48khz_12kbps_1333ms",
+        bundleRootUrl:
+          `${origin}/dist/wasm-fixed-bundles/bundles/` +
+          "encodec_48khz_12kbps_1333ms/",
+        inputWavUrl: `${origin}/testdata/westside_4s_48khz_stereo.wav`,
+        expectedEcdcUrl:
+          `${origin}/target/performance/custom-encoder/conv-kernel-v1/` +
+          "westside-onnx-control.ecdc",
+        referenceWavUrl:
+          `${origin}/target/performance/custom-kernel/decoder-full-v2-fused/` +
+          "westside-full-v2.f32.wav",
+      },
+    )
+    : mode === "runtime-chunk"
     ? await page.evaluate(
       async (options) => window.webgpuMatrix.customRuntimeChunk(options),
       {
@@ -83,6 +103,7 @@ try {
         expectedEcdcUrl:
           `${origin}/target/performance/custom-encoder/conv-kernel-v1/` +
           "westside-onnx-control.ecdc",
+        neuralBackend,
       },
     )
     : mode === "roundtrip"

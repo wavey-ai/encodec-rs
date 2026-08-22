@@ -1,6 +1,6 @@
 "use strict";
 
-import { createCustomEncoder } from "./custom-encoder-runtime.js";
+import { createBrowserEncoder } from "./browser-neural-runtime.js";
 
 function requiredFunction(value, name) {
   if (typeof value !== "function") {
@@ -88,19 +88,10 @@ function normalizeEncodeMessage(payload = {}) {
   };
 }
 
-function encoderAssetConfig(bundleConfig) {
-  const runtime = bundleConfig?.custom_wasm_runtime;
-  const encoder = runtime?.encoder || {};
-  return {
-    assetRoot: String(encoder.asset_root || "encoder/"),
-    kernel: String(encoder.kernel || "encodec-encoder-relaxed.mjs"),
-    fallbackKernel: String(encoder.fallback_kernel || "encodec-encoder.mjs"),
-  };
-}
-
 export function createEncodecEcdcRuntime({
   encodecWasmBaseUrl = "./wasm/encodec-rs/",
   globalScope = globalThis,
+  neuralBackend = "wasm-simd",
   versionedAssetUrl = (asset) => asset,
   isCancelled = () => false,
   createCancelledError = () => new Error("Upload cancelled"),
@@ -117,6 +108,7 @@ export function createEncodecEcdcRuntime({
   let encodecWasmModulePromise = null;
   let cachedEncoderKey = "";
   let cachedEncoderPromise = null;
+  let cachedEncoderBackend = null;
   let encodeInferenceTail = Promise.resolve();
 
   function throwIfCancelled(requestId) {
@@ -157,49 +149,30 @@ export function createEncodecEcdcRuntime({
     const encoderPromise = cachedEncoderPromise;
     cachedEncoderKey = "";
     cachedEncoderPromise = null;
+    cachedEncoderBackend = null;
     if (!encoderPromise) return;
     const result = await Promise.allSettled([encoderPromise]);
     if (result[0].status === "fulfilled") result[0].value.release();
   }
 
   async function createEncoder(bundleRoot, bundleMeta, bundleConfig) {
-    const config = encoderAssetConfig(bundleConfig);
-    const root = new URL(config.assetRoot, normalizeBaseUrl(bundleRoot));
-    const primary = new URL(config.kernel, root);
-    const fallback = new URL(config.fallbackKernel, root);
-    const options = {
-      assetRoot: root,
+    const encoder = await createBrowserEncoder({
+      backend: neuralBackend,
+      bundleRoot: normalizeBaseUrl(bundleRoot),
       bundleMetadata: bundleMeta,
+      bundleConfig,
       fetchImpl: versionedFetch,
       versionedAssetUrl: versionedUrl,
-    };
-    try {
-      return await createCustomEncoder({
-        ...options,
-        kernelModuleUrl: primary.href,
-      });
-    } catch (primaryError) {
-      if (primary.href === fallback.href) throw primaryError;
-      globalScope.console?.warn?.(
-        "Relaxed SIMD is unavailable. The encoder will use standard SIMD.",
-      );
-      try {
-        return await createCustomEncoder({
-          ...options,
-          kernelModuleUrl: fallback.href,
-        });
-      } catch (fallbackError) {
-        throw new AggregateError(
-          [primaryError, fallbackError],
-          "The custom EnCodec encoder could not start.",
-        );
-      }
-    }
+      scope: globalThis,
+      logger: globalScope.console || globalThis.console,
+    });
+    cachedEncoderBackend = encoder.backend;
+    return encoder;
   }
 
   async function getEncoder(bundleRoot, bundleMeta, bundleConfig) {
-    const config = encoderAssetConfig(bundleConfig);
-    const key = JSON.stringify([bundleRoot, config]);
+    const config = bundleConfig?.custom_wasm_runtime?.encoder || null;
+    const key = JSON.stringify([bundleRoot, neuralBackend, config]);
     if (cachedEncoderKey !== key || !cachedEncoderPromise) {
       await releaseCachedEncoder();
       cachedEncoderKey = key;
@@ -294,7 +267,7 @@ export function createEncodecEcdcRuntime({
       state.bundleConfig,
     );
     throwIfCancelled(requestId);
-    const encoded = encoder.encode(segmentAudio);
+    const encoded = await encoder.encode(segmentAudio);
     throwIfCancelled(requestId);
     if (encoded.codes.length !== numCodebooks * frameLength) {
       throw new Error(
@@ -328,6 +301,8 @@ export function createEncodecEcdcRuntime({
       return {
         encodeJobCount: encodeJobState.size,
         encodeSessionCount: cachedEncoderPromise ? 1 : 0,
+        neuralBackendPreference: neuralBackend,
+        neuralBackend: cachedEncoderBackend,
       };
     },
     encodeEcdcChunk,

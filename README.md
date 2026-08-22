@@ -4,22 +4,28 @@
 
 The current profiles support 48 kHz stereo audio at 6 kbps or 12 kbps.
 
-The release browser path does not use ONNX Runtime, WebGPU, or Python.
+The release browser package does not use ONNX Runtime or Python.
 
-It uses one CPU thread and WASM SIMD.
+It contains a WebGPU backend and a single-thread WASM SIMD backend.
+
+The playback adapter selects WebGPU when it can create an adapter and device.
+
+It uses WASM SIMD when WebGPU is absent or initialization fails.
+
+Encoding uses WASM SIMD by default.
 
 ## Runtime architecture
 
 | Work | Release browser implementation |
 |---|---|
-| Neural encoder and decoder | Custom C kernels compiled to WASM SIMD |
+| Neural encoder and decoder | WebGPU compute kernels with custom C/WASM SIMD fallback |
 | Neural weights | Packed `float32` blobs |
 | Quantized language model | Rust WASM |
 | Arithmetic coding | Rust WASM |
 | ECDC framing and CRC32 | Rust WASM |
 | Guard cropping and optional triangle overlap | Rust WASM |
 
-The custom kernels implement EnCodec convolutions, recurrent layers, normalization, and residual vector quantization.
+Both neural backends implement EnCodec convolutions, recurrent layers, normalization, and residual vector quantization.
 
 The kernels contain no track-specific values. One bundle works with all valid audio for its profile.
 
@@ -31,11 +37,23 @@ The packed weights replace the ONNX weights. They are not an additional model co
 
 The package also removes approximately 17.7 MB of uncompressed ONNX Runtime Web payload.
 
+Call `createBrowserEncoder()` or `createBrowserDecoder()` with `backend: "auto"` for runtime selection.
+
+Use `backend: "webgpu"` or `backend: "wasm-simd"` to require one backend during tests.
+
+Backend detection belongs in the browser runtime. The Rust codec core does not inspect browser GPU state.
+
+The production decoder uses `auto`.
+
+The production encoder uses `wasm-simd` until the WebGPU encoder passes the code-parity corpus gate.
+
+Tests can opt in to WebGPU encoding explicitly.
+
 The optional native `onnx` feature remains available for comparison and compatibility.
 
-## Experimental Mobile Safari WebGPU backend
+## Mobile Safari WebGPU backend
 
-The experimental WebGPU backend runs the complete float32 neural encoder and decoder without ONNX Runtime.
+The WebGPU backend runs the complete float32 neural encoder and decoder without ONNX Runtime.
 
 Rust WASM continues to run the deterministic LM, arithmetic coder, ECDC framing, and CRC32 operations.
 
@@ -363,8 +381,13 @@ The generated package has this structure:
 ```text
 dist/wasm-fixed-bundles/
   encodec-ecdc-runtime.js
+  browser-neural-runtime.js
   custom-encoder-runtime.js
   custom-decoder-runtime.js
+  webgpu-kernel-runtime.js
+  webgpu-encoder-runtime.js
+  webgpu-decoder-runtime.js
+  webgpu-ecdc-decoder-runtime.js
   manifest.json
   pkg/
     encodec_rs.js

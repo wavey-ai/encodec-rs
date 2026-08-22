@@ -85,8 +85,13 @@ wasm-bindgen "$wasm_path" \
 
 cp -R "$ROOT/pkg/." "$OUT/pkg/"
 cp "$ROOT/browser-runtime/encodec-ecdc-runtime.js" "$OUT/encodec-ecdc-runtime.js"
+cp "$ROOT/browser-runtime/browser-neural-runtime.js" "$OUT/browser-neural-runtime.js"
 cp "$ROOT/browser-runtime/custom-encoder-runtime.js" "$OUT/custom-encoder-runtime.js"
 cp "$ROOT/browser-runtime/custom-decoder-runtime.js" "$OUT/custom-decoder-runtime.js"
+cp "$ROOT/browser-runtime/webgpu-kernel-runtime.js" "$OUT/webgpu-kernel-runtime.js"
+cp "$ROOT/browser-runtime/webgpu-encoder-runtime.js" "$OUT/webgpu-encoder-runtime.js"
+cp "$ROOT/browser-runtime/webgpu-decoder-runtime.js" "$OUT/webgpu-decoder-runtime.js"
+cp "$ROOT/browser-runtime/webgpu-ecdc-decoder-runtime.js" "$OUT/webgpu-ecdc-decoder-runtime.js"
 
 read -r -a bundle_names <<< "$BUNDLES"
 if [[ "${#bundle_names[@]}" -eq 0 ]]; then
