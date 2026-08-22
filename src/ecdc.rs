@@ -75,6 +75,35 @@ pub trait LmCodec {
     }
 }
 
+/// Two exact entropy-model trajectories backed by one shared weight set.
+///
+/// The derived symbols are a strict prefix of the primary symbols, but each
+/// trajectory retains independent nonlinear state and therefore independent
+/// logits and arithmetic output.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) trait PairedLmCodec {
+    fn primary_metadata(&self) -> &OnnxFrameBundleMetadata;
+
+    fn derived_metadata(&self) -> &OnnxFrameBundleMetadata;
+
+    fn primary_lm_hash(&self) -> &str;
+
+    fn derived_lm_hash(&self) -> &str;
+
+    fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
+    }
+
+    fn lm_window_frame_length(&self) -> usize;
+
+    fn forward_logits_pair<'a>(
+        &'a mut self,
+        primary_symbols: &[usize],
+        derived_symbols: &[usize],
+        offset: usize,
+    ) -> Result<(&'a [f32], &'a [f32])>;
+}
+
 impl EcdcMetadata {
     pub fn from_codec(
         codec: &dyn FrameCodec,
@@ -122,6 +151,13 @@ pub struct LmChunkEvidence {
     pub entropy: Vec<u8>,
     pub recovered_codes: Array3<i64>,
     pub recovered_scale: Array2<f32>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct DualEcdcEncodeResult {
+    pub primary: Vec<u8>,
+    pub derived: Vec<u8>,
 }
 
 #[derive(Default)]
@@ -402,6 +438,45 @@ pub(crate) fn encode_audio_view_to_ecdc_with_options(
     })
 }
 
+/// Encodes one neural representation into a primary ECDC stream and a
+/// lower-codebook prefix stream. The frame encoder and LM weights are shared;
+/// each stream retains an independent LM state and arithmetic coder.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn encode_audio_view_to_dual_ecdc_with_options(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn PairedLmCodec,
+    audio: ArrayView3<'_, f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: Option<f64>,
+) -> Result<DualEcdcEncodeResult> {
+    if !chunk_crc {
+        bail!("q8 ECDC always writes CRC-wrapped chunks");
+    }
+    let mut primary = Vec::new();
+    let mut derived = Vec::new();
+    encode_audio_to_dual_ecdc_impl(
+        codec,
+        lm_codec,
+        audio,
+        source,
+        frame_batch_size.max(1),
+        chunk_crc,
+        chunk_ms,
+        &mut |bytes| {
+            primary.extend_from_slice(bytes);
+            Ok(())
+        },
+        &mut |bytes| {
+            derived.extend_from_slice(bytes);
+            Ok(())
+        },
+    )?;
+    Ok(DualEcdcEncodeResult { primary, derived })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn encode_audio_view_to_ecdc_stream_with_options<F>(
@@ -439,7 +514,22 @@ pub fn encode_ecdc_header_with_options(
     lm_hash: Option<String>,
     chunk_layout: Option<EcdcChunkLayout>,
 ) -> Result<Vec<u8>> {
-    let bundle_meta = codec.metadata();
+    encode_ecdc_header_from_bundle_with_options(
+        codec.metadata(),
+        audio_length,
+        source,
+        lm_hash,
+        chunk_layout,
+    )
+}
+
+fn encode_ecdc_header_from_bundle_with_options(
+    bundle_meta: &OnnxFrameBundleMetadata,
+    audio_length: usize,
+    source: Option<&SourceAudioMetadata>,
+    lm_hash: Option<String>,
+    chunk_layout: Option<EcdcChunkLayout>,
+) -> Result<Vec<u8>> {
     let mut metadata = EcdcMetadata::from_bundle(bundle_meta, audio_length, source, lm_hash);
     if let Some(chunk_layout) = chunk_layout {
         metadata.lm_frame_length = Some(segment_frame_length(
@@ -716,6 +806,151 @@ fn encode_audio_to_ecdc_impl(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_audio_to_dual_ecdc_impl(
+    codec: &mut dyn FrameCodec,
+    lm_codec: &mut dyn PairedLmCodec,
+    audio: ArrayView3<'_, f32>,
+    source: Option<&SourceAudioMetadata>,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: Option<f64>,
+    primary_emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+    derived_emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    let shape = audio.shape();
+    if shape.len() != 3 || shape[0] != 1 {
+        bail!(
+            "audio must have shape [1, channels, samples], got {:?}",
+            shape
+        );
+    }
+
+    let primary_meta = codec.metadata().clone();
+    let derived_meta = lm_codec.derived_metadata().clone();
+    validate_dual_encode_metadata(&primary_meta, lm_codec.primary_metadata(), &derived_meta)?;
+    if shape[1] != primary_meta.channels {
+        bail!(
+            "audio channel mismatch, expected {}, got {}",
+            primary_meta.channels,
+            shape[1]
+        );
+    }
+    if lm_codec.bitstream_version() != QUANTIZED_LM_BITSTREAM_VERSION {
+        bail!(
+            "paired LM acv={} is unsupported, expected acv={}",
+            lm_codec.bitstream_version(),
+            QUANTIZED_LM_BITSTREAM_VERSION,
+        );
+    }
+
+    let primary_layout = ecdc_chunk_layout_from_ms(&primary_meta, chunk_ms)?;
+    let derived_layout = ecdc_chunk_layout_from_ms(&derived_meta, chunk_ms)?;
+    if primary_layout.samples != derived_layout.samples
+        || primary_layout.stride != derived_layout.stride
+    {
+        bail!(
+            "derived bundle chunk geometry differs from primary: primary={:?}, derived={:?}",
+            primary_layout,
+            derived_layout,
+        );
+    }
+
+    let primary_hash = lm_codec.primary_lm_hash().to_owned();
+    let derived_hash = lm_codec.derived_lm_hash().to_owned();
+    primary_emit(&encode_ecdc_header_from_bundle_with_options(
+        &primary_meta,
+        shape[2],
+        source,
+        Some(primary_hash),
+        chunk_ms.map(|_| primary_layout),
+    )?)?;
+    derived_emit(&encode_ecdc_header_from_bundle_with_options(
+        &derived_meta,
+        shape[2],
+        source,
+        Some(derived_hash),
+        chunk_ms.map(|_| derived_layout),
+    )?)?;
+
+    let fixed_lm_frame_length = chunk_ms.map(|_| {
+        segment_frame_length(
+            primary_layout.samples,
+            primary_meta.segment_samples,
+            primary_meta.frame_length,
+        )
+    });
+    let segment_offsets = segment_starts(shape[2], primary_layout.stride);
+    let mut primary_scratch = LmEntropyScratch::default();
+    let mut derived_scratch = LmEntropyScratch::default();
+    for offsets in segment_offsets.chunks(frame_batch_size.max(1)) {
+        let (frame_lengths, batch) = encode_segment_batch(
+            &audio,
+            &primary_meta,
+            offsets,
+            primary_layout,
+            fixed_lm_frame_length,
+        )?;
+        let (codes, scales) = codec.encode_frame(&batch)?;
+        validate_encoded_batch(&primary_meta, &batch, &frame_lengths, &codes, &scales)?;
+
+        encode_paired_codes_segment_batch_impl(
+            lm_codec,
+            &codes,
+            &scales,
+            &frame_lengths,
+            chunk_crc,
+            &mut primary_scratch,
+            &mut derived_scratch,
+            primary_emit,
+            derived_emit,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_dual_encode_metadata(
+    primary: &OnnxFrameBundleMetadata,
+    primary_lm: &OnnxFrameBundleMetadata,
+    derived: &OnnxFrameBundleMetadata,
+) -> Result<()> {
+    if primary.model_name != primary_lm.model_name
+        || primary.sample_rate != primary_lm.sample_rate
+        || primary.channels != primary_lm.channels
+        || primary.segment_samples != primary_lm.segment_samples
+        || primary.segment_stride != primary_lm.segment_stride
+        || primary.normalize != primary_lm.normalize
+        || primary.num_codebooks != primary_lm.num_codebooks
+        || primary.frame_length != primary_lm.frame_length
+        || primary.bits_per_codebook() != primary_lm.bits_per_codebook()
+        || primary.lm_cardinality() != primary_lm.lm_cardinality()
+    {
+        bail!("primary LM metadata is incompatible with the frame encoder bundle");
+    }
+    if derived.num_codebooks >= primary.num_codebooks {
+        bail!(
+            "derived stream must use fewer codebooks than primary ({} >= {})",
+            derived.num_codebooks,
+            primary.num_codebooks,
+        );
+    }
+    if primary.model_name != derived.model_name
+        || primary.sample_rate != derived.sample_rate
+        || primary.channels != derived.channels
+        || primary.segment_samples != derived.segment_samples
+        || primary.segment_stride != derived.segment_stride
+        || primary.normalize != derived.normalize
+        || primary.frame_length != derived.frame_length
+        || primary.bits_per_codebook() != derived.bits_per_codebook()
+        || primary.lm_cardinality() != derived.lm_cardinality()
+    {
+        bail!("derived bundle geometry is incompatible with the primary bundle");
+    }
+    Ok(())
+}
+
 fn encode_ecdc_segment_batch_impl(
     codec: &mut dyn FrameCodec,
     lm_codec: &mut dyn LmCodec,
@@ -795,6 +1030,82 @@ fn encode_ecdc_segment_batch_impl(
         )?;
         write_chunk(&mut encoded_chunk, &payload, chunk_crc)?;
         emit(&encoded_chunk)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn validate_encoded_batch(
+    model_meta: &OnnxFrameBundleMetadata,
+    batch: &Array3<f32>,
+    frame_lengths: &[usize],
+    codes: &Array3<i64>,
+    scales: &Array2<f32>,
+) -> Result<()> {
+    let batch_size = batch.shape()[0];
+    let code_shape = codes.shape();
+    if code_shape.len() != 3
+        || code_shape[0] != batch_size
+        || code_shape[1] != model_meta.num_codebooks
+    {
+        bail!(
+            "encoded code shape mismatch, expected [batch, {}, frames], got {:?}",
+            model_meta.num_codebooks,
+            code_shape
+        );
+    }
+    if scales.shape() != [batch_size, 1] {
+        bail!(
+            "encoded scale shape mismatch, expected [{batch_size}, 1], got {:?}",
+            scales.shape(),
+        );
+    }
+    let encoded_frame_length = code_shape[2];
+    for frame_length in frame_lengths.iter().copied() {
+        if frame_length == 0 || frame_length > encoded_frame_length {
+            bail!(
+                "segment frame length {} is out of range for encoded frame length {}",
+                frame_length,
+                encoded_frame_length
+            );
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_paired_codes_segment_batch_impl(
+    lm_codec: &mut dyn PairedLmCodec,
+    codes: &Array3<i64>,
+    scales: &Array2<f32>,
+    frame_lengths: &[usize],
+    chunk_crc: bool,
+    primary_scratch: &mut LmEntropyScratch,
+    derived_scratch: &mut LmEntropyScratch,
+    primary_emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+    derived_emit: &mut dyn FnMut(&[u8]) -> Result<()>,
+) -> Result<()> {
+    for (segment_index, frame_length) in frame_lengths.iter().copied().enumerate() {
+        let (primary_payload, derived_payload) = encode_paired_lm_chunk_payloads_with_scratch(
+            lm_codec,
+            codes,
+            scales,
+            segment_index,
+            frame_length,
+            DEFAULT_FP_SCALE,
+            DEFAULT_MIN_RANGE,
+            1.0,
+            primary_scratch,
+            derived_scratch,
+        )?;
+        let mut primary_chunk = Vec::new();
+        write_chunk(&mut primary_chunk, &primary_payload, chunk_crc)?;
+        primary_emit(&primary_chunk)?;
+        let mut derived_chunk = Vec::new();
+        write_chunk(&mut derived_chunk, &derived_payload, chunk_crc)?;
+        derived_emit(&derived_chunk)?;
     }
 
     Ok(())
@@ -1167,6 +1478,110 @@ fn encode_lm_chunk_payload_with_scratch(
         );
     }
     Ok(payload)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_paired_lm_chunk_payloads_with_scratch(
+    lm_codec: &mut dyn PairedLmCodec,
+    codes: &Array3<i64>,
+    scales: &Array2<f32>,
+    batch_index: usize,
+    frame_length: usize,
+    fp_scale: i64,
+    min_range: i64,
+    lm_tau: f64,
+    primary_scratch: &mut LmEntropyScratch,
+    derived_scratch: &mut LmEntropyScratch,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let primary_meta = lm_codec.primary_metadata().clone();
+    let derived_meta = lm_codec.derived_metadata().clone();
+    let mut primary_payload = Vec::new();
+    let mut derived_payload = Vec::new();
+    if primary_meta.normalize {
+        let scale = scales[[batch_index, 0]].to_be_bytes();
+        primary_payload.extend_from_slice(&scale);
+        derived_payload.extend_from_slice(&scale);
+    }
+    let mut primary_encoder = ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)?;
+    let mut derived_encoder = ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)?;
+    let mut primary_input = vec![0_usize; primary_meta.num_codebooks];
+    let mut derived_input = vec![0_usize; derived_meta.num_codebooks];
+    primary_scratch.prepare_symbols(primary_meta.num_codebooks);
+    derived_scratch.prepare_symbols(derived_meta.num_codebooks);
+    let lm_window_frame_length = lm_codec.lm_window_frame_length().max(1);
+    if frame_length > lm_window_frame_length {
+        bail!(
+            "chunk frame length {} exceeds paired LM positional capacity {}",
+            frame_length,
+            lm_window_frame_length,
+        );
+    }
+
+    for timestep in 0..frame_length {
+        let (primary_logits, derived_logits) =
+            lm_codec.forward_logits_pair(&primary_input, &derived_input, timestep)?;
+        let primary_pdf = probability_columns_from_flat_logits(
+            primary_logits,
+            primary_meta.lm_cardinality(),
+            primary_meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: lm_tau,
+                logit_step: primary_meta.lm_entropy_logit_step(),
+                fp_scale,
+            },
+            &mut primary_scratch.probability,
+        )?;
+        let derived_pdf = probability_columns_from_flat_logits(
+            derived_logits,
+            derived_meta.lm_cardinality(),
+            derived_meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: lm_tau,
+                logit_step: derived_meta.lm_entropy_logit_step(),
+                fp_scale,
+            },
+            &mut derived_scratch.probability,
+        )?;
+
+        for codebook in 0..primary_meta.num_codebooks {
+            let value = codes[[batch_index, codebook, timestep]];
+            if value < 0 {
+                bail!("code symbol must be non-negative, got {value}");
+            }
+            primary_scratch.symbols[codebook] = value as usize;
+            primary_input[codebook] = value as usize + 1;
+            if codebook < derived_meta.num_codebooks {
+                derived_scratch.symbols[codebook] = value as usize;
+                derived_input[codebook] = value as usize + 1;
+            }
+        }
+
+        primary_encoder.push_valid_pdf_symbols_with_scratch(
+            primary_pdf,
+            primary_meta.lm_cardinality(),
+            primary_meta.num_codebooks,
+            &primary_scratch.symbols,
+            fp_scale,
+            min_range,
+            &mut primary_scratch.cdf,
+        )?;
+        derived_encoder.push_valid_pdf_symbols_with_scratch(
+            derived_pdf,
+            derived_meta.lm_cardinality(),
+            derived_meta.num_codebooks,
+            &derived_scratch.symbols,
+            fp_scale,
+            min_range,
+            &mut derived_scratch.cdf,
+        )?;
+    }
+
+    primary_payload.extend_from_slice(&primary_encoder.finish());
+    derived_payload.extend_from_slice(&derived_encoder.finish());
+    Ok((primary_payload, derived_payload))
 }
 
 /// Encodes and decodes one LM chunk without container framing.

@@ -115,6 +115,11 @@ public struct EncodecNativeStreamResult: Sendable {
     public let bytesWritten: Int
 }
 
+public struct EncodecNativeEncodeResult: Sendable {
+    public let primary: Data
+    public let derived6K: Data?
+}
+
 public enum EncodecMLXRuntimeError: Error, LocalizedError, Sendable {
     case missingFile(URL)
     case missingModel(String)
@@ -418,6 +423,90 @@ public final class MLXEncodecNativePipeline {
         defer { encodec_rs_mlx_free_bytes(ptr, result.len) }
 
         return Data(bytes: ptr, count: result.len)
+    }
+
+    /// Encodes the primary stream and, when supplied with its matching 6 kbps
+    /// bundle, derives a second stream from the first four RVQ codebooks. The
+    /// neural encoder and LM weights are shared; LM state and arithmetic
+    /// coding remain independent for each bitstream.
+    public func encodeEcdcOutputs(
+        samples: [Float],
+        channels: Int,
+        derived6KBundleURL: URL? = nil,
+        useLM: Bool = true,
+        frameBatchSize: Int = EncodecMLXRuntimeDefaults.frameBatchSize,
+        chunkMilliseconds: Double? = nil,
+        chunkCRC: Bool = true
+    ) throws -> EncodecNativeEncodeResult {
+        guard let derived6KBundleURL else {
+            return EncodecNativeEncodeResult(
+                primary: try encodeEcdc(
+                    samples: samples,
+                    channels: channels,
+                    useLM: useLM,
+                    frameBatchSize: frameBatchSize,
+                    chunkMilliseconds: chunkMilliseconds,
+                    chunkCRC: chunkCRC
+                ),
+                derived6K: nil
+            )
+        }
+        guard channels > 0 else {
+            throw EncodecMLXRuntimeError.nativeBridge("channel count must be positive")
+        }
+        guard samples.count % channels == 0 else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                "interleaved sample count \(samples.count) is not divisible by \(channels) channels"
+            )
+        }
+
+        let callbackBox = MLXNativeFrameCallbackBox(backend: backend)
+        let callbacks = callbackBox.callbacks()
+        let frames = samples.count / channels
+        let result = withExtendedLifetime(callbackBox) {
+            bundleURL.path.withCString { primaryBundlePath in
+                derived6KBundleURL.path.withCString { derivedBundlePath in
+                    samples.withUnsafeBufferPointer { sampleBuffer in
+                        encodec_rs_mlx_encode_ecdc_interleaved_dual(
+                            primaryBundlePath,
+                            derivedBundlePath,
+                            sampleBuffer.baseAddress,
+                            channels,
+                            frames,
+                            useLM,
+                            max(frameBatchSize, 1),
+                            chunkCRC,
+                            chunkMilliseconds ?? 0.0,
+                            chunkMilliseconds != nil,
+                            callbacks
+                        )
+                    }
+                }
+            }
+        }
+
+        guard result.ok else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                Self.bridgeError(result.error, callbackError: callbackBox.lastError)
+            )
+        }
+        guard let primaryPointer = result.primary_ptr else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                "native dual encode returned a null primary byte buffer"
+            )
+        }
+        defer { encodec_rs_mlx_free_bytes(primaryPointer, result.primary_len) }
+        guard let derivedPointer = result.derived_ptr else {
+            throw EncodecMLXRuntimeError.nativeBridge(
+                "native dual encode returned a null derived byte buffer"
+            )
+        }
+        defer { encodec_rs_mlx_free_bytes(derivedPointer, result.derived_len) }
+
+        return EncodecNativeEncodeResult(
+            primary: Data(bytes: primaryPointer, count: result.primary_len),
+            derived6K: Data(bytes: derivedPointer, count: result.derived_len)
+        )
     }
 
     public func encodeEcdcStreaming(

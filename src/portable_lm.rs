@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use ndarray::{Array3, Array4};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ecdc::PairedLmCodec;
 use crate::ecdc::{LmCodec, QUANTIZED_LM_BITSTREAM_VERSION};
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
@@ -23,6 +25,69 @@ enum PortableLmBackend {
         state: Option<QuantizedLmState>,
         hash: String,
     },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct PortablePairedLmCodec {
+    primary_metadata: OnnxFrameBundleMetadata,
+    derived_metadata: OnnxFrameBundleMetadata,
+    lm_window_frame_length: usize,
+    lm: QuantizedLm,
+    primary_state: Option<QuantizedLmState>,
+    derived_state: Option<QuantizedLmState>,
+    primary_hash: String,
+    derived_hash: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PortablePairedLmCodec {
+    pub(crate) fn from_dirs(
+        primary_dir: impl AsRef<Path>,
+        derived_dir: impl AsRef<Path>,
+    ) -> Result<Self> {
+        fn load(dir: &Path) -> Result<(OnnxFrameBundleMetadata, Vec<u8>)> {
+            let metadata_path = dir.join("bundle.json");
+            let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
+                &fs::read_to_string(&metadata_path)
+                    .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+            )
+            .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+            let weights_name = metadata
+                .lm_quant_weight_model
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("bundle does not include lm_quant_weight_model"))?;
+            let weights_path = dir.join(weights_name);
+            let bytes = fs::read(&weights_path)
+                .with_context(|| format!("failed to read {}", weights_path.display()))?;
+            Ok((metadata, bytes))
+        }
+
+        let (primary_metadata, primary_bytes) = load(primary_dir.as_ref())?;
+        let (derived_metadata, derived_bytes) = load(derived_dir.as_ref())?;
+        primary_metadata.validate_lm()?;
+        derived_metadata.validate_lm()?;
+        let primary_hash = stable_hash_hex(&primary_bytes);
+        let derived_hash = stable_hash_hex(&derived_bytes);
+        let primary_weights = QuantizedLmWeights::from_bytes(&primary_bytes)
+            .context("failed to parse primary q8 LM weights")?;
+        let derived_weights = QuantizedLmWeights::from_bytes(&derived_bytes)
+            .context("failed to parse derived q8 LM weights")?;
+        primary_weights.validate_for_metadata(&primary_metadata)?;
+        derived_weights.validate_for_metadata(&derived_metadata)?;
+        primary_weights.validate_prefix_compatible(&derived_weights)?;
+        let lm_window_frame_length = primary_weights.frame_length.max(1);
+
+        Ok(Self {
+            primary_metadata,
+            derived_metadata,
+            lm_window_frame_length,
+            lm: QuantizedLm::new(primary_weights),
+            primary_state: None,
+            derived_state: None,
+            primary_hash,
+            derived_hash,
+        })
+    }
 }
 
 impl PortableLmCodec {
@@ -205,6 +270,81 @@ impl LmCodec for PortableLmCodec {
             }
         };
         Ok((logits, offset + 1, Vec::new()))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PairedLmCodec for PortablePairedLmCodec {
+    fn primary_metadata(&self) -> &OnnxFrameBundleMetadata {
+        &self.primary_metadata
+    }
+
+    fn derived_metadata(&self) -> &OnnxFrameBundleMetadata {
+        &self.derived_metadata
+    }
+
+    fn primary_lm_hash(&self) -> &str {
+        &self.primary_hash
+    }
+
+    fn derived_lm_hash(&self) -> &str {
+        &self.derived_hash
+    }
+
+    fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
+    }
+
+    fn forward_logits_pair<'a>(
+        &'a mut self,
+        primary_symbols: &[usize],
+        derived_symbols: &[usize],
+        offset: usize,
+    ) -> Result<(&'a [f32], &'a [f32])> {
+        if primary_symbols.len() != self.primary_metadata.num_codebooks {
+            bail!(
+                "paired primary input uses {} codebooks, expected {}",
+                primary_symbols.len(),
+                self.primary_metadata.num_codebooks,
+            );
+        }
+        if derived_symbols.len() != self.derived_metadata.num_codebooks {
+            bail!(
+                "paired derived input uses {} codebooks, expected {}",
+                derived_symbols.len(),
+                self.derived_metadata.num_codebooks,
+            );
+        }
+        if offset == 0 {
+            if let Some(state) = &mut self.primary_state {
+                self.lm.reset_state(state);
+            } else {
+                self.primary_state = Some(self.lm.initial_state());
+            }
+            if let Some(state) = &mut self.derived_state {
+                self.lm.reset_state(state);
+            } else {
+                self.derived_state = Some(self.lm.initial_state());
+            }
+        } else if self.primary_state.is_none() || self.derived_state.is_none() {
+            bail!("paired LM received nonzero offset before state initialization");
+        }
+        let primary_state = self.primary_state.as_mut().expect("state initialized");
+        let derived_state = self.derived_state.as_mut().expect("state initialized");
+        if primary_state.offset != offset || derived_state.offset != offset {
+            bail!(
+                "paired LM state offset mismatch: requested {}, primary={}, derived={}",
+                offset,
+                primary_state.offset,
+                derived_state.offset,
+            );
+        }
+        self.lm.forward_step_pair_borrowed(
+            primary_state,
+            primary_symbols,
+            derived_state,
+            derived_symbols,
+        )
     }
 }
 

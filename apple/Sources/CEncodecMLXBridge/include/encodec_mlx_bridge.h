@@ -44,6 +44,15 @@ typedef struct EncodecRsMlxByteResult {
     char *error;
 } EncodecRsMlxByteResult;
 
+typedef struct EncodecRsMlxDualByteResult {
+    bool ok;
+    unsigned char *primary_ptr;
+    size_t primary_len;
+    unsigned char *derived_ptr;
+    size_t derived_len;
+    char *error;
+} EncodecRsMlxDualByteResult;
+
 typedef struct EncodecRsMlxAudioResult {
     bool ok;
     float *ptr;
@@ -68,6 +77,20 @@ EncodecRsMlxByteResult encodec_rs_mlx_encode_ecdc(
 
 EncodecRsMlxByteResult encodec_rs_mlx_encode_ecdc_interleaved(
     const char *bundle_dir,
+    const float *audio,
+    size_t channels,
+    size_t samples,
+    bool use_lm,
+    size_t frame_batch_size,
+    bool chunk_crc,
+    double chunk_ms,
+    bool has_chunk_ms,
+    EncodecRsMlxFrameCallbacks callbacks
+);
+
+EncodecRsMlxDualByteResult encodec_rs_mlx_encode_ecdc_interleaved_dual(
+    const char *primary_bundle_dir,
+    const char *derived_bundle_dir,
     const float *audio,
     size_t channels,
     size_t samples,

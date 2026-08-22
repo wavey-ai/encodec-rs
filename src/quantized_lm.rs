@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::sync::OnceLock;
 
 use crate::metadata::OnnxFrameBundleMetadata;
 
@@ -55,7 +56,7 @@ struct QuantizedLinear {
 
 #[derive(Clone, Debug)]
 pub struct QuantizedLmState {
-    offset: usize,
+    pub(crate) offset: usize,
     layers: Vec<LayerState>,
 }
 
@@ -70,6 +71,7 @@ struct LayerState {
 pub struct QuantizedLm {
     weights: QuantizedLmWeights,
     scratch: QuantizedLmScratch,
+    paired_scratch: Option<Box<QuantizedLmScratch>>,
 }
 
 #[derive(Debug, Default)]
@@ -243,6 +245,80 @@ impl QuantizedLmWeights {
         }
         Ok(())
     }
+
+    /// Verifies that another LM is an exact codebook-prefix view of these
+    /// weights. This permits one retained weight set to reproduce both models
+    /// without weakening bitstream determinism.
+    pub fn validate_prefix_compatible(&self, derived: &Self) -> Result<()> {
+        if derived.codebooks >= self.codebooks
+            || self.dim != derived.dim
+            || self.layers != derived.layers
+            || self.heads != derived.heads
+            || self.cardinality != derived.cardinality
+            || self.frame_length != derived.frame_length
+            || self.past_context != derived.past_context
+            || self.attention_scale.to_bits() != derived.attention_scale.to_bits()
+            || !f32_bits_equal(&self.norm_in_weight, &derived.norm_in_weight)
+            || !f32_bits_equal(&self.norm_in_bias, &derived.norm_in_bias)
+            || !f32_bits_equal(&self.pos_emb, &derived.pos_emb)
+            || self.layer_weights.len() != derived.layer_weights.len()
+        {
+            bail!("derived LM does not share the primary transformer exactly");
+        }
+        for (primary, derived) in self.layer_weights.iter().zip(&derived.layer_weights) {
+            if !transformer_layer_bits_equal(primary, derived) {
+                bail!("derived LM transformer weights differ from the primary");
+            }
+        }
+        for codebook in 0..derived.codebooks {
+            if !f32_bits_equal(&self.embeddings[codebook], &derived.embeddings[codebook])
+                || !quantized_linear_bits_equal(
+                    &self.output_weights[codebook],
+                    &derived.output_weights[codebook],
+                )
+                || !f32_bits_equal(
+                    &self.output_biases[codebook],
+                    &derived.output_biases[codebook],
+                )
+            {
+                bail!("derived LM codebook {codebook} weights differ from the primary prefix");
+            }
+        }
+        Ok(())
+    }
+}
+
+fn f32_bits_equal(left: &[f32], right: &[f32]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+fn quantized_linear_bits_equal(left: &QuantizedLinear, right: &QuantizedLinear) -> bool {
+    left.rows == right.rows
+        && left.cols == right.cols
+        && left.weights == right.weights
+        && f32_bits_equal(&left.scales, &right.scales)
+}
+
+fn transformer_layer_bits_equal(
+    left: &QuantizedTransformerLayerWeights,
+    right: &QuantizedTransformerLayerWeights,
+) -> bool {
+    quantized_linear_bits_equal(&left.in_proj_weight, &right.in_proj_weight)
+        && f32_bits_equal(&left.in_proj_bias, &right.in_proj_bias)
+        && quantized_linear_bits_equal(&left.out_proj_weight, &right.out_proj_weight)
+        && f32_bits_equal(&left.out_proj_bias, &right.out_proj_bias)
+        && quantized_linear_bits_equal(&left.linear1_weight, &right.linear1_weight)
+        && f32_bits_equal(&left.linear1_bias, &right.linear1_bias)
+        && quantized_linear_bits_equal(&left.linear2_weight, &right.linear2_weight)
+        && f32_bits_equal(&left.linear2_bias, &right.linear2_bias)
+        && f32_bits_equal(&left.norm1_weight, &right.norm1_weight)
+        && f32_bits_equal(&left.norm1_bias, &right.norm1_bias)
+        && f32_bits_equal(&left.norm2_weight, &right.norm2_weight)
+        && f32_bits_equal(&left.norm2_bias, &right.norm2_bias)
 }
 
 impl QuantizedLm {
@@ -250,6 +326,7 @@ impl QuantizedLm {
         Self {
             weights,
             scratch: QuantizedLmScratch::default(),
+            paired_scratch: None,
         }
     }
 
@@ -383,6 +460,132 @@ impl QuantizedLm {
         Ok(&self.scratch.logits)
     }
 
+    /// Advances two exact LM trajectories that share the same weights.
+    ///
+    /// `derived_symbols` must be a strict prefix of `primary_symbols`. The
+    /// implementation shares prefix embedding work and evaluates every common
+    /// quantized matrix with a two-input kernel, while retaining independent
+    /// nonlinear and attention state for each trajectory.
+    pub(crate) fn forward_step_pair_borrowed<'a>(
+        &'a mut self,
+        primary_state: &mut QuantizedLmState,
+        primary_symbols: &[usize],
+        derived_state: &mut QuantizedLmState,
+        derived_symbols: &[usize],
+    ) -> Result<(&'a [f32], &'a [f32])> {
+        let dim = self.weights.dim;
+        let primary_codebooks = primary_symbols.len();
+        let derived_codebooks = derived_symbols.len();
+        self.weights.validate_for_codebooks(primary_codebooks)?;
+        self.weights.validate_for_codebooks(derived_codebooks)?;
+        if derived_codebooks >= primary_codebooks {
+            bail!(
+                "paired LM derived codebooks must be a strict prefix ({} >= {})",
+                derived_codebooks,
+                primary_codebooks,
+            );
+        }
+        if &primary_symbols[..derived_codebooks] != derived_symbols {
+            bail!("paired LM derived symbols do not match the primary prefix");
+        }
+        if primary_state.offset != derived_state.offset {
+            bail!(
+                "paired LM state offsets differ: primary={}, derived={}",
+                primary_state.offset,
+                derived_state.offset,
+            );
+        }
+        if primary_state.offset >= self.weights.frame_length {
+            bail!(
+                "LM offset {} exceeds frame_length {}",
+                primary_state.offset,
+                self.weights.frame_length
+            );
+        }
+        for (name, state) in [("primary", &*primary_state), ("derived", &*derived_state)] {
+            if state.layers.len() != self.weights.layers {
+                bail!(
+                    "{name} LM state layer count {} does not match weights {}",
+                    state.layers.len(),
+                    self.weights.layers,
+                );
+            }
+        }
+
+        let primary = &mut self.scratch;
+        let derived = self
+            .paired_scratch
+            .get_or_insert_with(|| Box::new(QuantizedLmScratch::default()));
+        primary.x.resize(dim, 0.0);
+        primary.x.fill(0.0);
+        for (codebook, symbol) in derived_symbols.iter().copied().enumerate() {
+            validate_symbol(symbol, self.weights.cardinality)?;
+            let embedding = &self.weights.embeddings[codebook];
+            let base = symbol * dim;
+            for d in 0..dim {
+                primary.x[d] += embedding[base + d];
+            }
+        }
+        derived.x.clear();
+        derived.x.extend_from_slice(&primary.x);
+        for (codebook, symbol) in primary_symbols
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(derived_codebooks)
+        {
+            validate_symbol(symbol, self.weights.cardinality)?;
+            let embedding = &self.weights.embeddings[codebook];
+            let base = symbol * dim;
+            for d in 0..dim {
+                primary.x[d] += embedding[base + d];
+            }
+        }
+
+        layer_norm_into(
+            &primary.x,
+            &self.weights.norm_in_weight,
+            &self.weights.norm_in_bias,
+            &mut primary.y,
+        );
+        layer_norm_into(
+            &derived.x,
+            &self.weights.norm_in_weight,
+            &self.weights.norm_in_bias,
+            &mut derived.y,
+        );
+        std::mem::swap(&mut primary.x, &mut primary.y);
+        std::mem::swap(&mut derived.x, &mut derived.y);
+        let pos_base = primary_state.offset * dim;
+        for d in 0..dim {
+            let position = self.weights.pos_emb[pos_base + d];
+            primary.x[d] += position;
+            derived.x[d] += position;
+        }
+
+        for layer_index in 0..self.weights.layers {
+            forward_layer_pair(
+                &self.weights,
+                primary,
+                &mut primary_state.layers[layer_index],
+                derived,
+                &mut derived_state.layers[layer_index],
+                layer_index,
+            )?;
+        }
+
+        output_logits_pair(
+            &self.weights,
+            primary,
+            primary_codebooks,
+            derived,
+            derived_codebooks,
+        );
+        primary_state.offset += 1;
+        derived_state.offset += 1;
+        Ok((&primary.logits, &derived.logits))
+    }
+
     fn forward_layer(&mut self, state: &mut QuantizedLmState, layer_index: usize) -> Result<()> {
         let dim = self.weights.dim;
         let layer = &self.weights.layer_weights[layer_index];
@@ -511,6 +714,249 @@ impl QuantizedLm {
     }
 }
 
+fn validate_symbol(symbol: usize, cardinality: usize) -> Result<()> {
+    if symbol > cardinality {
+        bail!(
+            "LM input symbol {} exceeds cardinality {}",
+            symbol,
+            cardinality
+        );
+    }
+    Ok(())
+}
+
+fn forward_layer_pair(
+    weights: &QuantizedLmWeights,
+    primary: &mut QuantizedLmScratch,
+    primary_state: &mut LayerState,
+    derived: &mut QuantizedLmScratch,
+    derived_state: &mut LayerState,
+    layer_index: usize,
+) -> Result<()> {
+    let dim = weights.dim;
+    let layer = &weights.layer_weights[layer_index];
+    for (name, state) in [("primary", &*primary_state), ("derived", &*derived_state)] {
+        if state.len > weights.past_context + 1 {
+            bail!("{name} LM layer state exceeded past_context");
+        }
+    }
+
+    let primary_scale = primary.quantized_input.quantize(&primary.x);
+    let derived_scale = derived.quantized_input.quantize(&derived.x);
+    quantized_linear_part_pair_with_input(
+        &mut primary.quantized_input,
+        primary_scale,
+        &mut derived.quantized_input,
+        derived_scale,
+        &layer.in_proj_weight,
+        &layer.in_proj_bias,
+        0,
+        dim,
+        &mut primary.q,
+        &mut derived.q,
+    );
+    quantized_linear_part_pair_with_input(
+        &mut primary.quantized_input,
+        primary_scale,
+        &mut derived.quantized_input,
+        derived_scale,
+        &layer.in_proj_weight,
+        &layer.in_proj_bias,
+        dim,
+        dim,
+        &mut primary.k,
+        &mut derived.k,
+    );
+    quantized_linear_part_pair_with_input(
+        &mut primary.quantized_input,
+        primary_scale,
+        &mut derived.quantized_input,
+        derived_scale,
+        &layer.in_proj_weight,
+        &layer.in_proj_bias,
+        2 * dim,
+        dim,
+        &mut primary.v,
+        &mut derived.v,
+    );
+
+    append_layer_state(
+        primary_state,
+        &primary.k,
+        &primary.v,
+        weights.past_context,
+        dim,
+    );
+    append_layer_state(
+        derived_state,
+        &derived.k,
+        &derived.v,
+        weights.past_context,
+        dim,
+    );
+
+    attention_into(
+        &primary.q,
+        &primary_state.keys,
+        &primary_state.values,
+        primary_state.len,
+        weights.heads,
+        weights.attention_scale,
+        &mut primary.attn,
+        &mut primary.scores,
+    )?;
+    attention_into(
+        &derived.q,
+        &derived_state.keys,
+        &derived_state.values,
+        derived_state.len,
+        weights.heads,
+        weights.attention_scale,
+        &mut derived.attn,
+        &mut derived.scores,
+    )?;
+
+    quantized_linear_pair(
+        &primary.attn,
+        &derived.attn,
+        &layer.out_proj_weight,
+        &layer.out_proj_bias,
+        &mut primary.quantized_input,
+        &mut derived.quantized_input,
+        &mut primary.y,
+        &mut derived.y,
+    );
+    for d in 0..dim {
+        primary.y[d] += primary.x[d];
+        derived.y[d] += derived.x[d];
+    }
+    layer_norm_into(
+        &primary.y,
+        &layer.norm1_weight,
+        &layer.norm1_bias,
+        &mut primary.x,
+    );
+    layer_norm_into(
+        &derived.y,
+        &layer.norm1_weight,
+        &layer.norm1_bias,
+        &mut derived.x,
+    );
+
+    quantized_linear_pair(
+        &primary.x,
+        &derived.x,
+        &layer.linear1_weight,
+        &layer.linear1_bias,
+        &mut primary.quantized_input,
+        &mut derived.quantized_input,
+        &mut primary.ff,
+        &mut derived.ff,
+    );
+    for value in &mut primary.ff {
+        *value = gelu(*value as f64) as f32;
+    }
+    for value in &mut derived.ff {
+        *value = gelu(*value as f64) as f32;
+    }
+    quantized_linear_pair(
+        &primary.ff,
+        &derived.ff,
+        &layer.linear2_weight,
+        &layer.linear2_bias,
+        &mut primary.quantized_input,
+        &mut derived.quantized_input,
+        &mut primary.y,
+        &mut derived.y,
+    );
+    for d in 0..dim {
+        primary.y[d] += primary.x[d];
+        derived.y[d] += derived.x[d];
+    }
+    layer_norm_into(
+        &primary.y,
+        &layer.norm2_weight,
+        &layer.norm2_bias,
+        &mut primary.x,
+    );
+    layer_norm_into(
+        &derived.y,
+        &layer.norm2_weight,
+        &layer.norm2_bias,
+        &mut derived.x,
+    );
+    Ok(())
+}
+
+fn append_layer_state(
+    state: &mut LayerState,
+    keys: &[f32],
+    values: &[f32],
+    past_context: usize,
+    dim: usize,
+) {
+    state.keys.extend_from_slice(keys);
+    state.values.extend_from_slice(values);
+    state.len += 1;
+    if state.len > past_context + 1 {
+        let remove = state.len - (past_context + 1);
+        let remove_values = remove * dim;
+        state.keys.drain(0..remove_values);
+        state.values.drain(0..remove_values);
+        state.len -= remove;
+    }
+}
+
+fn output_logits_pair(
+    weights: &QuantizedLmWeights,
+    primary: &mut QuantizedLmScratch,
+    primary_codebooks: usize,
+    derived: &mut QuantizedLmScratch,
+    derived_codebooks: usize,
+) {
+    let cardinality = weights.cardinality;
+    primary.logits.resize(cardinality * primary_codebooks, 0.0);
+    derived.logits.resize(cardinality * derived_codebooks, 0.0);
+    let primary_scale = primary.quantized_input.quantize(&primary.x);
+    let derived_scale = derived.quantized_input.quantize(&derived.x);
+    for codebook in 0..derived_codebooks {
+        let weight = &weights.output_weights[codebook];
+        let bias = &weights.output_biases[codebook];
+        quantized_linear_part_pair_with_input(
+            &mut primary.quantized_input,
+            primary_scale,
+            &mut derived.quantized_input,
+            derived_scale,
+            weight,
+            bias,
+            0,
+            cardinality,
+            &mut primary.logit_column,
+            &mut derived.logit_column,
+        );
+        for bin in 0..cardinality {
+            primary.logits[bin * primary_codebooks + codebook] = primary.logit_column[bin];
+            derived.logits[bin * derived_codebooks + codebook] = derived.logit_column[bin];
+        }
+    }
+    for codebook in derived_codebooks..primary_codebooks {
+        let weight = &weights.output_weights[codebook];
+        let bias = &weights.output_biases[codebook];
+        quantized_linear_part_with_input(
+            &mut primary.quantized_input,
+            primary_scale,
+            weight,
+            bias,
+            0,
+            cardinality,
+            &mut primary.logit_column,
+        );
+        for bin in 0..cardinality {
+            primary.logits[bin * primary_codebooks + codebook] = primary.logit_column[bin];
+        }
+    }
+}
+
 impl QuantizedLinear {
     fn row(&self, row: usize) -> &[i8] {
         debug_assert!(row < self.rows);
@@ -553,6 +999,137 @@ fn quantized_linear(
 ) {
     let input_scale = input_q.quantize(input);
     quantized_linear_part_with_input(input_q, input_scale, weight, bias, 0, weight.rows, out);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quantized_linear_pair(
+    primary_input: &[f32],
+    derived_input: &[f32],
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    primary_input_q: &mut QuantizedInputScratch,
+    derived_input_q: &mut QuantizedInputScratch,
+    primary_out: &mut Vec<f32>,
+    derived_out: &mut Vec<f32>,
+) {
+    let primary_scale = primary_input_q.quantize(primary_input);
+    let derived_scale = derived_input_q.quantize(derived_input);
+    quantized_linear_part_pair_with_input(
+        primary_input_q,
+        primary_scale,
+        derived_input_q,
+        derived_scale,
+        weight,
+        bias,
+        0,
+        weight.rows,
+        primary_out,
+        derived_out,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn quantized_linear_part_pair_with_input(
+    primary_input_q: &mut QuantizedInputScratch,
+    primary_scale: f32,
+    derived_input_q: &mut QuantizedInputScratch,
+    derived_scale: f32,
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    row_offset: usize,
+    out_dim: usize,
+    primary_out: &mut Vec<f32>,
+    derived_out: &mut Vec<f32>,
+) {
+    debug_assert!(row_offset + out_dim <= weight.rows);
+    debug_assert_eq!(primary_input_q.values.len(), weight.cols);
+    debug_assert_eq!(derived_input_q.values.len(), weight.cols);
+    primary_out.resize(out_dim, 0.0);
+    derived_out.resize(out_dim, 0.0);
+
+    if !paired_matrix_fusion_enabled() {
+        quantized_linear_part_with_input(
+            primary_input_q,
+            primary_scale,
+            weight,
+            bias,
+            row_offset,
+            out_dim,
+            primary_out,
+        );
+        quantized_linear_part_with_input(
+            derived_input_q,
+            derived_scale,
+            weight,
+            bias,
+            row_offset,
+            out_dim,
+            derived_out,
+        );
+        return;
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        // SAFETY: the paired helper checks complete eight-row tiles and vector
+        // bounds, then handles any remaining rows with checked single-row
+        // helpers. Each trajectory retains the original accumulation order.
+        unsafe {
+            quantized_linear_part_pair_wasm_simd128(
+                &primary_input_q.values,
+                primary_scale,
+                &derived_input_q.values,
+                derived_scale,
+                weight,
+                bias,
+                row_offset,
+                primary_out,
+                derived_out,
+            );
+        }
+        return;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        // SAFETY: the paired helper checks complete four-row tiles and vector
+        // bounds. On dot-product CPUs it loads each weight vector once for the
+        // two inputs; the fallback retains the established exact kernels.
+        unsafe {
+            quantized_linear_part_pair_aarch64(
+                primary_input_q,
+                primary_scale,
+                derived_input_q,
+                derived_scale,
+                weight,
+                bias,
+                row_offset,
+                primary_out,
+                derived_out,
+            );
+        }
+    }
+
+    #[cfg(all(
+        not(target_arch = "aarch64"),
+        not(all(target_arch = "wasm32", target_feature = "simd128"))
+    ))]
+    for row in 0..out_dim {
+        let source_row = row_offset + row;
+        let (primary_acc, derived_acc) = dot_i8_i16_pair_scalar(
+            weight.row(source_row),
+            &primary_input_q.values,
+            &derived_input_q.values,
+        );
+        let row_scale = weight.scales[source_row];
+        primary_out[row] = bias[source_row] + (primary_acc as f32) * primary_scale * row_scale;
+        derived_out[row] = bias[source_row] + (derived_acc as f32) * derived_scale * row_scale;
+    }
+}
+
+fn paired_matrix_fusion_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("BITNEEDLE_LM_DISABLE_PAIRED_FUSION").is_none())
 }
 
 fn quantized_linear_part_with_input(
@@ -651,6 +1228,79 @@ unsafe fn quantized_linear_part_aarch64(
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn quantized_linear_part_pair_aarch64(
+    primary_input_q: &mut QuantizedInputScratch,
+    primary_scale: f32,
+    derived_input_q: &mut QuantizedInputScratch,
+    derived_scale: f32,
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    row_offset: usize,
+    primary_out: &mut [f32],
+    derived_out: &mut [f32],
+) {
+    debug_assert_eq!(primary_out.len(), derived_out.len());
+    if !weight.use_dotprod {
+        quantized_linear_part_aarch64(
+            primary_input_q,
+            primary_scale,
+            weight,
+            bias,
+            row_offset,
+            primary_out,
+        );
+        quantized_linear_part_aarch64(
+            derived_input_q,
+            derived_scale,
+            weight,
+            bias,
+            row_offset,
+            derived_out,
+        );
+        return;
+    }
+
+    primary_input_q.prepare_dotprod();
+    derived_input_q.prepare_dotprod();
+    let mut row = 0_usize;
+    while row + 4 <= primary_out.len() {
+        let source_row = row_offset + row;
+        let (primary_accumulators, derived_accumulators) =
+            dot_i8_i16_4_rows_pair_dotprod_packed_aarch64(
+                &weight.weights,
+                &weight.row_sums,
+                source_row,
+                weight.cols,
+                &primary_input_q.dotprod_low,
+                &primary_input_q.dotprod_high,
+                &derived_input_q.dotprod_low,
+                &derived_input_q.dotprod_high,
+            );
+        for lane in 0..4 {
+            let output_row = source_row + lane;
+            let row_scale = weight.scales[output_row];
+            primary_out[row + lane] =
+                bias[output_row] + (primary_accumulators[lane] as f32) * primary_scale * row_scale;
+            derived_out[row + lane] =
+                bias[output_row] + (derived_accumulators[lane] as f32) * derived_scale * row_scale;
+        }
+        row += 4;
+    }
+
+    while row < primary_out.len() {
+        let source_row = row_offset + row;
+        let weights = weight.row(source_row);
+        let primary_acc = dot_i8_i16_aarch64(weights, &primary_input_q.values);
+        let derived_acc = dot_i8_i16_aarch64(weights, &derived_input_q.values);
+        let row_scale = weight.scales[source_row];
+        primary_out[row] = bias[source_row] + (primary_acc as f32) * primary_scale * row_scale;
+        derived_out[row] = bias[source_row] + (derived_acc as f32) * derived_scale * row_scale;
+        row += 1;
+    }
+}
+
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 #[target_feature(enable = "simd128")]
 unsafe fn quantized_linear_part_wasm_simd128(
@@ -678,6 +1328,54 @@ unsafe fn quantized_linear_part_wasm_simd128(
         let source_row = row_offset + row;
         let acc = dot_i8_i16_wasm_simd128(weight.row(source_row), input_q);
         out[row] = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+        row += 1;
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "simd128")]
+unsafe fn quantized_linear_part_pair_wasm_simd128(
+    primary_input: &[i16],
+    primary_scale: f32,
+    derived_input: &[i16],
+    derived_scale: f32,
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    row_offset: usize,
+    primary_out: &mut [f32],
+    derived_out: &mut [f32],
+) {
+    debug_assert_eq!(primary_out.len(), derived_out.len());
+    let mut row = 0_usize;
+    while row + 8 <= primary_out.len() {
+        let source_row = row_offset + row;
+        let (primary_accumulators, derived_accumulators) = dot_i8_i16_8_rows_pair_wasm_simd128(
+            &weight.weights,
+            source_row,
+            weight.cols,
+            primary_input,
+            derived_input,
+        );
+        for lane in 0..8 {
+            let output_row = source_row + lane;
+            let row_scale = weight.scales[output_row];
+            primary_out[row + lane] =
+                bias[output_row] + (primary_accumulators[lane] as f32) * primary_scale * row_scale;
+            derived_out[row + lane] =
+                bias[output_row] + (derived_accumulators[lane] as f32) * derived_scale * row_scale;
+        }
+        row += 8;
+    }
+
+    while row < primary_out.len() {
+        let source_row = row_offset + row;
+        let weights = weight.row(source_row);
+        let primary_acc = dot_i8_i16_wasm_simd128(weights, primary_input);
+        let derived_acc = dot_i8_i16_wasm_simd128(weights, derived_input);
+        let row_scale = weight.scales[source_row];
+        primary_out[row] = bias[source_row] + (primary_acc as f32) * primary_scale * row_scale;
+        derived_out[row] = bias[source_row] + (derived_acc as f32) * derived_scale * row_scale;
         row += 1;
     }
 }
@@ -743,6 +1441,25 @@ fn dot_i8_i16_scalar(weights: &[i8], input: &[i16]) -> i64 {
         acc += (*w as i64) * (*x as i64);
     }
     acc
+}
+
+#[cfg_attr(
+    any(
+        target_arch = "aarch64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ),
+    allow(dead_code)
+)]
+fn dot_i8_i16_pair_scalar(weights: &[i8], primary: &[i16], derived: &[i16]) -> (i64, i64) {
+    debug_assert_eq!(weights.len(), primary.len());
+    debug_assert_eq!(weights.len(), derived.len());
+    let mut primary_acc = 0_i64;
+    let mut derived_acc = 0_i64;
+    for ((weight, primary), derived) in weights.iter().zip(primary).zip(derived) {
+        primary_acc += (*weight as i64) * (*primary as i64);
+        derived_acc += (*weight as i64) * (*derived as i64);
+    }
+    (primary_acc, derived_acc)
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -858,6 +1575,149 @@ unsafe fn dot_i8_i16_8_rows_wasm_simd128(
         index += 1;
     }
     accumulators
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn dot_i8_i16_8_rows_pair_wasm_simd128(
+    weights: &[i8],
+    first_row: usize,
+    cols: usize,
+    primary: &[i16],
+    derived: &[i16],
+) -> ([i64; 8], [i64; 8]) {
+    use core::arch::wasm32::{
+        i16x8_extend_low_i8x16, i32x4_add, i32x4_dot_i16x8, i32x4_splat, v128_load,
+        v128_load64_zero,
+    };
+
+    const VECTORS_PER_FLUSH: usize = 128;
+
+    debug_assert_eq!(primary.len(), cols);
+    debug_assert_eq!(derived.len(), cols);
+    debug_assert!((first_row + 8) * cols <= weights.len());
+
+    let row0 = weights.as_ptr().add(first_row * cols);
+    let row1 = row0.add(cols);
+    let row2 = row1.add(cols);
+    let row3 = row2.add(cols);
+    let row4 = row3.add(cols);
+    let row5 = row4.add(cols);
+    let row6 = row5.add(cols);
+    let row7 = row6.add(cols);
+    let mut primary0 = i32x4_splat(0);
+    let mut primary1 = i32x4_splat(0);
+    let mut primary2 = i32x4_splat(0);
+    let mut primary3 = i32x4_splat(0);
+    let mut primary4 = i32x4_splat(0);
+    let mut primary5 = i32x4_splat(0);
+    let mut primary6 = i32x4_splat(0);
+    let mut primary7 = i32x4_splat(0);
+    let mut derived0 = i32x4_splat(0);
+    let mut derived1 = i32x4_splat(0);
+    let mut derived2 = i32x4_splat(0);
+    let mut derived3 = i32x4_splat(0);
+    let mut derived4 = i32x4_splat(0);
+    let mut derived5 = i32x4_splat(0);
+    let mut derived6 = i32x4_splat(0);
+    let mut derived7 = i32x4_splat(0);
+    let mut primary_accumulators = [0_i64; 8];
+    let mut derived_accumulators = [0_i64; 8];
+    let mut index = 0_usize;
+    let mut vectors = 0_usize;
+
+    macro_rules! flush {
+        () => {{
+            add_wasm_i32x4_lanes(primary0, &mut primary_accumulators[0]);
+            add_wasm_i32x4_lanes(primary1, &mut primary_accumulators[1]);
+            add_wasm_i32x4_lanes(primary2, &mut primary_accumulators[2]);
+            add_wasm_i32x4_lanes(primary3, &mut primary_accumulators[3]);
+            add_wasm_i32x4_lanes(primary4, &mut primary_accumulators[4]);
+            add_wasm_i32x4_lanes(primary5, &mut primary_accumulators[5]);
+            add_wasm_i32x4_lanes(primary6, &mut primary_accumulators[6]);
+            add_wasm_i32x4_lanes(primary7, &mut primary_accumulators[7]);
+            add_wasm_i32x4_lanes(derived0, &mut derived_accumulators[0]);
+            add_wasm_i32x4_lanes(derived1, &mut derived_accumulators[1]);
+            add_wasm_i32x4_lanes(derived2, &mut derived_accumulators[2]);
+            add_wasm_i32x4_lanes(derived3, &mut derived_accumulators[3]);
+            add_wasm_i32x4_lanes(derived4, &mut derived_accumulators[4]);
+            add_wasm_i32x4_lanes(derived5, &mut derived_accumulators[5]);
+            add_wasm_i32x4_lanes(derived6, &mut derived_accumulators[6]);
+            add_wasm_i32x4_lanes(derived7, &mut derived_accumulators[7]);
+            primary0 = i32x4_splat(0);
+            primary1 = i32x4_splat(0);
+            primary2 = i32x4_splat(0);
+            primary3 = i32x4_splat(0);
+            primary4 = i32x4_splat(0);
+            primary5 = i32x4_splat(0);
+            primary6 = i32x4_splat(0);
+            primary7 = i32x4_splat(0);
+            derived0 = i32x4_splat(0);
+            derived1 = i32x4_splat(0);
+            derived2 = i32x4_splat(0);
+            derived3 = i32x4_splat(0);
+            derived4 = i32x4_splat(0);
+            derived5 = i32x4_splat(0);
+            derived6 = i32x4_splat(0);
+            derived7 = i32x4_splat(0);
+            vectors = 0;
+        }};
+    }
+
+    while index + 8 <= cols {
+        let primary_input = v128_load(primary.as_ptr().add(index).cast());
+        let derived_input = v128_load(derived.as_ptr().add(index).cast());
+        macro_rules! accumulate {
+            ($row:expr, $primary:ident, $derived:ident) => {{
+                let packed =
+                    i16x8_extend_low_i8x16(v128_load64_zero($row.add(index).cast::<u64>()));
+                $primary = i32x4_add($primary, i32x4_dot_i16x8(packed, primary_input));
+                $derived = i32x4_add($derived, i32x4_dot_i16x8(packed, derived_input));
+            }};
+        }
+        accumulate!(row0, primary0, derived0);
+        accumulate!(row1, primary1, derived1);
+        accumulate!(row2, primary2, derived2);
+        accumulate!(row3, primary3, derived3);
+        accumulate!(row4, primary4, derived4);
+        accumulate!(row5, primary5, derived5);
+        accumulate!(row6, primary6, derived6);
+        accumulate!(row7, primary7, derived7);
+        vectors += 1;
+        index += 8;
+        if vectors == VECTORS_PER_FLUSH {
+            flush!();
+        }
+    }
+    add_wasm_i32x4_lanes(primary0, &mut primary_accumulators[0]);
+    add_wasm_i32x4_lanes(primary1, &mut primary_accumulators[1]);
+    add_wasm_i32x4_lanes(primary2, &mut primary_accumulators[2]);
+    add_wasm_i32x4_lanes(primary3, &mut primary_accumulators[3]);
+    add_wasm_i32x4_lanes(primary4, &mut primary_accumulators[4]);
+    add_wasm_i32x4_lanes(primary5, &mut primary_accumulators[5]);
+    add_wasm_i32x4_lanes(primary6, &mut primary_accumulators[6]);
+    add_wasm_i32x4_lanes(primary7, &mut primary_accumulators[7]);
+    add_wasm_i32x4_lanes(derived0, &mut derived_accumulators[0]);
+    add_wasm_i32x4_lanes(derived1, &mut derived_accumulators[1]);
+    add_wasm_i32x4_lanes(derived2, &mut derived_accumulators[2]);
+    add_wasm_i32x4_lanes(derived3, &mut derived_accumulators[3]);
+    add_wasm_i32x4_lanes(derived4, &mut derived_accumulators[4]);
+    add_wasm_i32x4_lanes(derived5, &mut derived_accumulators[5]);
+    add_wasm_i32x4_lanes(derived6, &mut derived_accumulators[6]);
+    add_wasm_i32x4_lanes(derived7, &mut derived_accumulators[7]);
+
+    while index < cols {
+        let primary_value = *primary.get_unchecked(index) as i64;
+        let derived_value = *derived.get_unchecked(index) as i64;
+        let rows = [row0, row1, row2, row3, row4, row5, row6, row7];
+        for row in 0..8 {
+            let weight = *rows[row].add(index) as i64;
+            primary_accumulators[row] += weight * primary_value;
+            derived_accumulators[row] += weight * derived_value;
+        }
+        index += 1;
+    }
+    (primary_accumulators, derived_accumulators)
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -1223,6 +2083,155 @@ unsafe fn dot_i8_i16_8_rows_dotprod_packed_aarch64(
     accumulators
 }
 
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_i8_i16_4_rows_pair_dotprod_packed_aarch64(
+    weights: &[i8],
+    row_sums: &[i32],
+    first_row: usize,
+    cols: usize,
+    primary_low: &[i8],
+    primary_high: &[i8],
+    derived_low: &[i8],
+    derived_high: &[i8],
+) -> ([i64; 4], [i64; 4]) {
+    use core::arch::aarch64::{vcombine_s8, vdup_n_s8, vdupq_n_s32, vld1_s8, vld1q_s8};
+
+    debug_assert_eq!(primary_low.len(), cols);
+    debug_assert_eq!(primary_high.len(), cols);
+    debug_assert_eq!(derived_low.len(), cols);
+    debug_assert_eq!(derived_high.len(), cols);
+    debug_assert!((first_row + 4) * cols <= weights.len());
+    debug_assert!(first_row + 4 <= row_sums.len());
+
+    let row0 = weights.as_ptr().add(first_row * cols);
+    let row1 = row0.add(cols);
+    let row2 = row1.add(cols);
+    let row3 = row2.add(cols);
+    let mut primary_low_acc = [vdupq_n_s32(0); 4];
+    let mut primary_high_acc = [vdupq_n_s32(0); 4];
+    let mut derived_low_acc = [vdupq_n_s32(0); 4];
+    let mut derived_high_acc = [vdupq_n_s32(0); 4];
+    let zero_i8x8 = vdup_n_s8(0);
+    let mut index = 0_usize;
+
+    macro_rules! accumulate_row {
+        ($lane:expr, $row:expr, $primary_low_input:expr, $primary_high_input:expr, $derived_low_input:expr, $derived_high_input:expr) => {{
+            let packed = vld1q_s8($row.add(index));
+            primary_low_acc[$lane] =
+                dotprod_accumulate_aarch64(primary_low_acc[$lane], packed, $primary_low_input);
+            primary_high_acc[$lane] =
+                dotprod_accumulate_aarch64(primary_high_acc[$lane], packed, $primary_high_input);
+            derived_low_acc[$lane] =
+                dotprod_accumulate_aarch64(derived_low_acc[$lane], packed, $derived_low_input);
+            derived_high_acc[$lane] =
+                dotprod_accumulate_aarch64(derived_high_acc[$lane], packed, $derived_high_input);
+        }};
+    }
+
+    while index + 16 <= cols {
+        let primary_low_input = vld1q_s8(primary_low.as_ptr().add(index));
+        let primary_high_input = vld1q_s8(primary_high.as_ptr().add(index));
+        let derived_low_input = vld1q_s8(derived_low.as_ptr().add(index));
+        let derived_high_input = vld1q_s8(derived_high.as_ptr().add(index));
+        accumulate_row!(
+            0,
+            row0,
+            primary_low_input,
+            primary_high_input,
+            derived_low_input,
+            derived_high_input
+        );
+        accumulate_row!(
+            1,
+            row1,
+            primary_low_input,
+            primary_high_input,
+            derived_low_input,
+            derived_high_input
+        );
+        accumulate_row!(
+            2,
+            row2,
+            primary_low_input,
+            primary_high_input,
+            derived_low_input,
+            derived_high_input
+        );
+        accumulate_row!(
+            3,
+            row3,
+            primary_low_input,
+            primary_high_input,
+            derived_low_input,
+            derived_high_input
+        );
+        index += 16;
+    }
+
+    if index + 8 <= cols {
+        let primary_low_input = vcombine_s8(vld1_s8(primary_low.as_ptr().add(index)), zero_i8x8);
+        let primary_high_input = vcombine_s8(vld1_s8(primary_high.as_ptr().add(index)), zero_i8x8);
+        let derived_low_input = vcombine_s8(vld1_s8(derived_low.as_ptr().add(index)), zero_i8x8);
+        let derived_high_input = vcombine_s8(vld1_s8(derived_high.as_ptr().add(index)), zero_i8x8);
+
+        macro_rules! accumulate_half_row {
+            ($lane:expr, $row:expr) => {{
+                let packed = vcombine_s8(vld1_s8($row.add(index)), zero_i8x8);
+                primary_low_acc[$lane] =
+                    dotprod_accumulate_aarch64(primary_low_acc[$lane], packed, primary_low_input);
+                primary_high_acc[$lane] =
+                    dotprod_accumulate_aarch64(primary_high_acc[$lane], packed, primary_high_input);
+                derived_low_acc[$lane] =
+                    dotprod_accumulate_aarch64(derived_low_acc[$lane], packed, derived_low_input);
+                derived_high_acc[$lane] =
+                    dotprod_accumulate_aarch64(derived_high_acc[$lane], packed, derived_high_input);
+            }};
+        }
+        accumulate_half_row!(0, row0);
+        accumulate_half_row!(1, row1);
+        accumulate_half_row!(2, row2);
+        accumulate_half_row!(3, row3);
+        index += 8;
+    }
+
+    let vector_end = index;
+    let rows = [row0, row1, row2, row3];
+    let mut tail_weight_sums = [0_i32; 4];
+    let mut primary_accumulators = [0_i64; 4];
+    let mut derived_accumulators = [0_i64; 4];
+    while index < cols {
+        let primary_value = *primary_low.get_unchecked(index) as i64
+            + 128
+            + 256 * *primary_high.get_unchecked(index) as i64;
+        let derived_value = *derived_low.get_unchecked(index) as i64
+            + 128
+            + 256 * *derived_high.get_unchecked(index) as i64;
+        for row in 0..4 {
+            let weight = *rows[row].add(index);
+            tail_weight_sums[row] += weight as i32;
+            primary_accumulators[row] += weight as i64 * primary_value;
+            derived_accumulators[row] += weight as i64 * derived_value;
+        }
+        index += 1;
+    }
+
+    debug_assert_eq!(vector_end, cols - (cols % 8));
+    for row in 0..4 {
+        let vector_weight_sum = row_sums[first_row + row] - tail_weight_sums[row];
+        primary_accumulators[row] +=
+            sum_aarch64_i32x4_pair(primary_low_acc[row], primary_high_acc[row])
+                + 255 * core::arch::aarch64::vaddvq_s32(primary_high_acc[row]) as i64
+                + 128 * vector_weight_sum as i64;
+        derived_accumulators[row] +=
+            sum_aarch64_i32x4_pair(derived_low_acc[row], derived_high_acc[row])
+                + 255 * core::arch::aarch64::vaddvq_s32(derived_high_acc[row]) as i64
+                + 128 * vector_weight_sum as i64;
+    }
+    (primary_accumulators, derived_accumulators)
+}
+
 #[cfg(all(target_arch = "aarch64", test))]
 #[target_feature(enable = "dotprod")]
 unsafe fn dot_i8_i16_8_rows_dotprod_aarch64(
@@ -1432,6 +2441,179 @@ fn aarch64_dotprod_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paired_full_and_prefix_steps_match_independent_models_bit_for_bit() -> Result<()> {
+        fn load_weights(dir: &std::path::Path) -> Result<QuantizedLmWeights> {
+            let metadata: OnnxFrameBundleMetadata =
+                serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json"))?)?;
+            let name = metadata
+                .lm_quant_weight_model
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("fixture has no q8 LM weights"))?;
+            QuantizedLmWeights::from_bytes(&std::fs::read(dir.join(name))?)
+        }
+
+        for profile in [1333, 1800] {
+            let full_dir =
+                std::path::PathBuf::from(format!("onnx-bundles/encodec_48khz_12kbps_{profile}ms"));
+            let derived_dir =
+                std::path::PathBuf::from(format!("onnx-bundles/encodec_48khz_6kbps_{profile}ms"));
+            if !full_dir.exists() || !derived_dir.exists() {
+                eprintln!(
+                    "skipping paired LM fixture test; download both {profile} ms q8 bundles first"
+                );
+                continue;
+            }
+
+            let full_weights = load_weights(&full_dir)?;
+            let derived_weights = load_weights(&derived_dir)?;
+            full_weights.validate_prefix_compatible(&derived_weights)?;
+            let mut independent_full = QuantizedLm::new(full_weights.clone());
+            let mut independent_derived = QuantizedLm::new(derived_weights);
+            let mut paired = QuantizedLm::new(full_weights);
+            let mut independent_full_state = independent_full.initial_state();
+            let mut independent_derived_state = independent_derived.initial_state();
+            let mut paired_full_state = paired.initial_state();
+            let mut paired_derived_state = paired.initial_state();
+
+            for step in 0..16 {
+                let primary_symbols = (0..8)
+                    .map(|codebook| (step * 17 + codebook * 31 + 1) % 1025)
+                    .collect::<Vec<_>>();
+                let derived_symbols = primary_symbols[..4].to_vec();
+                let expected_full =
+                    independent_full.forward_step(&mut independent_full_state, &primary_symbols)?;
+                let expected_derived = independent_derived
+                    .forward_step(&mut independent_derived_state, &derived_symbols)?;
+                let (actual_full, actual_derived) = paired.forward_step_pair_borrowed(
+                    &mut paired_full_state,
+                    &primary_symbols,
+                    &mut paired_derived_state,
+                    &derived_symbols,
+                )?;
+                assert_eq!(
+                    actual_full, expected_full,
+                    "primary differs for {profile} ms at step {step}"
+                );
+                assert_eq!(
+                    actual_derived, expected_derived,
+                    "derived differs for {profile} ms at step {step}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn benchmark_paired_lm_when_requested() -> Result<()> {
+        if std::env::var_os("BITNEEDLE_LM_PAIR_BENCH").is_none() {
+            eprintln!("skipping paired LM benchmark; set BITNEEDLE_LM_PAIR_BENCH=1");
+            return Ok(());
+        }
+
+        fn load_weights(dir: &std::path::Path) -> Result<QuantizedLmWeights> {
+            let metadata: OnnxFrameBundleMetadata =
+                serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json"))?)?;
+            let name = metadata
+                .lm_quant_weight_model
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("fixture has no q8 LM weights"))?;
+            QuantizedLmWeights::from_bytes(&std::fs::read(dir.join(name))?)
+        }
+
+        fn symbols(step: usize, codebooks: usize) -> Vec<usize> {
+            (0..codebooks)
+                .map(|codebook| (step * 17 + codebook * 31 + 7) % 1025)
+                .collect()
+        }
+
+        fn run_separate(
+            primary: &mut QuantizedLm,
+            derived: &mut QuantizedLm,
+            frame_length: usize,
+        ) -> Result<(std::time::Duration, u64)> {
+            let mut primary_state = primary.initial_state();
+            let mut derived_state = derived.initial_state();
+            let started = std::time::Instant::now();
+            let mut checksum = 0_u64;
+            for step in 0..frame_length {
+                let logits =
+                    primary.forward_step_borrowed(&mut primary_state, &symbols(step, 8))?;
+                checksum ^= logits[step % logits.len()].to_bits() as u64;
+            }
+            for step in 0..frame_length {
+                let logits =
+                    derived.forward_step_borrowed(&mut derived_state, &symbols(step, 4))?;
+                checksum ^= (logits[step % logits.len()].to_bits() as u64).rotate_left(7);
+            }
+            Ok((started.elapsed(), checksum))
+        }
+
+        fn run_paired(
+            lm: &mut QuantizedLm,
+            frame_length: usize,
+        ) -> Result<(std::time::Duration, u64)> {
+            let mut primary_state = lm.initial_state();
+            let mut derived_state = lm.initial_state();
+            let started = std::time::Instant::now();
+            let mut checksum = 0_u64;
+            for step in 0..frame_length {
+                let primary_symbols = symbols(step, 8);
+                let (primary_logits, derived_logits) = lm.forward_step_pair_borrowed(
+                    &mut primary_state,
+                    &primary_symbols,
+                    &mut derived_state,
+                    &primary_symbols[..4],
+                )?;
+                checksum ^= primary_logits[step % primary_logits.len()].to_bits() as u64;
+                checksum ^=
+                    (derived_logits[step % derived_logits.len()].to_bits() as u64).rotate_left(7);
+            }
+            Ok((started.elapsed(), checksum))
+        }
+
+        for profile in [1333, 1800] {
+            let root = std::path::Path::new("onnx-bundles");
+            let primary_weights =
+                load_weights(&root.join(format!("encodec_48khz_12kbps_{profile}ms")))?;
+            let derived_weights =
+                load_weights(&root.join(format!("encodec_48khz_6kbps_{profile}ms")))?;
+            let frame_length = primary_weights.frame_length;
+            let mut primary = QuantizedLm::new(primary_weights.clone());
+            let mut derived = QuantizedLm::new(derived_weights);
+            let mut paired = QuantizedLm::new(primary_weights);
+            run_separate(&mut primary, &mut derived, frame_length)?;
+            run_paired(&mut paired, frame_length)?;
+            let mut separate_ms = Vec::new();
+            let mut paired_ms = Vec::new();
+            for round in 0..7 {
+                let (separate, separate_sum, paired_time, paired_sum) = if round % 2 == 0 {
+                    let (separate, separate_sum) =
+                        run_separate(&mut primary, &mut derived, frame_length)?;
+                    let (paired_time, paired_sum) = run_paired(&mut paired, frame_length)?;
+                    (separate, separate_sum, paired_time, paired_sum)
+                } else {
+                    let (paired_time, paired_sum) = run_paired(&mut paired, frame_length)?;
+                    let (separate, separate_sum) =
+                        run_separate(&mut primary, &mut derived, frame_length)?;
+                    (separate, separate_sum, paired_time, paired_sum)
+                };
+                assert_eq!(separate_sum, paired_sum);
+                separate_ms.push(separate.as_secs_f64() * 1_000.0);
+                paired_ms.push(paired_time.as_secs_f64() * 1_000.0);
+            }
+            separate_ms.sort_by(f64::total_cmp);
+            paired_ms.sort_by(f64::total_cmp);
+            let separate_median = separate_ms[separate_ms.len() / 2];
+            let paired_median = paired_ms[paired_ms.len() / 2];
+            eprintln!(
+                "paired_lm_benchmark profile_ms={profile} separate_ms={separate_median:.3} paired_ms={paired_median:.3} speedup={:.3}",
+                separate_median / paired_median,
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn reset_state_reuses_cache_storage_and_matches_a_fresh_state() -> Result<()> {

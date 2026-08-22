@@ -117,6 +117,25 @@ Call `prewarm(frameBatchSize:)` before the first timed operation.
 
 Use the same batch size for prewarm and normal operation.
 
+Apple callers can request a canonical 6 kbps ECDC alongside 12 kbps with
+`encodeEcdcOutputs(..., derived6KBundleURL:)`. The neural encoder runs once;
+Rust then retains one 12 kbps LM weight set, advances two independent LM
+states, and fuses their shared matrix reads. Both files are byte-identical to
+separate canonical encodes. Omitting the optional bundle takes the unchanged
+single-output path. This is an optional two-file optimization, not a new
+layered bitstream. Measurements are in [`apple/README.md`](apple/README.md).
+
+The WASM entropy API exposes the same paired path as
+`QuantizedLmPairedChunkEncoder`. It validates that the supplied lower-rate LM
+is an exact weight prefix before using the primary weights for both states.
+Compared with the preceding generated bundle, the paired export adds 30,559
+bytes across raw WASM and JavaScript, 10,279 bytes with gzip, or 7,032 bytes
+with Brotli. Model assets are unchanged.
+
+A directly extractable layered 12/6 kbps format requires a base-first entropy
+model rather than a container-only change. The measured constraints and gated
+design are in [`docs/scalable-ecdc-design.md`](docs/scalable-ecdc-design.md).
+
 Fixed-context in-memory decoding writes borrowed MLX windows directly to the final interleaved PCM buffer.
 
 Fixed-context file decoding writes the same windows directly to planar PCM.

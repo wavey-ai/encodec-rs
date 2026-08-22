@@ -17,6 +17,12 @@ Rust keeps ECDC and language-model coding deterministic across native and browse
 
 The in-memory API encodes and decodes complete ECDC files.
 
+`encodeEcdcOutputs(..., derived6KBundleURL:)` optionally returns canonical
+12 kbps and 6 kbps files from one neural encoder pass. The entropy stage keeps
+two deterministic nonlinear states but retains only the 12 kbps weights,
+shares the first-four-codebook embedding sum, and uses paired AArch64 matrix
+kernels. Passing no 6 kbps bundle preserves the ordinary single-output path.
+
 A streaming encoder writes progressive output to disk.
 
 Fixed-context in-memory decoding writes borrowed MLX windows directly to final interleaved PCM.
@@ -107,3 +113,55 @@ BITNEEDLE_MLX_BENCH_BATCH_SIZE=1 \
 BITNEEDLE_MLX_BENCH_OUT="../target/mlx-bench-current" \
 swift test --filter EncodecMLXRuntimeTests/testBenchmarkNativeMLXEcdcRoundtrip
 ```
+
+## Benchmark optional 6 kbps output
+
+```sh
+cd apple
+BITNEEDLE_MLX_DUAL_BENCH=1 \
+BITNEEDLE_MLX_BENCH_WAV="/path/to/48khz-stereo.wav" \
+BITNEEDLE_MLX_DUAL_PROFILE_MS=1333 \
+BITNEEDLE_MLX_BENCH_BATCH_SIZE=8 \
+swift test -c release \
+  --filter EncodecMLXRuntimeTests/testBenchmarkOptionalDerivedSixKbpsEncode
+```
+
+The original, unfused implementation produced byte-identical corresponding
+outputs for the 227.863-second Lori master in all conditions:
+
+| Profile | Mode | Wall time | RTFx | 12k bytes | 6k bytes |
+|---|---|---:|---:|---:|---:|
+| 1333 ms | 12k only | 33.512 s | 6.799× | 296,596 | — |
+| 1333 ms | 12k + derived 6k | 45.417 s | 5.017× | 296,596 | 145,906 |
+| 1333 ms | Separate 12k then 6k | 45.902 s | 4.964× | 296,596 | 145,906 |
+| 1800 ms | 12k only | 37.923 s | 6.009× | 294,319 | — |
+| 1800 ms | 12k + derived 6k | 58.532 s | 3.893× | 294,319 | 144,521 |
+| 1800 ms | Separate 12k then 6k | 53.452 s | 4.263× | 294,319 | 144,521 |
+
+These are single ordered full-track trials, not acceptance medians. The 1333 ms
+dual path was 1.1% faster than separate encodes; the 1800 ms result was 9.5%
+slower and demonstrates that host load and ordering can outweigh the avoided
+neural pass. Use randomized repeated trials for performance decisions.
+
+The retained experiment now uses one weight set and fused two-input matrix
+kernels. Exact-output tests cover both profiles. A four-second end-to-end probe
+on Apple Silicon measured 3.116 s for 12k only, 4.534 s for the paired 12k+6k
+path, and 6.999 s for two separate encodes: 1.54× faster than separate output
+generation in that ordered run. This is a directional probe, not a quiet-host
+acceptance result.
+
+Randomized LM-only trials on the currently contended development host found:
+
+| Runtime | 1333 ms paired vs separate LM | 1800 ms paired vs separate LM |
+|---|---:|---:|
+| AArch64 | 1.04–1.18× | approximately 1.00–1.07× |
+| WASM SIMD in Node | approximately 0.98–1.06× | approximately 0.98–1.07× |
+
+WASM timings moved by more than the paired/separate difference as host load
+changed, so they establish parity rather than a stable kernel speedup. The
+larger end-to-end saving comes from avoiding the second neural encode. The
+paired runtime also avoids retaining the 6 kbps LM weight file, saving
+6,861,604 bytes (6.54 MiB) of steady-state weight memory.
+
+The scalable-container feasibility analysis is documented in
+[`../docs/scalable-ecdc-design.md`](../docs/scalable-ecdc-design.md).

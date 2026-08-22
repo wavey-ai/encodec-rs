@@ -38,6 +38,13 @@ struct LmEcdcChunks {
     chunks: Vec<LmEcdcChunk>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairedLmPayloads {
+    primary: Vec<u8>,
+    derived: Vec<u8>,
+}
+
 #[wasm_bindgen(js_name = fixedEcdcBundleName)]
 pub fn fixed_ecdc_bundle_name_js(
     bandwidth_kbps: JsValue,
@@ -436,6 +443,216 @@ impl QuantizedLmChunkEncoder {
         out.extend_from_slice(&self.encoder.finish());
         out
     }
+}
+
+/// Encodes a full-rate chunk and its codebook-prefix chunk with one retained
+/// q8 weight set and two exact LM states.
+#[wasm_bindgen]
+pub struct QuantizedLmPairedChunkEncoder {
+    primary_meta: OnnxFrameBundleMetadata,
+    derived_meta: OnnxFrameBundleMetadata,
+    lm: QuantizedLm,
+    primary_state: QuantizedLmState,
+    derived_state: QuantizedLmState,
+    lm_window_frame_length: usize,
+    primary_input: Vec<usize>,
+    derived_input: Vec<usize>,
+    primary_encoder: ArithmeticEncoder,
+    derived_encoder: ArithmeticEncoder,
+    primary_probability: ProbabilityScratch,
+    derived_probability: ProbabilityScratch,
+    primary_cdf: CdfScratch,
+    derived_cdf: CdfScratch,
+    primary_prefix: Vec<u8>,
+    derived_prefix: Vec<u8>,
+    pushed_steps: usize,
+}
+
+#[wasm_bindgen]
+impl QuantizedLmPairedChunkEncoder {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        primary_bundle_json: &str,
+        derived_bundle_json: &str,
+        primary_weights: &[u8],
+        derived_weights: &[u8],
+        scale: f32,
+    ) -> Result<QuantizedLmPairedChunkEncoder, JsValue> {
+        let primary_meta = parse_bundle(primary_bundle_json)?;
+        let derived_meta = parse_bundle(derived_bundle_json)?;
+        validate_lm_metadata(&primary_meta).map_err(to_js_error)?;
+        validate_lm_metadata(&derived_meta).map_err(to_js_error)?;
+        validate_paired_lm_metadata(&primary_meta, &derived_meta).map_err(to_js_error)?;
+        let primary_weights =
+            QuantizedLmWeights::from_bytes(primary_weights).map_err(to_js_error)?;
+        let derived_weights =
+            QuantizedLmWeights::from_bytes(derived_weights).map_err(to_js_error)?;
+        primary_weights
+            .validate_for_metadata(&primary_meta)
+            .map_err(to_js_error)?;
+        derived_weights
+            .validate_for_metadata(&derived_meta)
+            .map_err(to_js_error)?;
+        primary_weights
+            .validate_prefix_compatible(&derived_weights)
+            .map_err(to_js_error)?;
+        let lm_window_frame_length = primary_weights.frame_length.max(1);
+        let lm = QuantizedLm::new(primary_weights);
+        let primary_state = lm.initial_state();
+        let derived_state = lm.initial_state();
+        let mut primary_prefix = Vec::new();
+        let mut derived_prefix = Vec::new();
+        if primary_meta.normalize {
+            let bytes = scale.to_be_bytes();
+            primary_prefix.extend_from_slice(&bytes);
+            derived_prefix.extend_from_slice(&bytes);
+        }
+        Ok(Self {
+            primary_input: vec![0; primary_meta.num_codebooks],
+            derived_input: vec![0; derived_meta.num_codebooks],
+            primary_meta,
+            derived_meta,
+            lm,
+            primary_state,
+            derived_state,
+            lm_window_frame_length,
+            primary_encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)
+                .map_err(to_js_error)?,
+            derived_encoder: ArithmeticEncoder::new(ARITHMETIC_TOTAL_RANGE_BITS)
+                .map_err(to_js_error)?,
+            primary_probability: ProbabilityScratch::default(),
+            derived_probability: ProbabilityScratch::default(),
+            primary_cdf: CdfScratch::default(),
+            derived_cdf: CdfScratch::default(),
+            primary_prefix,
+            derived_prefix,
+            pushed_steps: 0,
+        })
+    }
+
+    #[wasm_bindgen(js_name = lmWindowFrameLength)]
+    pub fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
+    }
+
+    pub fn push(&mut self, codes: &[u16]) -> Result<(), JsValue> {
+        if self.pushed_steps >= self.lm_window_frame_length {
+            return Err(to_js_error(format!(
+                "chunk exceeds LM positional capacity {}",
+                self.lm_window_frame_length
+            )));
+        }
+        let primary_symbols = symbols_from_codes(codes, &self.primary_meta).map_err(to_js_error)?;
+        let derived_symbols = &primary_symbols[..self.derived_meta.num_codebooks];
+        let (primary_logits, derived_logits) = self
+            .lm
+            .forward_step_pair_borrowed(
+                &mut self.primary_state,
+                &self.primary_input,
+                &mut self.derived_state,
+                &self.derived_input,
+            )
+            .map_err(to_js_error)?;
+        let primary_pdf = probability_columns_from_flat_logits(
+            primary_logits,
+            self.primary_meta.lm_cardinality(),
+            self.primary_meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: 1.0,
+                logit_step: self.primary_meta.lm_entropy_logit_step(),
+                fp_scale: DEFAULT_FP_SCALE,
+            },
+            &mut self.primary_probability,
+        )
+        .map_err(to_js_error)?;
+        let derived_pdf = probability_columns_from_flat_logits(
+            derived_logits,
+            self.derived_meta.lm_cardinality(),
+            self.derived_meta.num_codebooks,
+            1,
+            ProbabilityParameters {
+                tau: 1.0,
+                logit_step: self.derived_meta.lm_entropy_logit_step(),
+                fp_scale: DEFAULT_FP_SCALE,
+            },
+            &mut self.derived_probability,
+        )
+        .map_err(to_js_error)?;
+        self.primary_encoder
+            .push_valid_pdf_symbols_with_scratch(
+                primary_pdf,
+                self.primary_meta.lm_cardinality(),
+                self.primary_meta.num_codebooks,
+                &primary_symbols,
+                DEFAULT_FP_SCALE,
+                DEFAULT_MIN_RANGE,
+                &mut self.primary_cdf,
+            )
+            .map_err(to_js_error)?;
+        self.derived_encoder
+            .push_valid_pdf_symbols_with_scratch(
+                derived_pdf,
+                self.derived_meta.lm_cardinality(),
+                self.derived_meta.num_codebooks,
+                derived_symbols,
+                DEFAULT_FP_SCALE,
+                DEFAULT_MIN_RANGE,
+                &mut self.derived_cdf,
+            )
+            .map_err(to_js_error)?;
+        for (dst, symbol) in self
+            .primary_input
+            .iter_mut()
+            .zip(primary_symbols.iter().copied())
+        {
+            *dst = symbol + 1;
+        }
+        for (dst, symbol) in self
+            .derived_input
+            .iter_mut()
+            .zip(derived_symbols.iter().copied())
+        {
+            *dst = symbol + 1;
+        }
+        self.pushed_steps += 1;
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<JsValue, JsValue> {
+        let mut primary = std::mem::take(&mut self.primary_prefix);
+        primary.extend_from_slice(&self.primary_encoder.finish());
+        let mut derived = std::mem::take(&mut self.derived_prefix);
+        derived.extend_from_slice(&self.derived_encoder.finish());
+        to_js_value(&PairedLmPayloads { primary, derived })
+    }
+}
+
+fn validate_paired_lm_metadata(
+    primary: &OnnxFrameBundleMetadata,
+    derived: &OnnxFrameBundleMetadata,
+) -> anyhow::Result<()> {
+    if derived.num_codebooks >= primary.num_codebooks {
+        anyhow::bail!(
+            "derived stream must use fewer codebooks than primary ({} >= {})",
+            derived.num_codebooks,
+            primary.num_codebooks,
+        );
+    }
+    if primary.model_name != derived.model_name
+        || primary.sample_rate != derived.sample_rate
+        || primary.channels != derived.channels
+        || primary.segment_samples != derived.segment_samples
+        || primary.segment_stride != derived.segment_stride
+        || primary.normalize != derived.normalize
+        || primary.frame_length != derived.frame_length
+        || primary.bits_per_codebook() != derived.bits_per_codebook()
+        || primary.lm_cardinality() != derived.lm_cardinality()
+        || primary.lm_entropy_logit_step().to_bits() != derived.lm_entropy_logit_step().to_bits()
+    {
+        anyhow::bail!("derived bundle geometry is incompatible with the primary bundle");
+    }
+    Ok(())
 }
 
 #[wasm_bindgen]

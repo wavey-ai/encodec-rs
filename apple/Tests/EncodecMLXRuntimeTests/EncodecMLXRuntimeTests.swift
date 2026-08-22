@@ -168,6 +168,49 @@ final class EncodecMLXRuntimeTests: XCTestCase {
         XCTAssertEqual(decoded.samples.count, 2 * 48_000)
     }
 
+    func testNativePipelineDerivesExactSixKbpsStream() throws {
+        let frameCount = 48_000
+        let samples = (0 ..< frameCount).flatMap { frame -> [Float] in
+            let phase = Float(frame) / 48_000
+            return [
+                0.2 * sin(phase * 440 * 2 * .pi),
+                0.2 * sin(phase * 659 * 2 * .pi),
+            ]
+        }
+
+        for profileMilliseconds in [1333, 1800] {
+            let primaryBundle = mlxBundleURL(
+                "encodec_48khz_12kbps_\(profileMilliseconds)ms"
+            )
+            let derivedBundle = mlxBundleURL(
+                "encodec_48khz_6kbps_\(profileMilliseconds)ms"
+            )
+            let primaryPipeline = try MLXEncodecNativePipeline(bundleURL: primaryBundle)
+            let derivedPipeline = try MLXEncodecNativePipeline(bundleURL: derivedBundle)
+
+            let primaryOnly = try primaryPipeline.encodeEcdc(
+                samples: samples,
+                channels: 2,
+                frameBatchSize: 1
+            )
+            let dual = try primaryPipeline.encodeEcdcOutputs(
+                samples: samples,
+                channels: 2,
+                derived6KBundleURL: derivedBundle,
+                frameBatchSize: 1
+            )
+            let derivedSeparate = try derivedPipeline.encodeEcdc(
+                samples: samples,
+                channels: 2,
+                frameBatchSize: 1
+            )
+
+            XCTAssertEqual(dual.primary, primaryOnly)
+            XCTAssertEqual(dual.derived6K, derivedSeparate)
+
+        }
+    }
+
     func testNativePipelineDecodesExistingRawEcdcFixture() throws {
         let fixtureURL = encodecRootURL()
             .appendingPathComponent("target")
@@ -386,6 +429,135 @@ final class EncodecMLXRuntimeTests: XCTestCase {
                 " wav=\(wavURL.path)"
             )
         }
+    }
+
+    func testBenchmarkOptionalDerivedSixKbpsEncode() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["BITNEEDLE_MLX_DUAL_BENCH"] == "1" else {
+            throw XCTSkip(
+                "set BITNEEDLE_MLX_DUAL_BENCH=1 to run the optional 6 kbps benchmark"
+            )
+        }
+
+        let sourceURL = environment["BITNEEDLE_MLX_BENCH_WAV"]
+            .map(URL.init(fileURLWithPath:))
+            ?? encodecRootURL()
+                .appendingPathComponent("testdata")
+                .appendingPathComponent("westside_4s_48khz_stereo.wav")
+        let profileMilliseconds = environment["BITNEEDLE_MLX_DUAL_PROFILE_MS"]
+            .flatMap(Int.init) ?? 1333
+        let frameBatchSize = environment["BITNEEDLE_MLX_BENCH_BATCH_SIZE"]
+            .flatMap(Int.init).map { max($0, 1) }
+            ?? EncodecMLXRuntimeDefaults.frameBatchSize
+        let chunkMilliseconds = environment["BITNEEDLE_MLX_BENCH_CHUNK_MS"].flatMap(Double.init)
+        let outputDir = environment["BITNEEDLE_MLX_BENCH_OUT"]
+            .map(URL.init(fileURLWithPath:))
+            ?? encodecRootURL()
+                .appendingPathComponent("target")
+                .appendingPathComponent("mlx-dual-bench")
+
+        let audio = try readBenchmarkWav(sourceURL)
+        let primaryBundle = mlxBundleURL(
+            "encodec_48khz_12kbps_\(profileMilliseconds)ms"
+        )
+        let derivedBundle = mlxBundleURL(
+            "encodec_48khz_6kbps_\(profileMilliseconds)ms"
+        )
+        let primaryPipeline = try MLXEncodecNativePipeline(bundleURL: primaryBundle)
+        let derivedPipeline = try MLXEncodecNativePipeline(bundleURL: derivedBundle)
+        XCTAssertEqual(audio.sampleRate, primaryPipeline.summary.sampleRate)
+        XCTAssertEqual(audio.channels, primaryPipeline.summary.channels)
+        try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
+
+        let warmupFrames = min(audio.frameCount, audio.sampleRate)
+        let warmupSamples = Array(audio.samples.prefix(warmupFrames * audio.channels))
+        _ = try primaryPipeline.encodeEcdcOutputs(
+            samples: warmupSamples,
+            channels: audio.channels,
+            derived6KBundleURL: derivedBundle,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        _ = try derivedPipeline.encodeEcdc(
+            samples: warmupSamples,
+            channels: audio.channels,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+
+        let primaryStart = BenchmarkClock.now()
+        let primaryOnly = try primaryPipeline.encodeEcdc(
+            samples: audio.samples,
+            channels: audio.channels,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        let primaryElapsed = primaryStart.elapsed()
+
+        let dualStart = BenchmarkClock.now()
+        let dual = try primaryPipeline.encodeEcdcOutputs(
+            samples: audio.samples,
+            channels: audio.channels,
+            derived6KBundleURL: derivedBundle,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        let dualElapsed = dualStart.elapsed()
+
+        let separateStart = BenchmarkClock.now()
+        let separatePrimary = try primaryPipeline.encodeEcdc(
+            samples: audio.samples,
+            channels: audio.channels,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        let separateDerived = try derivedPipeline.encodeEcdc(
+            samples: audio.samples,
+            channels: audio.channels,
+            frameBatchSize: frameBatchSize,
+            chunkMilliseconds: chunkMilliseconds
+        )
+        let separateElapsed = separateStart.elapsed()
+
+        XCTAssertEqual(dual.primary, primaryOnly)
+        XCTAssertEqual(separatePrimary, primaryOnly)
+        XCTAssertEqual(dual.derived6K, separateDerived)
+        guard let dualDerived = dual.derived6K else {
+            XCTFail("dual encode did not return its requested 6 kbps stream")
+            return
+        }
+
+        let stem = sourceURL.deletingPathExtension().lastPathComponent
+        try dual.primary.write(
+            to: outputDir.appendingPathComponent("\(stem).dual.12kbps.ecdc")
+        )
+        try dualDerived.write(
+            to: outputDir.appendingPathComponent("\(stem).dual.6kbps.ecdc")
+        )
+
+        let duration = audio.durationSeconds
+        print(
+            "dual_benchmark: profile_ms=\(profileMilliseconds) " +
+            "duration_s=\(String(format: "%.3f", duration)) " +
+            "frame_batch_size=\(frameBatchSize)"
+        )
+        print(
+            "dual_benchmark: mode=12k_only elapsed_s=\(String(format: "%.3f", primaryElapsed)) " +
+            "rtfx=\(String(format: "%.3f", duration / primaryElapsed)) " +
+            "bytes_12k=\(primaryOnly.count)"
+        )
+        print(
+            "dual_benchmark: mode=12k_plus_derived_6k elapsed_s=\(String(format: "%.3f", dualElapsed)) " +
+            "rtfx=\(String(format: "%.3f", duration / dualElapsed)) " +
+            "overhead_vs_12k_pct=\(String(format: "%.1f", (dualElapsed / primaryElapsed - 1) * 100)) " +
+            "bytes_12k=\(dual.primary.count) bytes_6k=\(dualDerived.count)"
+        )
+        print(
+            "dual_benchmark: mode=separate_12k_and_6k elapsed_s=\(String(format: "%.3f", separateElapsed)) " +
+            "rtfx=\(String(format: "%.3f", duration / separateElapsed)) " +
+            "dual_speedup=\(String(format: "%.3f", separateElapsed / dualElapsed))"
+        )
+        print("dual_benchmark: exact_primary=true exact_derived=true output_dir=\(outputDir.path)")
     }
 
     private func mlxBundleURL(_ name: String) -> URL {

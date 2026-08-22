@@ -14,10 +14,12 @@ use crate::ecdc::{
     decode_ecdc_with_batch_size_and_progress, encode_audio_view_to_ecdc_stream_with_options,
     encode_audio_view_to_ecdc_with_options, EcdcDecodeProgressStage, FrameCodec,
 };
+use crate::ecdc::{encode_audio_view_to_dual_ecdc_with_options, DualEcdcEncodeResult};
 use crate::ecdc_presets::fixed_context_samples;
 use crate::format::{ecdc_chunk_layout_from_ms, segment_frame_length, segment_starts};
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::portable_lm::PortableLmCodec;
+use crate::portable_lm::PortablePairedLmCodec;
 
 fn planar_f32le_byte_len(channels: usize, samples: usize) -> Result<usize> {
     channels
@@ -215,6 +217,16 @@ pub struct EncodecRsMlxByteResult {
     pub ok: bool,
     pub ptr: *mut u8,
     pub len: usize,
+    pub error: *mut c_char,
+}
+
+#[repr(C)]
+pub struct EncodecRsMlxDualByteResult {
+    pub ok: bool,
+    pub primary_ptr: *mut u8,
+    pub primary_len: usize,
+    pub derived_ptr: *mut u8,
+    pub derived_len: usize,
     pub error: *mut c_char,
 }
 
@@ -423,6 +435,40 @@ fn encode_audio_view(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn encode_audio_view_dual(
+    primary_bundle_dir: &Path,
+    derived_bundle_dir: &Path,
+    audio: ArrayView3<'_, f32>,
+    use_lm: bool,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: Option<f64>,
+    callbacks: EncodecRsMlxFrameCallbacks,
+) -> Result<DualEcdcEncodeResult> {
+    let mut codec = CallbackFrameCodec::from_bundle_dir(primary_bundle_dir, callbacks)?;
+    if audio.shape()[1] != codec.metadata.channels {
+        bail!(
+            "audio channel count {} does not match bundle {}",
+            audio.shape()[1],
+            codec.metadata.channels
+        );
+    }
+    if !use_lm {
+        bail!("use_lm=false is unsupported for q8 ECDC payloads in this build");
+    }
+    let mut lm = PortablePairedLmCodec::from_dirs(primary_bundle_dir, derived_bundle_dir)?;
+    encode_audio_view_to_dual_ecdc_with_options(
+        &mut codec,
+        &mut lm,
+        audio,
+        None,
+        frame_batch_size.max(1),
+        chunk_crc,
+        chunk_ms,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn encode_audio_view_to_path(
     bundle_dir: &Path,
     audio: ArrayView3<'_, f32>,
@@ -511,6 +557,38 @@ fn byte_error(error: impl std::fmt::Display) -> EncodecRsMlxByteResult {
         ok: false,
         ptr: ptr::null_mut(),
         len: 0,
+        error: c_error(error),
+    }
+}
+
+fn leak_bytes(bytes: Vec<u8>) -> (*mut u8, usize) {
+    let mut bytes = bytes.into_boxed_slice();
+    let len = bytes.len();
+    let ptr = bytes.as_mut_ptr();
+    std::mem::forget(bytes);
+    (ptr, len)
+}
+
+fn dual_byte_success(result: DualEcdcEncodeResult) -> EncodecRsMlxDualByteResult {
+    let (primary_ptr, primary_len) = leak_bytes(result.primary);
+    let (derived_ptr, derived_len) = leak_bytes(result.derived);
+    EncodecRsMlxDualByteResult {
+        ok: true,
+        primary_ptr,
+        primary_len,
+        derived_ptr,
+        derived_len,
+        error: ptr::null_mut(),
+    }
+}
+
+fn dual_byte_error(error: impl std::fmt::Display) -> EncodecRsMlxDualByteResult {
+    EncodecRsMlxDualByteResult {
+        ok: false,
+        primary_ptr: ptr::null_mut(),
+        primary_len: 0,
+        derived_ptr: ptr::null_mut(),
+        derived_len: 0,
         error: c_error(error),
     }
 }
@@ -680,6 +758,50 @@ pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_interleaved(
     match result {
         Ok(bytes) => byte_success(bytes),
         Err(error) => byte_error(error),
+    }
+}
+
+/// Encodes interleaved audio once through the primary MLX frame encoder and
+/// returns canonical primary and codebook-prefix streams using shared LM
+/// weights with independent state and arithmetic coders.
+///
+/// # Safety
+///
+/// C string pointers must be valid and terminated. `audio` must contain
+/// `channels * samples` readable values. Callback pointers must remain valid.
+#[no_mangle]
+pub unsafe extern "C" fn encodec_rs_mlx_encode_ecdc_interleaved_dual(
+    primary_bundle_dir: *const c_char,
+    derived_bundle_dir: *const c_char,
+    audio: *const f32,
+    channels: usize,
+    samples: usize,
+    use_lm: bool,
+    frame_batch_size: usize,
+    chunk_crc: bool,
+    chunk_ms: c_double,
+    has_chunk_ms: bool,
+    callbacks: EncodecRsMlxFrameCallbacks,
+) -> EncodecRsMlxDualByteResult {
+    let result = (|| -> Result<DualEcdcEncodeResult> {
+        let primary_bundle_dir = bundle_dir_from_c(primary_bundle_dir)?;
+        let derived_bundle_dir = bundle_dir_from_c(derived_bundle_dir)?;
+        let audio = interleaved_audio_view(audio, channels, samples)?;
+        encode_audio_view_dual(
+            &primary_bundle_dir,
+            &derived_bundle_dir,
+            audio,
+            use_lm,
+            frame_batch_size,
+            chunk_crc,
+            has_chunk_ms.then_some(chunk_ms),
+            callbacks,
+        )
+    })();
+
+    match result {
+        Ok(result) => dual_byte_success(result),
+        Err(error) => dual_byte_error(error),
     }
 }
 
