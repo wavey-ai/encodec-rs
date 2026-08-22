@@ -58,6 +58,19 @@ export class QuantizedLmChunkDecoder {
         return v1;
     }
     /**
+     * @param {number} frame_length
+     * @returns {Uint16Array}
+     */
+    pullAll(frame_length) {
+        const ret = wasm.quantizedlmchunkdecoder_pullAll(this.__wbg_ptr, frame_length);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU16FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 2, 2);
+        return v1;
+    }
+    /**
      * @returns {number}
      */
     scale() {
@@ -360,6 +373,30 @@ export function stableHashHex(bytes) {
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
+}
+
+/**
+ * Applies triangle-weighted overlap-add to decoded PCM windows.
+ *
+ * This function is explicit and PCM-only. Fixed-context ECDC decoding never
+ * invokes it implicitly.
+ * @param {Float32Array} decoded_windows
+ * @param {number} window_count
+ * @param {number} channels
+ * @param {number} window_samples
+ * @param {number} stride
+ * @returns {Float32Array}
+ */
+export function triangleOverlapAddPlanarFrames(decoded_windows, window_count, channels, window_samples, stride) {
+    const ptr0 = passArrayF32ToWasm0(decoded_windows, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.triangleOverlapAddPlanarFrames(ptr0, len0, window_count, channels, window_samples, stride);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v2;
 }
 function __wbg_get_imports() {
     const import0 = {

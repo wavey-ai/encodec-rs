@@ -8,6 +8,7 @@ export class QuantizedLmChunkDecoder {
     lmWindowFrameLength(): number;
     constructor(bundle_json: string, weights: Uint8Array, payload: Uint8Array);
     pull(): Uint16Array;
+    pullAll(frame_length: number): Uint16Array;
     scale(): number;
 }
 
@@ -46,6 +47,14 @@ export function lmEcdcHeaderForWeights(bundle_json: string, audio_length: number
 
 export function stableHashHex(bytes: Uint8Array): string;
 
+/**
+ * Applies triangle-weighted overlap-add to decoded PCM windows.
+ *
+ * This function is explicit and PCM-only. Fixed-context ECDC decoding never
+ * invokes it implicitly.
+ */
+export function triangleOverlapAddPlanarFrames(decoded_windows: Float32Array, window_count: number, channels: number, window_samples: number, stride: number): Float32Array;
+
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
@@ -66,6 +75,7 @@ export interface InitOutput {
     readonly quantizedlmchunkdecoder_lmWindowFrameLength: (a: number) => number;
     readonly quantizedlmchunkdecoder_new: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly quantizedlmchunkdecoder_pull: (a: number) => [number, number, number, number];
+    readonly quantizedlmchunkdecoder_pullAll: (a: number, b: number) => [number, number, number, number];
     readonly quantizedlmchunkdecoder_scale: (a: number) => number;
     readonly quantizedlmchunkencoder_finish: (a: number) => [number, number];
     readonly quantizedlmchunkencoder_finishPadded: (a: number, b: number) => [number, number, number, number];
@@ -73,8 +83,9 @@ export interface InitOutput {
     readonly quantizedlmchunkencoder_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly quantizedlmchunkencoder_push: (a: number, b: number, c: number) => [number, number];
     readonly stableHashHex: (a: number, b: number) => [number, number];
-    readonly initPanicHook: () => void;
+    readonly triangleOverlapAddPlanarFrames: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly quantizedlmchunkencoder_bitstream_version: (a: number) => number;
+    readonly initPanicHook: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;

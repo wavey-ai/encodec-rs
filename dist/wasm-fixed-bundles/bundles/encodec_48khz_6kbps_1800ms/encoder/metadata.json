@@ -1,0 +1,400 @@
+{
+  "sampleRate": 48000,
+  "channels": 2,
+  "segmentSamples": 87360,
+  "segmentStride": 86400,
+  "frameLength": 273,
+  "numCodebooks": 4,
+  "stages": [
+    {
+      "name": "convolutional_front",
+      "inputs": [
+        "audio"
+      ],
+      "outputs": [
+        "/encoder/model/model.13/Transpose_output_0",
+        "scale"
+      ]
+    },
+    {
+      "name": "recurrent",
+      "inputs": [
+        "/encoder/model/model.13/Transpose_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.13/Transpose_1_output_0"
+      ]
+    },
+    {
+      "name": "latent_projection",
+      "inputs": [
+        "/encoder/model/model.13/Transpose_1_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.15/conv/norm/Add_output_0"
+      ]
+    },
+    {
+      "name": "residual_vector_quantizer",
+      "inputs": [
+        "/encoder/model/model.15/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "codes"
+      ]
+    }
+  ],
+  "frontStages": [
+    {
+      "name": "initial_conv",
+      "inputs": [
+        "audio"
+      ],
+      "outputs": [
+        "/encoder/model/model.0/conv/norm/Add_output_0",
+        "scale"
+      ]
+    },
+    {
+      "name": "residual_32",
+      "inputs": [
+        "/encoder/model/model.0/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.1/Add_output_0"
+      ]
+    },
+    {
+      "name": "downsample_64",
+      "inputs": [
+        "/encoder/model/model.1/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.3/conv/norm/Add_output_0"
+      ]
+    },
+    {
+      "name": "residual_64",
+      "inputs": [
+        "/encoder/model/model.3/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.4/Add_output_0"
+      ]
+    },
+    {
+      "name": "downsample_128",
+      "inputs": [
+        "/encoder/model/model.4/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.6/conv/norm/Add_output_0"
+      ]
+    },
+    {
+      "name": "residual_128",
+      "inputs": [
+        "/encoder/model/model.6/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.7/Add_output_0"
+      ]
+    },
+    {
+      "name": "downsample_256",
+      "inputs": [
+        "/encoder/model/model.7/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.9/conv/norm/Add_output_0"
+      ]
+    },
+    {
+      "name": "residual_256",
+      "inputs": [
+        "/encoder/model/model.9/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.10/Add_output_0"
+      ]
+    },
+    {
+      "name": "downsample_512",
+      "inputs": [
+        "/encoder/model/model.10/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.12/conv/norm/Add_output_0"
+      ]
+    },
+    {
+      "name": "pre_lstm_transpose",
+      "inputs": [
+        "/encoder/model/model.12/conv/norm/Add_output_0"
+      ],
+      "outputs": [
+        "/encoder/model/model.13/Transpose_output_0"
+      ]
+    }
+  ],
+  "convLayers": [
+    {
+      "layer": 0,
+      "name": "/encoder/model/model.0/conv/conv/Conv",
+      "inputChannels": 2,
+      "outputChannels": 32,
+      "kernel": 7,
+      "stride": 1,
+      "inputTime": 87360,
+      "paddingLeft": 3,
+      "paddingRight": 3,
+      "paddedInputTime": 87366,
+      "outputTime": 87360
+    },
+    {
+      "layer": 1,
+      "name": "/encoder/model/model.1/shortcut/conv/conv/Conv",
+      "inputChannels": 32,
+      "outputChannels": 32,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 87360,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 87360,
+      "outputTime": 87360
+    },
+    {
+      "layer": 2,
+      "name": "/encoder/model/model.1/block/block.1/conv/conv/Conv",
+      "inputChannels": 32,
+      "outputChannels": 16,
+      "kernel": 3,
+      "stride": 1,
+      "inputTime": 87360,
+      "paddingLeft": 1,
+      "paddingRight": 1,
+      "paddedInputTime": 87362,
+      "outputTime": 87360
+    },
+    {
+      "layer": 3,
+      "name": "/encoder/model/model.1/block/block.3/conv/conv/Conv",
+      "inputChannels": 16,
+      "outputChannels": 32,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 87360,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 87360,
+      "outputTime": 87360
+    },
+    {
+      "layer": 4,
+      "name": "/encoder/model/model.3/conv/conv/Conv",
+      "inputChannels": 32,
+      "outputChannels": 64,
+      "kernel": 4,
+      "stride": 2,
+      "inputTime": 87360,
+      "paddingLeft": 1,
+      "paddingRight": 1,
+      "paddedInputTime": 87362,
+      "outputTime": 43680
+    },
+    {
+      "layer": 5,
+      "name": "/encoder/model/model.4/shortcut/conv/conv/Conv",
+      "inputChannels": 64,
+      "outputChannels": 64,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 43680,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 43680,
+      "outputTime": 43680
+    },
+    {
+      "layer": 6,
+      "name": "/encoder/model/model.4/block/block.1/conv/conv/Conv",
+      "inputChannels": 64,
+      "outputChannels": 32,
+      "kernel": 3,
+      "stride": 1,
+      "inputTime": 43680,
+      "paddingLeft": 1,
+      "paddingRight": 1,
+      "paddedInputTime": 43682,
+      "outputTime": 43680
+    },
+    {
+      "layer": 7,
+      "name": "/encoder/model/model.4/block/block.3/conv/conv/Conv",
+      "inputChannels": 32,
+      "outputChannels": 64,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 43680,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 43680,
+      "outputTime": 43680
+    },
+    {
+      "layer": 8,
+      "name": "/encoder/model/model.6/conv/conv/Conv",
+      "inputChannels": 64,
+      "outputChannels": 128,
+      "kernel": 8,
+      "stride": 4,
+      "inputTime": 43680,
+      "paddingLeft": 2,
+      "paddingRight": 2,
+      "paddedInputTime": 43684,
+      "outputTime": 10920
+    },
+    {
+      "layer": 9,
+      "name": "/encoder/model/model.7/shortcut/conv/conv/Conv",
+      "inputChannels": 128,
+      "outputChannels": 128,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 10920,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 10920,
+      "outputTime": 10920
+    },
+    {
+      "layer": 10,
+      "name": "/encoder/model/model.7/block/block.1/conv/conv/Conv",
+      "inputChannels": 128,
+      "outputChannels": 64,
+      "kernel": 3,
+      "stride": 1,
+      "inputTime": 10920,
+      "paddingLeft": 1,
+      "paddingRight": 1,
+      "paddedInputTime": 10922,
+      "outputTime": 10920
+    },
+    {
+      "layer": 11,
+      "name": "/encoder/model/model.7/block/block.3/conv/conv/Conv",
+      "inputChannels": 64,
+      "outputChannels": 128,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 10920,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 10920,
+      "outputTime": 10920
+    },
+    {
+      "layer": 12,
+      "name": "/encoder/model/model.9/conv/conv/Conv",
+      "inputChannels": 128,
+      "outputChannels": 256,
+      "kernel": 10,
+      "stride": 5,
+      "inputTime": 10920,
+      "paddingLeft": 3,
+      "paddingRight": 2,
+      "paddedInputTime": 10925,
+      "outputTime": 2184
+    },
+    {
+      "layer": 13,
+      "name": "/encoder/model/model.10/shortcut/conv/conv/Conv",
+      "inputChannels": 256,
+      "outputChannels": 256,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 2184,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 2184,
+      "outputTime": 2184
+    },
+    {
+      "layer": 14,
+      "name": "/encoder/model/model.10/block/block.1/conv/conv/Conv",
+      "inputChannels": 256,
+      "outputChannels": 128,
+      "kernel": 3,
+      "stride": 1,
+      "inputTime": 2184,
+      "paddingLeft": 1,
+      "paddingRight": 1,
+      "paddedInputTime": 2186,
+      "outputTime": 2184
+    },
+    {
+      "layer": 15,
+      "name": "/encoder/model/model.10/block/block.3/conv/conv/Conv",
+      "inputChannels": 128,
+      "outputChannels": 256,
+      "kernel": 1,
+      "stride": 1,
+      "inputTime": 2184,
+      "paddingLeft": 0,
+      "paddingRight": 0,
+      "paddedInputTime": 2184,
+      "outputTime": 2184
+    },
+    {
+      "layer": 16,
+      "name": "/encoder/model/model.12/conv/conv/Conv",
+      "inputChannels": 256,
+      "outputChannels": 512,
+      "kernel": 16,
+      "stride": 8,
+      "inputTime": 2184,
+      "paddingLeft": 4,
+      "paddingRight": 4,
+      "paddedInputTime": 2192,
+      "outputTime": 273
+    },
+    {
+      "layer": 17,
+      "name": "/encoder/model/model.15/conv/conv/Conv",
+      "inputChannels": 512,
+      "outputChannels": 128,
+      "kernel": 7,
+      "stride": 1,
+      "inputTime": 273,
+      "paddingLeft": 3,
+      "paddingRight": 3,
+      "paddedInputTime": 279,
+      "outputTime": 273
+    }
+  ],
+  "lstmLayers": [
+    {
+      "layer": 0,
+      "name": "/encoder/model/model.13/lstm/LSTM",
+      "inputSize": 512,
+      "hiddenSize": 512,
+      "gateSize": 2048,
+      "combinedInputSize": 1024
+    },
+    {
+      "layer": 1,
+      "name": "/encoder/model/model.13/lstm/LSTM_1",
+      "inputSize": 512,
+      "hiddenSize": 512,
+      "gateSize": 2048,
+      "combinedInputSize": 1024
+    }
+  ],
+  "rvq": {
+    "codebooks": 4,
+    "entries": 1024,
+    "dimension": 128
+  },
+  "onnxFree": true
+}

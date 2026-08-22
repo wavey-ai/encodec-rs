@@ -4,13 +4,28 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { createCustomEncoder } from "./custom-encoder-runtime.mjs";
+
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 const options = parseArgs(process.argv.slice(2));
-const [ort, encodec] = await Promise.all([
-  import(pathToFileURL(path.join(options.wasmRoot, "onnxruntime-web/ort.wasm.min.mjs"))),
-  import(pathToFileURL(path.join(options.wasmRoot, "encodec-rs/pkg/encodec_rs.js"))),
-]);
+const customDecoderOnnxFree = options.command === "decode" && options.customDecoderRoot
+  ? JSON.parse(readFileSync(path.join(options.customDecoderRoot, "metadata.json"), "utf8"))
+      .onnxFree === true
+  : false;
+const encodec = await import(
+  pathToFileURL(path.join(options.encodecWasmRoot, "encodec-rs/pkg/encodec_rs.js")),
+);
+const needsOrt = options.command === "decode"
+  ? !customDecoderOnnxFree
+  : options.customEncoderRoot === null;
+const ort = needsOrt
+  ? await import(
+      pathToFileURL(
+        path.join(options.wasmRoot, "onnxruntime-web/ort.wasm.min.mjs"),
+      ),
+    )
+  : null;
 const {
   ecdcMetadata,
   ecdcOverlapAddForMetadata,
@@ -39,7 +54,7 @@ try {
 }
 
 async function run(options) {
-  configureOrt();
+  if (ort !== null) configureOrt();
   initEncodecWasm();
 
   if (options.command === "decode") {
@@ -71,14 +86,29 @@ async function encodeFixture(options) {
 
   const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
   const sessionsStarted = performance.now();
-  const encodeSession = await createSession(path.join(options.bundleDir, meta.encode_model));
+  const customEncoder = options.customEncoderRoot
+    ? await createCustomEncoder(
+        options.customEncoderRoot,
+        options.customEncoderKernelModule,
+      )
+    : null;
+  if (customEncoder) validateCustomEncoderMetadata(customEncoder.metadata, meta);
+  const encodeSession = customEncoder
+    ? null
+    : await createSession(path.join(options.bundleDir, meta.encode_model));
   const lmRuntime = options.coding === "lm" ? await getLmRuntime(options.bundleDir, meta, options) : null;
   const sessionMs = performance.now() - sessionsStarted;
 
   const encodedStarted = performance.now();
   const chunks = [lmEcdcFixedHeaderForWeights(bundleJson, wav.frames, lmRuntime.bitstreamVersion, lmRuntime.weights)];
   const frames = [];
-  let frameOnnxMs = 0;
+  let frameModelMs = 0;
+  const customEncoderStagesMs = {
+    convolutionalFront: 0,
+    recurrent: 0,
+    latentProjection: 0,
+    residualVectorQuantizer: 0,
+  };
   let lmOnnxMs = 0;
   let lmDeterministicMs = 0;
   let arithmeticMs = 0;
@@ -86,16 +116,29 @@ async function encodeFixture(options) {
   for (let index = 0; index < segments.count; index += 1) {
     const segment = buildSingleSegment(wav.audio, wav.frames, segments, index, meta);
     const frameStarted = performance.now();
-    const outputs = await encodeSession.run({
-      [encodeSession.inputNames[0]]: new ort.Tensor("float32", segment.audio, [
-        1,
-        meta.channels,
-        meta.segment_samples,
-      ]),
-    });
-    frameOnnxMs += performance.now() - frameStarted;
-    const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
-    const frame = buildRawFrame(codesTensor.data, scaleTensor.data, segment, meta, index);
+    let codes;
+    let scales;
+    if (customEncoder) {
+      const output = customEncoder.encode(segment.audio);
+      codes = output.codes;
+      scales = output.scale;
+      for (const [name, value] of Object.entries(output.stagesMs)) {
+        customEncoderStagesMs[name] += value;
+      }
+    } else {
+      const outputs = await encodeSession.run({
+        [encodeSession.inputNames[0]]: new ort.Tensor("float32", segment.audio, [
+          1,
+          meta.channels,
+          meta.segment_samples,
+        ]),
+      });
+      const { codesTensor, scaleTensor } = findEncodeOutputs(outputs);
+      codes = codesTensor.data;
+      scales = scaleTensor.data;
+    }
+    frameModelMs += performance.now() - frameStarted;
+    const frame = buildRawFrame(codes, scales, segment, meta, index);
     frames.push(frame);
 
     const lmFrame = await encodeLmFrame(lmRuntime, bundleJson, frame, meta);
@@ -111,13 +154,17 @@ async function encodeFixture(options) {
   writeFileSync(options.outputEcdc, ecdc);
   const totalEncodeMs = performance.now() - encodedStarted;
   const metadata = ecdcMetadata(ecdc);
+  customEncoder?.release();
+  await encodeSession?.release?.();
 
   return {
     inputWav: path.relative(repoRoot, options.inputWav),
     outputEcdc: path.relative(repoRoot, options.outputEcdc),
     bundleDir: path.relative(repoRoot, options.bundleDir),
     coding: options.coding,
-    runtime: "onnxruntime-web wasm",
+    runtime: customEncoder ? "custom SIMD WASM" : "onnxruntime-web wasm",
+    encoderBackend: customEncoder ? "custom SIMD WASM" : "ONNX Runtime WASM",
+    onnxSessionOptions: customEncoder ? null : summarizeOnnxSessionOptions(options),
     lmRuntime: summarizeLmRuntime(lmRuntime),
     modelName: meta.model_name,
     bandwidthKbps: meta.bandwidth_kbps,
@@ -129,7 +176,17 @@ async function encodeFixture(options) {
     ecdcMetadata: metadata,
     timings: {
       sessionMs: roundMs(sessionMs),
-      frameOnnxMs: roundMs(frameOnnxMs),
+      frameModelMs: roundMs(frameModelMs),
+      frameOnnxMs: customEncoder ? null : roundMs(frameModelMs),
+      frameCustomWasmMs: customEncoder ? roundMs(frameModelMs) : null,
+      customEncoderStagesMs: customEncoder
+        ? Object.fromEntries(
+            Object.entries(customEncoderStagesMs).map(([name, value]) => [
+              name,
+              roundMs(value),
+            ]),
+          )
+        : null,
       lmOnnxMs: roundMs(lmOnnxMs),
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
@@ -188,14 +245,24 @@ async function decodeFixture(options) {
   const parseMs = performance.now() - parseStarted;
 
   const decodeSessionStarted = performance.now();
-  const decodeSession = await createSession(path.join(options.bundleDir, meta.decode_model));
+  const decoder = options.customDecoderRoot
+    ? await createCustomDecoder(options.customDecoderRoot, options.customKernelModule, meta)
+    : await createSession(path.join(options.bundleDir, meta.decode_model));
   const decodeSessionMs = performance.now() - decodeSessionStarted;
-  const decodedFrames = await decodeFrameBatch(
-    decodeSession,
-    frames,
-    meta,
-    options.decodeBatchSize,
-  );
+  let decodedFrames;
+  try {
+    decodedFrames = options.customDecoderRoot
+      ? await decodeFrameCustom(decoder, frames, meta)
+      : await decodeFrameBatch(
+        decoder,
+        frames,
+        meta,
+        options.decodeBatchSize,
+        options.preallocateDecoderOutput,
+      );
+  } finally {
+    decoder.release?.();
+  }
   let preRepairWav = null;
   if (options.preRepairWav) {
     const preRepairAudio = cropFixedContextWithoutRepair(
@@ -238,6 +305,7 @@ async function decodeFixture(options) {
 
   const decodedSignal = summarizeSignal(decodedAudio, meta.channels, audioLength);
   let signalIntegrity = null;
+  let referencePcmParity = null;
   if (options.referenceWav) {
     const referenceBytes = readFileSync(options.referenceWav);
     const reference = decodeWav(
@@ -256,6 +324,7 @@ async function decodeFixture(options) {
       },
       options.levelToleranceDb,
     );
+    referencePcmParity = comparePcm(reference.audio, decodedAudio);
   }
 
   const warmTotalDecodeMs = (parseMs - lmSessionMs) + decodedFrames.decodeOnnxMs + overlapMs;
@@ -266,7 +335,17 @@ async function decodeFixture(options) {
     preRepairWav,
     seamListeningPack,
     bundleDir: path.relative(repoRoot, options.bundleDir),
-    runtime: "onnxruntime-web wasm",
+    runtime: customDecoderOnnxFree
+      ? "custom SIMD WASM"
+      : "onnxruntime-web wasm",
+    decoderBackend: customDecoderOnnxFree
+      ? "custom SIMD WASM (ONNX-free)"
+      : options.customDecoderRoot
+        ? "hybrid custom ConvTranspose + ONNX-WASM"
+        : "ONNX-WASM",
+    onnxSessionOptions: customDecoderOnnxFree
+      ? null
+      : summarizeOnnxSessionOptions(options),
     lmRuntime: summarizeLmRuntime(lmRuntime),
     ecdcMetadata: metadata,
     parsedFrames: frames.length,
@@ -278,6 +357,7 @@ async function decodeFixture(options) {
       ? path.relative(repoRoot, options.referenceWav)
       : null,
     signalIntegrity,
+    referencePcmParity,
     timings: {
       parseMs: roundMs(parseMs),
       lmSessionMs: roundMs(lmSessionMs),
@@ -285,7 +365,10 @@ async function decodeFixture(options) {
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       decodeSessionMs: roundMs(decodeSessionMs),
-      decodeOnnxMs: roundMs(decodedFrames.decodeOnnxMs),
+      decodeOnnxMs: customDecoderOnnxFree
+        ? 0
+        : roundMs(decodedFrames.decodeOnnxMs),
+      decodeModelMs: roundMs(decodedFrames.decodeOnnxMs),
       overlapMs: roundMs(overlapMs),
       warmTotalDecodeMs: roundMs(warmTotalDecodeMs),
       warmRealtimeFactor: roundRatio((audioLength / meta.sample_rate) / (warmTotalDecodeMs / 1000)),
@@ -294,31 +377,52 @@ async function decodeFixture(options) {
     decoderBatchSize: decodedFrames.batchSize,
     decodedShape: decodedFrames.shape,
     decoderOutputs: decodedFrames.outputSummary,
+    customDecoderBreakdown: decodedFrames.customBreakdown ?? null,
   };
 }
 
-async function decodeFrameBatch(session, frames, meta, batchSize) {
+async function decodeFrameBatch(session, frames, meta, batchSize, preallocateOutput) {
   const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
   const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
+  const outputTensors = new Map();
   let decodeOnnxMs = 0;
   let outputSummary = null;
 
   for (let start = 0; start < frames.length; start += batchSize) {
     const end = Math.min(start + batchSize, frames.length);
     const batch = frames.slice(start, end);
-    const decoderInputs = buildDecoderInputs(batch, meta);
     const decodeStarted = performance.now();
-    const outputs = await session.run({
+    const decoderInputs = buildDecoderInputs(batch, meta);
+    const expected = batch.length * samplesPerDecodedFrame;
+    const feeds = {
       [session.inputNames[0]]: new ort.Tensor("int64", decoderInputs.codes, [
         batch.length,
         meta.num_codebooks,
         meta.frame_length,
       ]),
       [session.inputNames[1]]: new ort.Tensor("float32", decoderInputs.scales, [batch.length, 1]),
-    });
+    };
+    let fetches;
+    if (preallocateOutput) {
+      if (session.outputNames.length !== 1) {
+        throw new Error(`decoder output preallocation requires one output, got ${session.outputNames.length}`);
+      }
+      let output = outputTensors.get(batch.length);
+      if (!output) {
+        output = new ort.Tensor(
+          "float32",
+          new Float32Array(expected),
+          [batch.length, meta.channels, meta.segment_samples],
+        );
+        outputTensors.set(batch.length, output);
+      }
+      fetches = { [session.outputNames[0]]: output };
+    }
+    const outputs = fetches
+      ? await session.run(feeds, fetches)
+      : await session.run(feeds);
     decodeOnnxMs += performance.now() - decodeStarted;
     const decodedTensor = findDecodeOutput(outputs);
-    const expected = batch.length * samplesPerDecodedFrame;
     if (decodedTensor.data.length !== expected) {
       throw new Error(`decoder batch ${start}-${end} returned ${decodedTensor.data.length} samples, expected ${expected}`);
     }
@@ -336,6 +440,900 @@ async function decodeFrameBatch(session, frames, meta, batchSize) {
   };
 }
 
+async function createCustomDecoder(root, kernelModulePath, bundleMeta) {
+  const metadata = JSON.parse(readFileSync(path.join(root, "metadata.json"), "utf8"));
+  validateCustomDecoderMetadata(metadata, bundleMeta);
+  const sessions = Array.from({ length: metadata.stages }, () => null);
+  const firstOnnxStage = metadata.onnxFree
+    ? metadata.stages
+    : metadata.front
+      ? 1
+      : 0;
+  for (let stage = firstOnnxStage; stage < metadata.stages; stage += 1) {
+    sessions[stage] = await createSession(path.join(root, `stage-${stage}.onnx`));
+  }
+
+  const createKernelModule = (await import(pathToFileURL(kernelModulePath))).default;
+  const kernel = await createKernelModule({
+    locateFile: (file) => path.join(path.dirname(kernelModulePath), file),
+  });
+  const kernelState = initializeCustomKernel(kernel, root, metadata);
+  return {
+    metadata,
+    sessions,
+    kernel,
+    kernelState,
+    release() {
+      releaseCustomKernel(kernel, kernelState);
+      for (const session of sessions) session?.release?.();
+    },
+  };
+}
+
+async function decodeFrameCustom(decoder, frames, meta) {
+  const { metadata, sessions, kernel, kernelState } = decoder;
+  if (metadata.onnxFree) {
+    return decodeFrameFullyCustom(decoder, frames, meta);
+  }
+  const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
+  const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
+  const stageMs = Array.from({ length: metadata.stages }, () => 0);
+  const kernelMs = Array.from({ length: metadata.layers.length }, () => 0);
+  const transferMs = Array.from({ length: metadata.layers.length }, () => 0);
+  let frontMs = 0;
+  const decodeStarted = performance.now();
+
+  for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
+    const frame = frames[frameIndex];
+    const frameScale = new Float32Array([Number(frame.scale ?? 1)]);
+    let activation = null;
+    let outputs = null;
+    let started = performance.now();
+    if (kernelState.front) {
+      runCustomDecoderFront(kernel, kernelState, frame.codes, metadata.front);
+      frontMs += performance.now() - started;
+    } else {
+      const decoderInputs = buildDecoderInputs([frame], meta);
+      const frameFeeds = {
+        codes: new ort.Tensor("int64", decoderInputs.codes, [
+          1,
+          meta.num_codebooks,
+          meta.frame_length,
+        ]),
+        scale: new ort.Tensor("float32", decoderInputs.scales, [1, 1]),
+      };
+      outputs = await sessions[0].run(frameFeeds);
+      stageMs[0] += performance.now() - started;
+      activation = outputs[sessions[0].outputNames[0]].data;
+    }
+
+    for (let layerIndex = 0; layerIndex < metadata.layers.length; layerIndex += 1) {
+      const layer = metadata.layers[layerIndex];
+      const layerState = kernelState.layers[layerIndex];
+
+      if (!(kernelState.front && layerIndex === 0)) {
+        started = performance.now();
+        kernel.HEAPF32.set(
+          activation,
+          kernelState.input / Float32Array.BYTES_PER_ELEMENT,
+        );
+        transferMs[layerIndex] += performance.now() - started;
+      }
+
+      started = performance.now();
+      const ok = kernel._conv_transpose1d_phase_simd_8x8(
+        kernelState.input,
+        layerState.packed,
+        layerState.bias,
+        kernelState.output,
+        layer.inputTime,
+        layer.inputChannels,
+        layer.outputChannels,
+        layer.stride,
+      );
+      if (ok !== 1) {
+        throw new Error(`custom decoder kernel rejected layer ${layerIndex}`);
+      }
+      kernelMs[layerIndex] += performance.now() - started;
+
+      started = performance.now();
+      const outputLength = layer.outputChannels * layer.rawOutputTime;
+      const outputOffset = kernelState.output / Float32Array.BYTES_PER_ELEMENT;
+      const customOutput = kernel.HEAPF32.slice(
+        outputOffset,
+        outputOffset + outputLength,
+      );
+      const activationTensor = new ort.Tensor("float32", customOutput, [
+        1,
+        layer.outputChannels,
+        layer.rawOutputTime,
+      ]);
+      transferMs[layerIndex] += performance.now() - started;
+
+      const stage = sessions[layerIndex + 1];
+      const feeds = {};
+      for (const inputName of stage.inputNames) {
+        feeds[inputName] = inputName === "scale"
+          ? new ort.Tensor("float32", frameScale, [1, 1])
+          : activationTensor;
+      }
+      started = performance.now();
+      outputs = await stage.run(feeds);
+      stageMs[layerIndex + 1] += performance.now() - started;
+      activation = outputs[stage.outputNames[0]].data;
+    }
+
+    if (activation.length !== samplesPerDecodedFrame) {
+      throw new Error(
+        `custom decoder frame ${frameIndex} returned ${activation.length} samples; expected ${samplesPerDecodedFrame}`,
+      );
+    }
+    audio.set(activation, frameIndex * samplesPerDecodedFrame);
+    reportProgress("custom neural decode", frameIndex + 1, frames.length, decodeStarted, null, options);
+  }
+
+  const decodeOnnxMs = performance.now() - decodeStarted;
+  return {
+    audio,
+    batchSize: 1,
+    decodeOnnxMs,
+    outputSummary: {
+      stages: sessions.length,
+      customConvTransposeLayers: metadata.layers.length,
+      output: [frames.length, meta.channels, meta.segment_samples],
+    },
+    customBreakdown: {
+      stageMs: stageMs.map(roundMs),
+      frontMs: roundMs(frontMs),
+      kernelMs: kernelMs.map(roundMs),
+      transferMs: transferMs.map(roundMs),
+      stageTotalMs: roundMs(stageMs.reduce((sum, value) => sum + value, 0)),
+      kernelTotalMs: roundMs(kernelMs.reduce((sum, value) => sum + value, 0)),
+      transferTotalMs: roundMs(transferMs.reduce((sum, value) => sum + value, 0)),
+    },
+    shape: [frames.length, meta.channels, meta.segment_samples],
+  };
+}
+
+async function decodeFrameFullyCustom(decoder, frames, meta) {
+  const { metadata, kernel, kernelState } = decoder;
+  const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
+  const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
+  const breakdown = {
+    front: 0,
+    frontParts: {
+      rvq: 0,
+      convolution: 0,
+      lstm0: 0,
+      lstm1: 0,
+      assembly: 0,
+    },
+    convTranspose: 0,
+    residual: 0,
+    final: 0,
+    copy: 0,
+  };
+  const decodeStarted = performance.now();
+
+  for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
+    const frame = frames[frameIndex];
+    let started = performance.now();
+    let current = runCustomDecoderFront(
+      kernel,
+      kernelState,
+      frame.codes,
+      metadata.front,
+      false,
+      breakdown.frontParts,
+    );
+    breakdown.front += performance.now() - started;
+
+    for (let layerIndex = 0; layerIndex < metadata.layers.length; layerIndex += 1) {
+      const layer = metadata.layers[layerIndex];
+      const layerState = kernelState.layers[layerIndex];
+      const raw = current === kernelState.output
+        ? kernelState.input
+        : kernelState.output;
+      started = performance.now();
+      if (
+        kernel._conv_transpose1d_phase_simd_8x8_nhwc(
+          current,
+          layerState.packed,
+          layerState.bias,
+          raw,
+          layer.inputTime,
+          layer.inputChannels,
+          layer.outputChannels,
+          layer.stride,
+        ) !== 1 ||
+        kernel._group_norm_nhwc_in_place(
+          raw,
+          layerState.normScale,
+          layerState.normBias,
+          layer.rawOutputTime,
+          layer.outputChannels,
+        ) !== 1
+      ) {
+        throw new Error(`custom decoder ConvTranspose ${layerIndex} failed`);
+      }
+      const cropped = raw === kernelState.output
+        ? kernelState.input
+        : kernelState.output;
+      if (
+        kernel._crop_nhwc(
+          raw,
+          cropped,
+          layer.rawOutputTime,
+          layer.outputChannels,
+          layer.cropLeft,
+          layer.cropRight,
+        ) !== 1
+      ) {
+        throw new Error(`custom decoder crop ${layerIndex} failed`);
+      }
+      breakdown.convTranspose += performance.now() - started;
+
+      started = performance.now();
+      const [shortcutIndex, reduceIndex, expandIndex] =
+        kernelState.post.blocks[layerIndex];
+      const shortcutLayer = kernelState.post.convLayers[shortcutIndex];
+      const reduceLayer = kernelState.post.convLayers[reduceIndex];
+      const expandLayer = kernelState.post.convLayers[expandIndex];
+      runCustomDecoderPostConv(
+        kernel,
+        kernelState.post,
+        cropped,
+        shortcutLayer,
+        kernelState.post.pointers.shortcut,
+        false,
+      );
+      runCustomDecoderPostConv(
+        kernel,
+        kernelState.post,
+        cropped,
+        reduceLayer,
+        kernelState.post.pointers.reduced,
+        true,
+      );
+      runCustomDecoderPostConv(
+        kernel,
+        kernelState.post,
+        kernelState.post.pointers.reduced,
+        expandLayer,
+        raw,
+        true,
+      );
+      const activationLength =
+        layer.croppedOutputTime * layer.outputChannels;
+      if (
+        kernel._add_elu_nhwc_in_place(
+          raw,
+          kernelState.post.pointers.shortcut,
+          activationLength,
+        ) !== 1
+      ) {
+        throw new Error(`custom decoder residual block ${layerIndex} failed`);
+      }
+      current = raw;
+      breakdown.residual += performance.now() - started;
+    }
+
+    started = performance.now();
+    const final = kernelState.post.final;
+    if (
+      kernel._reflect_pad_nhwc(
+        current,
+        kernelState.post.pointers.padded,
+        final.inputTime,
+        final.inputChannels,
+        final.paddingLeft,
+        final.paddingRight,
+      ) !== 1 ||
+      kernel._conv1d_nhwc_simd_8x8(
+        kernelState.post.pointers.padded,
+        final.pointers.packed,
+        final.pointers.bias,
+        kernelState.post.pointers.shortcut,
+        final.paddedInputTime,
+        final.inputChannels,
+        final.kernelOutputChannels,
+        final.kernel,
+        final.stride,
+      ) !== 1 ||
+      kernel._compact_nhwc_channels(
+        kernelState.post.pointers.shortcut,
+        kernelState.post.pointers.reduced,
+        final.outputTime,
+        final.kernelOutputChannels,
+        final.outputChannels,
+      ) !== 1 ||
+      kernel._group_norm_nhwc_in_place(
+        kernelState.post.pointers.reduced,
+        final.pointers.normScale,
+        final.pointers.normBias,
+        final.outputTime,
+        final.outputChannels,
+      ) !== 1 ||
+      kernel._scale_nhwc_to_nct(
+        kernelState.post.pointers.reduced,
+        kernelState.post.pointers.planarOutput,
+        Number(frame.scale ?? 1),
+        final.outputTime,
+        final.outputChannels,
+      ) !== 1
+    ) {
+      throw new Error("custom decoder final projection failed");
+    }
+    breakdown.final += performance.now() - started;
+
+    started = performance.now();
+    const outputOffset =
+      kernelState.post.pointers.planarOutput / Float32Array.BYTES_PER_ELEMENT;
+    audio.set(
+      kernel.HEAPF32.subarray(
+        outputOffset,
+        outputOffset + samplesPerDecodedFrame,
+      ),
+      frameIndex * samplesPerDecodedFrame,
+    );
+    breakdown.copy += performance.now() - started;
+    reportProgress(
+      "custom neural decode",
+      frameIndex + 1,
+      frames.length,
+      decodeStarted,
+      null,
+      options,
+    );
+  }
+
+  const decodeModelMs = performance.now() - decodeStarted;
+  return {
+    audio,
+    batchSize: 1,
+    decodeOnnxMs: decodeModelMs,
+    outputSummary: {
+      onnxFree: true,
+      normalization: "ONNX-order two-pass",
+      customConvTransposeLayers: metadata.layers.length,
+      customConvLayers: metadata.post.convLayers.length + 2,
+      output: [frames.length, meta.channels, meta.segment_samples],
+    },
+    customBreakdown: {
+      onnxFree: true,
+      frontMs: roundMs(breakdown.front),
+      frontPartsMs: Object.fromEntries(
+        Object.entries(breakdown.frontParts).map(([name, value]) => [
+          name,
+          roundMs(value),
+        ]),
+      ),
+      convTransposeMs: roundMs(breakdown.convTranspose),
+      residualMs: roundMs(breakdown.residual),
+      finalMs: roundMs(breakdown.final),
+      copyMs: roundMs(breakdown.copy),
+    },
+    shape: [frames.length, meta.channels, meta.segment_samples],
+  };
+}
+
+function runCustomDecoderPostConv(
+  module,
+  post,
+  input,
+  layer,
+  output,
+  applyElu,
+) {
+  let convolutionInput = input;
+  if (layer.paddingLeft !== 0 || layer.paddingRight !== 0) {
+    const pad = applyElu
+      ? module._reflect_pad_elu_nhwc
+      : module._reflect_pad_nhwc;
+    if (
+      pad(
+        input,
+        post.pointers.padded,
+        layer.inputTime,
+        layer.inputChannels,
+        layer.paddingLeft,
+        layer.paddingRight,
+      ) !== 1
+    ) {
+      throw new Error(`custom decoder post padding ${layer.layer} failed`);
+    }
+    convolutionInput = post.pointers.padded;
+  } else if (applyElu) {
+    if (
+      module._elu_nhwc_in_place(
+        input,
+        layer.inputTime * layer.inputChannels,
+      ) !== 1
+    ) {
+      throw new Error(`custom decoder post ELU ${layer.layer} failed`);
+    }
+  }
+  if (
+    module._conv1d_nhwc_simd_8x8(
+      convolutionInput,
+      layer.pointers.packed,
+      layer.pointers.bias,
+      output,
+      layer.paddedInputTime,
+      layer.inputChannels,
+      layer.outputChannels,
+      layer.kernel,
+      layer.stride,
+    ) !== 1 ||
+    module._group_norm_nhwc_in_place(
+      output,
+      layer.pointers.normScale,
+      layer.pointers.normBias,
+      layer.outputTime,
+      layer.outputChannels,
+    ) !== 1
+  ) {
+    throw new Error(`custom decoder post Conv ${layer.layer} failed`);
+  }
+}
+
+function validateCustomDecoderMetadata(metadata, bundleMeta) {
+  const checks = [
+    ["frame length", metadata.frameLength, bundleMeta.frame_length],
+    ["codebook count", metadata.numCodebooks, bundleMeta.num_codebooks],
+    ["channel count", metadata.channels, bundleMeta.channels],
+    ["segment samples", metadata.segmentSamples, bundleMeta.segment_samples],
+  ];
+  for (const [label, actual, expected] of checks) {
+    if (actual !== expected) {
+      throw new Error(`custom decoder ${label} mismatch: ${actual} != ${expected}`);
+    }
+  }
+  if (!Array.isArray(metadata.layers) || metadata.layers.length + 1 !== metadata.stages) {
+    throw new Error("custom decoder metadata has inconsistent stages and layers");
+  }
+}
+
+function validateCustomEncoderMetadata(metadata, bundleMeta) {
+  const comparisons = [
+    ["sample rate", metadata.sampleRate, bundleMeta.sample_rate],
+    ["channels", metadata.channels, bundleMeta.channels],
+    ["segment samples", metadata.segmentSamples, bundleMeta.segment_samples],
+    ["segment stride", metadata.segmentStride, bundleMeta.segment_stride],
+    ["frame length", metadata.frameLength, bundleMeta.frame_length],
+    ["codebooks", metadata.numCodebooks, bundleMeta.num_codebooks],
+  ];
+  for (const [label, actual, expected] of comparisons) {
+    if (actual !== expected) {
+      throw new Error(
+        `custom encoder ${label} mismatch: ${actual} != ${expected}`,
+      );
+    }
+  }
+}
+
+function initializeCustomKernel(module, root, metadata) {
+  const layers = metadata.layers;
+  const allocate = (length) => {
+    const pointer = module._malloc(length * Float32Array.BYTES_PER_ELEMENT);
+    if (pointer === 0) {
+      throw new Error(`failed to allocate ${length} custom-kernel float32 values`);
+    }
+    return pointer;
+  };
+  const maxInput = Math.max(
+    ...layers.map((layer) => layer.inputChannels * layer.inputTime),
+  );
+  const maxOutput = Math.max(
+    ...layers.map((layer) => layer.outputChannels * layer.rawOutputTime),
+  );
+  const activationBufferLength = Math.max(maxInput, maxOutput);
+  const state = {
+    input: allocate(activationBufferLength),
+    output: allocate(activationBufferLength),
+    layers: [],
+  };
+
+  for (const layer of layers) {
+    const weights = readFloat32(path.join(root, `layer-${layer.layer}-weight.f32le`));
+    const bias = readFloat32(path.join(root, `layer-${layer.layer}-bias.f32le`));
+    const rawWeights = allocate(weights.length);
+    const packed = allocate(weights.length);
+    const biasPointer = allocate(bias.length);
+    module.HEAPF32.set(weights, rawWeights / Float32Array.BYTES_PER_ELEMENT);
+    module.HEAPF32.set(bias, biasPointer / Float32Array.BYTES_PER_ELEMENT);
+    const ok = module._pack_conv_transpose1d_weights(
+      rawWeights,
+      packed,
+      layer.inputChannels,
+      layer.outputChannels,
+      layer.stride,
+    );
+    module._free(rawWeights);
+    if (ok !== 1) {
+      throw new Error(`failed to pack custom decoder layer ${layer.layer}`);
+    }
+    const layerState = { packed, bias: biasPointer };
+    if (metadata.post) {
+      const normScale = readFloat32(
+        path.join(root, `layer-${layer.layer}-norm-scale.f32le`),
+      );
+      const normBias = readFloat32(
+        path.join(root, `layer-${layer.layer}-norm-bias.f32le`),
+      );
+      layerState.normScale = allocate(normScale.length);
+      layerState.normBias = allocate(normBias.length);
+      module.HEAPF32.set(normScale, layerState.normScale / 4);
+      module.HEAPF32.set(normBias, layerState.normBias / 4);
+    }
+    state.layers.push(layerState);
+  }
+  state.front = metadata.front
+    ? initializeCustomDecoderFront(module, root, metadata.front, allocate)
+    : null;
+  state.post = metadata.post
+    ? initializeCustomDecoderPost(module, root, metadata, allocate)
+    : null;
+  return state;
+}
+
+function initializeCustomDecoderFront(module, root, metadata, allocate) {
+  const frameLength = metadata.conv.inputTime;
+  const hiddenSize = metadata.conv.outputChannels;
+  const activationLength = frameLength * hiddenSize;
+  const embeddings = readFloat32(path.join(root, "front-rvq-embeddings.f32le"));
+  const pointers = {
+    codes: allocate(metadata.rvq.codebooks * frameLength),
+    embeddings: allocate(embeddings.length),
+    padded: allocate(
+      metadata.conv.paddedInputTime * metadata.conv.inputChannels,
+    ),
+    activation0: allocate(activationLength),
+    activation1: allocate(activationLength),
+    activation2: allocate(activationLength),
+    convPacked: allocate(
+      metadata.conv.outputChannels *
+        metadata.conv.inputChannels *
+        metadata.conv.kernel,
+    ),
+    convBias: allocate(metadata.conv.outputChannels),
+    convNormScale: allocate(metadata.conv.outputChannels),
+    convNormBias: allocate(metadata.conv.outputChannels),
+    lstmHidden: allocate(hiddenSize),
+    lstmCell: allocate(hiddenSize),
+    lstmInputProjection: allocate(frameLength * 4 * hiddenSize),
+  };
+  module.HEAPF32.set(embeddings, pointers.embeddings / 4);
+
+  const convWeights = readFloat32(path.join(root, "front-conv-weight.f32le"));
+  const unpackedConv = allocate(convWeights.length);
+  module.HEAPF32.set(convWeights, unpackedConv / 4);
+  module.HEAPF32.set(
+    readFloat32(path.join(root, "front-conv-bias.f32le")),
+    pointers.convBias / 4,
+  );
+  module.HEAPF32.set(
+    readFloat32(path.join(root, "front-conv-norm-scale.f32le")),
+    pointers.convNormScale / 4,
+  );
+  module.HEAPF32.set(
+    readFloat32(path.join(root, "front-conv-norm-bias.f32le")),
+    pointers.convNormBias / 4,
+  );
+  const convPacked = module._pack_conv1d_nhwc_weights_8(
+    unpackedConv,
+    pointers.convPacked,
+    metadata.conv.inputChannels,
+    metadata.conv.outputChannels,
+    metadata.conv.kernel,
+  );
+  module._free(unpackedConv);
+  if (convPacked !== 1) {
+    throw new Error("failed to pack custom decoder-front convolution");
+  }
+
+  const lstmLayers = metadata.lstmLayers.map((layer) => {
+    const inputWeights = readFloat32(
+      path.join(root, `front-lstm-${layer.layer}-input-weight.f32le`),
+    );
+    const recurrentWeights = readFloat32(
+      path.join(root, `front-lstm-${layer.layer}-recurrent-weight.f32le`),
+    );
+    const bias = readFloat32(
+      path.join(root, `front-lstm-${layer.layer}-bias.f32le`),
+    );
+    const unpackedInput = allocate(inputWeights.length);
+    const unpackedRecurrent = allocate(recurrentWeights.length);
+    const layerPointers = {
+      packedInput: allocate(inputWeights.length),
+      packedRecurrent: allocate(recurrentWeights.length),
+      bias: allocate(bias.length),
+    };
+    module.HEAPF32.set(inputWeights, unpackedInput / 4);
+    module.HEAPF32.set(recurrentWeights, unpackedRecurrent / 4);
+    module.HEAPF32.set(bias, layerPointers.bias / 4);
+    const inputPacked = module._pack_linear_weights_8(
+      unpackedInput,
+      layerPointers.packedInput,
+      hiddenSize,
+      4 * hiddenSize,
+    );
+    const recurrentPacked = module._pack_linear_weights_8(
+      unpackedRecurrent,
+      layerPointers.packedRecurrent,
+      hiddenSize,
+      4 * hiddenSize,
+    );
+    module._free(unpackedInput);
+    module._free(unpackedRecurrent);
+    if (inputPacked !== 1 || recurrentPacked !== 1) {
+      throw new Error(`failed to pack custom decoder-front LSTM ${layer.layer}`);
+    }
+    return { ...layer, pointers: layerPointers };
+  });
+
+  return { pointers, lstmLayers };
+}
+
+function initializeCustomDecoderPost(module, root, metadata, allocate) {
+  const convLayers = metadata.post.convLayers.map((layer) => {
+    const weights = readFloat32(
+      path.join(root, `post-conv-${layer.layer}-weight.f32le`),
+    );
+    const bias = readFloat32(
+      path.join(root, `post-conv-${layer.layer}-bias.f32le`),
+    );
+    const normScale = readFloat32(
+      path.join(root, `post-conv-${layer.layer}-norm-scale.f32le`),
+    );
+    const normBias = readFloat32(
+      path.join(root, `post-conv-${layer.layer}-norm-bias.f32le`),
+    );
+    const unpacked = allocate(weights.length);
+    const pointers = {
+      packed: allocate(weights.length),
+      bias: allocate(bias.length),
+      normScale: allocate(normScale.length),
+      normBias: allocate(normBias.length),
+    };
+    module.HEAPF32.set(weights, unpacked / 4);
+    module.HEAPF32.set(bias, pointers.bias / 4);
+    module.HEAPF32.set(normScale, pointers.normScale / 4);
+    module.HEAPF32.set(normBias, pointers.normBias / 4);
+    const packed = module._pack_conv1d_nhwc_weights_8(
+      unpacked,
+      pointers.packed,
+      layer.inputChannels,
+      layer.outputChannels,
+      layer.kernel,
+    );
+    module._free(unpacked);
+    if (packed !== 1) {
+      throw new Error(`failed to pack custom decoder post Conv ${layer.layer}`);
+    }
+    return { ...layer, pointers };
+  });
+
+  const final = metadata.post.finalConv;
+  const finalWeights = readFloat32(path.join(root, "final-conv-weight.f32le"));
+  const finalBias = readFloat32(path.join(root, "final-conv-bias.f32le"));
+  const finalNormScale = readFloat32(
+    path.join(root, "final-conv-norm-scale.f32le"),
+  );
+  const finalNormBias = readFloat32(
+    path.join(root, "final-conv-norm-bias.f32le"),
+  );
+  const paddedFinalWeights = new Float32Array(
+    final.kernelOutputChannels * final.inputChannels * final.kernel,
+  );
+  paddedFinalWeights.set(finalWeights);
+  const paddedFinalBias = new Float32Array(final.kernelOutputChannels);
+  paddedFinalBias.set(finalBias);
+  const unpackedFinal = allocate(paddedFinalWeights.length);
+  const finalPointers = {
+    packed: allocate(paddedFinalWeights.length),
+    bias: allocate(paddedFinalBias.length),
+    normScale: allocate(finalNormScale.length),
+    normBias: allocate(finalNormBias.length),
+  };
+  module.HEAPF32.set(paddedFinalWeights, unpackedFinal / 4);
+  module.HEAPF32.set(paddedFinalBias, finalPointers.bias / 4);
+  module.HEAPF32.set(finalNormScale, finalPointers.normScale / 4);
+  module.HEAPF32.set(finalNormBias, finalPointers.normBias / 4);
+  const finalPacked = module._pack_conv1d_nhwc_weights_8(
+    unpackedFinal,
+    finalPointers.packed,
+    final.inputChannels,
+    final.kernelOutputChannels,
+    final.kernel,
+  );
+  module._free(unpackedFinal);
+  if (finalPacked !== 1) {
+    throw new Error("failed to pack final custom decoder Conv");
+  }
+
+  const maxActivationLength = Math.max(
+    ...metadata.layers.map(
+      (layer) => layer.croppedOutputTime * layer.outputChannels,
+    ),
+  );
+  const maxReducedLength = Math.max(
+    ...convLayers.map((layer) => layer.outputTime * layer.outputChannels),
+    final.outputTime * final.outputChannels,
+  );
+  const maxPaddedLength = Math.max(
+    ...convLayers.map(
+      (layer) => layer.paddedInputTime * layer.inputChannels,
+    ),
+    final.paddedInputTime * final.inputChannels,
+  );
+  const pointers = {
+    shortcut: allocate(maxActivationLength),
+    reduced: allocate(maxReducedLength),
+    padded: allocate(maxPaddedLength),
+    planarOutput: allocate(final.outputTime * final.outputChannels),
+  };
+  return {
+    convLayers,
+    blocks: metadata.post.blocks,
+    final: { ...final, pointers: finalPointers },
+    pointers,
+  };
+}
+
+function runCustomDecoderFront(
+  module,
+  state,
+  codes,
+  metadata,
+  transposeOutput = true,
+  timings = null,
+) {
+  const front = state.front;
+  const pointers = front.pointers;
+  const frameLength = metadata.conv.inputTime;
+  const hiddenSize = metadata.conv.outputChannels;
+  let started = performance.now();
+  module.HEAPU16.set(codes, pointers.codes / Uint16Array.BYTES_PER_ELEMENT);
+  if (
+    module._rvq_decode_codes_nhwc(
+      pointers.codes,
+      pointers.embeddings,
+      pointers.activation0,
+      frameLength,
+      metadata.rvq.dimension,
+      metadata.rvq.entries,
+      metadata.rvq.codebooks,
+    ) !== 1
+  ) {
+    throw new Error("custom decoder-front codebook decode failed");
+  }
+  if (timings) timings.rvq += performance.now() - started;
+  started = performance.now();
+  if (
+    module._reflect_pad_nhwc(
+      pointers.activation0,
+      pointers.padded,
+      frameLength,
+      metadata.conv.inputChannels,
+      metadata.conv.paddingLeft,
+      metadata.conv.paddingRight,
+    ) !== 1
+  ) {
+    throw new Error("custom decoder-front padding failed");
+  }
+  if (
+    module._conv1d_nhwc_simd_8x8(
+      pointers.padded,
+      pointers.convPacked,
+      pointers.convBias,
+      pointers.activation1,
+      metadata.conv.paddedInputTime,
+      metadata.conv.inputChannels,
+      hiddenSize,
+      metadata.conv.kernel,
+      metadata.conv.stride,
+    ) !== 1 ||
+    module._group_norm_nhwc_in_place(
+      pointers.activation1,
+      pointers.convNormScale,
+      pointers.convNormBias,
+      frameLength,
+      hiddenSize,
+    ) !== 1
+  ) {
+    throw new Error("custom decoder-front convolution failed");
+  }
+  if (timings) timings.convolution += performance.now() - started;
+
+  const runLstm = (input, layer, output) => {
+    if (
+      module._lstm_layer_simd_64(
+        input,
+        layer.pointers.packedInput,
+        layer.pointers.packedRecurrent,
+        layer.pointers.bias,
+        output,
+        pointers.lstmHidden,
+        pointers.lstmCell,
+        pointers.lstmInputProjection,
+        frameLength,
+        hiddenSize,
+      ) !== 1
+    ) {
+      throw new Error(`custom decoder-front LSTM ${layer.layer} failed`);
+    }
+  };
+  started = performance.now();
+  runLstm(pointers.activation1, front.lstmLayers[0], pointers.activation0);
+  if (timings) timings.lstm0 += performance.now() - started;
+  started = performance.now();
+  runLstm(pointers.activation0, front.lstmLayers[1], pointers.activation2);
+  if (timings) timings.lstm1 += performance.now() - started;
+  started = performance.now();
+  if (
+    module._add_elu_nhwc_in_place(
+      pointers.activation2,
+      pointers.activation1,
+      frameLength * hiddenSize,
+    ) !== 1
+  ) {
+    throw new Error("custom decoder-front output assembly failed");
+  }
+  if (transposeOutput) {
+    if (
+      module._nhwc_to_nct(
+        pointers.activation2,
+        state.input,
+        frameLength,
+        hiddenSize,
+      ) !== 1
+    ) {
+      throw new Error("custom decoder-front layout conversion failed");
+    }
+    return state.input;
+  }
+  if (timings) timings.assembly += performance.now() - started;
+  return pointers.activation2;
+}
+
+function releaseCustomKernel(module, state) {
+  module._free(state.input);
+  module._free(state.output);
+  for (const layer of state.layers) {
+    for (const pointer of Object.values(layer)) module._free(pointer);
+  }
+  if (state.front) {
+    for (const pointer of Object.values(state.front.pointers)) {
+      module._free(pointer);
+    }
+    for (const layer of state.front.lstmLayers) {
+      for (const pointer of Object.values(layer.pointers)) {
+        module._free(pointer);
+      }
+    }
+  }
+  if (state.post) {
+    for (const pointer of Object.values(state.post.pointers)) {
+      module._free(pointer);
+    }
+    for (const layer of state.post.convLayers) {
+      for (const pointer of Object.values(layer.pointers)) {
+        module._free(pointer);
+      }
+    }
+    for (const pointer of Object.values(state.post.final.pointers)) {
+      module._free(pointer);
+    }
+  }
+}
+
+function readFloat32(file) {
+  const bytes = readFileSync(file);
+  const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  return new Float32Array(copy);
+}
+
 function parseArgs(args) {
   const command = args[0] === "decode" || args[0] === "encode" ? args.shift() : "encode";
   const out = {
@@ -345,10 +1343,19 @@ function parseArgs(args) {
     outputEcdc: path.join(repoRoot, "target/wasm-smoke/westside_4s_48khz_stereo.lm.ecdc"),
     outputWav: path.join(repoRoot, "target/wasm-smoke/westside_4s_wasm_decoded.wav"),
     wasmRoot: path.resolve(repoRoot, "../vin.yl.vendor/wasm"),
+    encodecWasmRoot: null,
     bundleDir: null,
+    customEncoderRoot: null,
+    customEncoderKernelModule: null,
+    customDecoderRoot: null,
+    customKernelModule: null,
     coding: "lm",
     lmBackend: "q8",
     threads: 1,
+    graphOptimizationLevel: "all",
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+    preallocateDecoderOutput: false,
     decodeBatchSize: 1,
     progressEvery: 10,
     floatWav: false,
@@ -365,6 +1372,16 @@ function parseArgs(args) {
       out.bundleDir = path.resolve(args[++index]);
     } else if (arg === "--wasm-root") {
       out.wasmRoot = path.resolve(args[++index]);
+    } else if (arg === "--encodec-wasm-root") {
+      out.encodecWasmRoot = path.resolve(args[++index]);
+    } else if (arg === "--custom-encoder-root") {
+      out.customEncoderRoot = path.resolve(args[++index]);
+    } else if (arg === "--custom-encoder-kernel-module") {
+      out.customEncoderKernelModule = path.resolve(args[++index]);
+    } else if (arg === "--custom-decoder-root") {
+      out.customDecoderRoot = path.resolve(args[++index]);
+    } else if (arg === "--custom-kernel-module") {
+      out.customKernelModule = path.resolve(args[++index]);
     } else if (arg === "--coding") {
       out.coding = args[++index];
     } else if (arg === "--output") {
@@ -375,6 +1392,14 @@ function parseArgs(args) {
       out.lmBackend = args[++index].toLowerCase();
     } else if (arg === "--threads") {
       out.threads = Number(args[++index]);
+    } else if (arg === "--graph-optimization-level") {
+      out.graphOptimizationLevel = args[++index];
+    } else if (arg === "--enable-cpu-mem-arena") {
+      out.enableCpuMemArena = true;
+    } else if (arg === "--enable-mem-pattern") {
+      out.enableMemPattern = true;
+    } else if (arg === "--preallocate-decoder-output") {
+      out.preallocateDecoderOutput = true;
     } else if (arg === "--decode-batch-size") {
       out.decodeBatchSize = Number(args[++index]);
     } else if (arg === "--progress-every") {
@@ -416,11 +1441,38 @@ function parseArgs(args) {
       "encodec-rs/bundles/encodec_48khz_12kbps_1333ms",
     );
   }
+  if (!out.encodecWasmRoot) {
+    out.encodecWasmRoot = out.wasmRoot;
+  }
+  if ((out.customDecoderRoot === null) !== (out.customKernelModule === null)) {
+    throw new Error(
+      "--custom-decoder-root and --custom-kernel-module must be provided together",
+    );
+  }
+  if (
+    (out.customEncoderRoot === null) !==
+    (out.customEncoderKernelModule === null)
+  ) {
+    throw new Error(
+      "--custom-encoder-root and --custom-encoder-kernel-module must be provided together",
+    );
+  }
+  if (out.command === "encode" && out.customDecoderRoot) {
+    throw new Error("custom decoder options only apply to decode commands");
+  }
+  if (out.command === "decode" && out.customEncoderRoot) {
+    throw new Error("custom encoder options only apply to encode commands");
+  }
   if (out.coding !== "lm") {
     throw new Error(`--coding must be "lm", got ${out.coding}`);
   }
   if (!Number.isInteger(out.threads) || out.threads < 1) {
     throw new Error(`--threads must be a positive integer, got ${out.threads}`);
+  }
+  if (!["disabled", "basic", "extended", "layout", "all"].includes(out.graphOptimizationLevel)) {
+    throw new Error(
+      `--graph-optimization-level must be disabled, basic, extended, layout, or all; got ${out.graphOptimizationLevel}`,
+    );
   }
   if (!Number.isInteger(out.progressEvery) || out.progressEvery < 1) {
     throw new Error(`--progress-every must be a positive integer, got ${out.progressEvery}`);
@@ -445,11 +1497,20 @@ function printUsageAndExit() {
       "",
       "Options:",
       "  --wasm-root <dir> Production WASM asset root",
+      "  --encodec-wasm-root <dir> Optional encodec-rs WASM root",
       "  --bundle <dir>    ONNX bundle directory",
+      "  --custom-encoder-root <dir> Custom encoder weights and metadata",
+      "  --custom-encoder-kernel-module <path> Custom encoder WASM module",
+      "  --custom-decoder-root <dir> Split decoder ONNX stages and weights",
+      "  --custom-kernel-module <path> Custom ConvTranspose WASM module",
       "  --coding <lm>    ECDC coding mode, fixed to q8 LM",
       "  --lm-backend <q8> LM backend for matrix runs, fixed to q8",
       "  --output <path>   Output ECDC path",
       "  --threads <count> ONNX Runtime WASM thread count",
+      "  --graph-optimization-level <level> ONNX graph optimization level",
+      "  --enable-cpu-mem-arena Enable the ONNX CPU memory arena",
+      "  --enable-mem-pattern Enable ONNX memory-pattern reuse",
+      "  --preallocate-decoder-output Reuse the decoder output tensor",
       "  --decode-batch-size <count> Fixed-frame decoder batch size",
       "  --progress-every <n> Progress interval in chunks",
       "  --float-wav       Write IEEE float32 decoded WAV output",
@@ -471,7 +1532,7 @@ function configureOrt() {
 }
 
 function initEncodecWasm() {
-  const wasmPath = path.join(options.wasmRoot, "encodec-rs/pkg/encodec_rs_bg.wasm");
+  const wasmPath = path.join(options.encodecWasmRoot, "encodec-rs/pkg/encodec_rs_bg.wasm");
   encodec.initSync({ module: readFileSync(wasmPath) });
   encodec.initPanicHook?.();
 }
@@ -501,8 +1562,20 @@ async function createSession(modelPath) {
   const model = readFileSync(modelPath);
   return ort.InferenceSession.create(model, {
     executionProviders: ["wasm"],
-    graphOptimizationLevel: "all",
+    graphOptimizationLevel: options.graphOptimizationLevel,
+    enableCpuMemArena: options.enableCpuMemArena,
+    enableMemPattern: options.enableMemPattern,
   });
+}
+
+function summarizeOnnxSessionOptions(runOptions) {
+  return {
+    threads: runOptions.threads,
+    graphOptimizationLevel: runOptions.graphOptimizationLevel,
+    enableCpuMemArena: runOptions.enableCpuMemArena,
+    enableMemPattern: runOptions.enableMemPattern,
+    preallocateDecoderOutput: runOptions.preallocateDecoderOutput,
+  };
 }
 
 function decodeWav(bytes) {
@@ -666,15 +1739,18 @@ function compareSignalIntegrity(reference, candidate, levelToleranceDb) {
   const finite = referenceSignal.nonFiniteSampleCount === 0
     && candidateSignal.nonFiniteSampleCount === 0;
   const unclipped = candidateSignal.clippedSampleCount === 0;
+  const noAdditionalClipping =
+    candidateSignal.clippedSampleCount <= referenceSignal.clippedSampleCount;
 
   return {
-    pass: formatMatches && levelWithinTolerance && finite && unclipped,
+    pass: formatMatches && levelWithinTolerance && finite && noAdditionalClipping,
     levelToleranceDb,
     checks: {
       formatMatches,
       levelWithinTolerance,
       finite,
       unclipped,
+      noAdditionalClipping,
     },
     overallLevelDeltaDb: levelDeltaDb(referenceSignal.rms, candidateSignal.rms),
     channelLevelDeltasDb,
@@ -687,6 +1763,48 @@ function compareSignalIntegrity(reference, candidate, levelToleranceDb) {
       sampleRate: candidate.sampleRate,
       ...candidateSignal,
     },
+  };
+}
+
+function comparePcm(reference, candidate) {
+  if (reference.length !== candidate.length) {
+    return {
+      comparable: false,
+      referenceSamples: reference.length,
+      candidateSamples: candidate.length,
+    };
+  }
+  const referenceBits = new Uint32Array(
+    reference.buffer,
+    reference.byteOffset,
+    reference.length,
+  );
+  const candidateBits = new Uint32Array(
+    candidate.buffer,
+    candidate.byteOffset,
+    candidate.length,
+  );
+  let exactMismatches = 0;
+  let maxAbsError = 0;
+  let squaredError = 0;
+  let squaredSignal = 0;
+  for (let index = 0; index < reference.length; index += 1) {
+    if (referenceBits[index] !== candidateBits[index]) {
+      exactMismatches += 1;
+    }
+    const error = reference[index] - candidate[index];
+    maxAbsError = Math.max(maxAbsError, Math.abs(error));
+    squaredError += error * error;
+    squaredSignal += reference[index] * reference[index];
+  }
+  return {
+    comparable: true,
+    exact: exactMismatches === 0,
+    exactMismatches,
+    maxAbsError,
+    maxErrorDbfs: maxAbsError === 0 ? null : roundRatio(20 * Math.log10(maxAbsError)),
+    rmse: Math.sqrt(squaredError / reference.length),
+    snrDb: squaredError === 0 ? null : roundRatio(10 * Math.log10(squaredSignal / squaredError)),
   };
 }
 
@@ -785,12 +1903,23 @@ async function decodeLmFrame(lmRuntime, bundleJson, meta, chunk) {
     let lmDeterministicMs = 0;
     let arithmeticMs = 0;
 
-    for (let step = 0; step < chunk.frameLength; step += 1) {
+    if (typeof decoder.pullAll === "function") {
       const lmStarted = performance.now();
-      const symbols = decoder.pull();
+      const symbols = decoder.pullAll(chunk.frameLength);
       lmDeterministicMs += performance.now() - lmStarted;
       for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
-        codes[codebook * meta.frame_length + step] = symbols[codebook];
+        const sourceBase = codebook * chunk.frameLength;
+        const targetBase = codebook * meta.frame_length;
+        codes.set(symbols.subarray(sourceBase, sourceBase + chunk.frameLength), targetBase);
+      }
+    } else {
+      for (let step = 0; step < chunk.frameLength; step += 1) {
+        const lmStarted = performance.now();
+        const symbols = decoder.pull();
+        lmDeterministicMs += performance.now() - lmStarted;
+        for (let codebook = 0; codebook < meta.num_codebooks; codebook += 1) {
+          codes[codebook * meta.frame_length + step] = symbols[codebook];
+        }
       }
     }
 

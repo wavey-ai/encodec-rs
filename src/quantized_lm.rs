@@ -78,6 +78,8 @@ struct QuantizedLmScratch {
     ff: Vec<f32>,
     scores: Vec<f64>,
     input_q: Vec<i16>,
+    logit_column: Vec<f32>,
+    logits: Vec<f32>,
 }
 
 impl QuantizedLmWeights {
@@ -255,6 +257,14 @@ impl QuantizedLm {
         state: &mut QuantizedLmState,
         input_symbols: &[usize],
     ) -> Result<Vec<f32>> {
+        Ok(self.forward_step_borrowed(state, input_symbols)?.to_vec())
+    }
+
+    pub(crate) fn forward_step_borrowed<'a>(
+        &'a mut self,
+        state: &mut QuantizedLmState,
+        input_symbols: &[usize],
+    ) -> Result<&'a [f32]> {
         let dim = self.weights.dim;
         let codebooks = input_symbols.len();
         self.weights.validate_for_codebooks(codebooks)?;
@@ -308,9 +318,9 @@ impl QuantizedLm {
             self.forward_layer(state, layer_index)?;
         }
 
-        let logits = self.output_logits(codebooks);
+        self.output_logits(codebooks);
         state.offset += 1;
-        Ok(logits)
+        Ok(&self.scratch.logits)
     }
 
     fn forward_layer(&mut self, state: &mut QuantizedLmState, layer_index: usize) -> Result<()> {
@@ -417,20 +427,26 @@ impl QuantizedLm {
         Ok(())
     }
 
-    fn output_logits(&mut self, codebooks: usize) -> Vec<f32> {
+    fn output_logits(&mut self, codebooks: usize) {
         let card = self.weights.cardinality;
-        let mut logits = vec![0.0_f32; card * codebooks];
+        self.scratch.logits.resize(card * codebooks, 0.0);
         let input_scale = quantize_input_i16(&self.scratch.x, &mut self.scratch.input_q);
         for codebook in 0..codebooks {
             let weight = &self.weights.output_weights[codebook];
             let bias = &self.weights.output_biases[codebook];
+            quantized_linear_part_with_input(
+                &self.scratch.input_q,
+                input_scale,
+                weight,
+                bias,
+                0,
+                card,
+                &mut self.scratch.logit_column,
+            );
             for bin in 0..card {
-                let acc = dot_i8_i16(weight.row(bin), &self.scratch.input_q);
-                logits[bin * codebooks + codebook] =
-                    bias[bin] + (acc as f32) * input_scale * weight.scales[bin];
+                self.scratch.logits[bin * codebooks + codebook] = self.scratch.logit_column[bin];
             }
         }
-        logits
     }
 }
 
@@ -465,10 +481,54 @@ fn quantized_linear_part_with_input(
     debug_assert!(row_offset + out_dim <= weight.rows);
     debug_assert_eq!(input_q.len(), weight.cols);
     out.resize(out_dim, 0.0);
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        // SAFETY: the helper checks complete eight-row tiles and complete
+        // eight-column vectors before each unaligned load. It handles all
+        // remaining rows and columns with the checked one-row path.
+        unsafe {
+            quantized_linear_part_wasm_simd128(input_q, input_scale, weight, bias, row_offset, out);
+        }
+        return;
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
     for (row, output) in out.iter_mut().enumerate() {
         let source_row = row_offset + row;
         let acc = dot_i8_i16(weight.row(source_row), input_q);
         *output = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn quantized_linear_part_wasm_simd128(
+    input_q: &[i16],
+    input_scale: f32,
+    weight: &QuantizedLinear,
+    bias: &[f32],
+    row_offset: usize,
+    out: &mut [f32],
+) {
+    let mut row = 0_usize;
+    while row + 8 <= out.len() {
+        let source_row = row_offset + row;
+        let accumulators =
+            dot_i8_i16_8_rows_wasm_simd128(&weight.weights, source_row, weight.cols, input_q);
+        for lane in 0..8 {
+            let output_row = source_row + lane;
+            out[row + lane] = bias[output_row]
+                + (accumulators[lane] as f32) * input_scale * weight.scales[output_row];
+        }
+        row += 8;
+    }
+
+    while row < out.len() {
+        let source_row = row_offset + row;
+        let acc = dot_i8_i16_wasm_simd128(weight.row(source_row), input_q);
+        out[row] = bias[source_row] + (acc as f32) * input_scale * weight.scales[source_row];
+        row += 1;
     }
 }
 
@@ -492,6 +552,10 @@ fn quantize_input_i16(input: &[f32], out: &mut Vec<i16>) -> f32 {
     scale
 }
 
+#[cfg_attr(
+    all(target_arch = "wasm32", target_feature = "simd128"),
+    allow(dead_code)
+)]
 fn dot_i8_i16(weights: &[i8], input: &[i16]) -> i64 {
     debug_assert_eq!(weights.len(), input.len());
     #[cfg(target_arch = "aarch64")]
@@ -526,6 +590,121 @@ fn dot_i8_i16_scalar(weights: &[i8], input: &[i16]) -> i64 {
         acc += (*w as i64) * (*x as i64);
     }
     acc
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[inline(always)]
+unsafe fn add_wasm_i32x4_lanes(lanes: core::arch::wasm32::v128, acc: &mut i64) {
+    use core::arch::wasm32::i32x4_extract_lane;
+
+    *acc += i32x4_extract_lane::<0>(lanes) as i64;
+    *acc += i32x4_extract_lane::<1>(lanes) as i64;
+    *acc += i32x4_extract_lane::<2>(lanes) as i64;
+    *acc += i32x4_extract_lane::<3>(lanes) as i64;
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn dot_i8_i16_8_rows_wasm_simd128(
+    weights: &[i8],
+    first_row: usize,
+    cols: usize,
+    input: &[i16],
+) -> [i64; 8] {
+    use core::arch::wasm32::{
+        i16x8_extend_low_i8x16, i32x4_add, i32x4_dot_i16x8, i32x4_splat, v128_load,
+        v128_load64_zero,
+    };
+
+    const VECTORS_PER_FLUSH: usize = 128;
+
+    debug_assert_eq!(input.len(), cols);
+    debug_assert!((first_row + 8) * cols <= weights.len());
+
+    let row0 = weights.as_ptr().add(first_row * cols);
+    let row1 = row0.add(cols);
+    let row2 = row1.add(cols);
+    let row3 = row2.add(cols);
+    let row4 = row3.add(cols);
+    let row5 = row4.add(cols);
+    let row6 = row5.add(cols);
+    let row7 = row6.add(cols);
+    let mut lane0 = i32x4_splat(0);
+    let mut lane1 = i32x4_splat(0);
+    let mut lane2 = i32x4_splat(0);
+    let mut lane3 = i32x4_splat(0);
+    let mut lane4 = i32x4_splat(0);
+    let mut lane5 = i32x4_splat(0);
+    let mut lane6 = i32x4_splat(0);
+    let mut lane7 = i32x4_splat(0);
+    let mut accumulators = [0_i64; 8];
+    let mut index = 0_usize;
+    let mut vectors = 0_usize;
+
+    while index + 8 <= cols {
+        let input_i16 = v128_load(input.as_ptr().add(index).cast());
+        let weights0 = i16x8_extend_low_i8x16(v128_load64_zero(row0.add(index).cast::<u64>()));
+        let weights1 = i16x8_extend_low_i8x16(v128_load64_zero(row1.add(index).cast::<u64>()));
+        let weights2 = i16x8_extend_low_i8x16(v128_load64_zero(row2.add(index).cast::<u64>()));
+        let weights3 = i16x8_extend_low_i8x16(v128_load64_zero(row3.add(index).cast::<u64>()));
+        let weights4 = i16x8_extend_low_i8x16(v128_load64_zero(row4.add(index).cast::<u64>()));
+        let weights5 = i16x8_extend_low_i8x16(v128_load64_zero(row5.add(index).cast::<u64>()));
+        let weights6 = i16x8_extend_low_i8x16(v128_load64_zero(row6.add(index).cast::<u64>()));
+        let weights7 = i16x8_extend_low_i8x16(v128_load64_zero(row7.add(index).cast::<u64>()));
+        lane0 = i32x4_add(lane0, i32x4_dot_i16x8(weights0, input_i16));
+        lane1 = i32x4_add(lane1, i32x4_dot_i16x8(weights1, input_i16));
+        lane2 = i32x4_add(lane2, i32x4_dot_i16x8(weights2, input_i16));
+        lane3 = i32x4_add(lane3, i32x4_dot_i16x8(weights3, input_i16));
+        lane4 = i32x4_add(lane4, i32x4_dot_i16x8(weights4, input_i16));
+        lane5 = i32x4_add(lane5, i32x4_dot_i16x8(weights5, input_i16));
+        lane6 = i32x4_add(lane6, i32x4_dot_i16x8(weights6, input_i16));
+        lane7 = i32x4_add(lane7, i32x4_dot_i16x8(weights7, input_i16));
+        vectors += 1;
+        index += 8;
+
+        if vectors == VECTORS_PER_FLUSH {
+            add_wasm_i32x4_lanes(lane0, &mut accumulators[0]);
+            add_wasm_i32x4_lanes(lane1, &mut accumulators[1]);
+            add_wasm_i32x4_lanes(lane2, &mut accumulators[2]);
+            add_wasm_i32x4_lanes(lane3, &mut accumulators[3]);
+            add_wasm_i32x4_lanes(lane4, &mut accumulators[4]);
+            add_wasm_i32x4_lanes(lane5, &mut accumulators[5]);
+            add_wasm_i32x4_lanes(lane6, &mut accumulators[6]);
+            add_wasm_i32x4_lanes(lane7, &mut accumulators[7]);
+            lane0 = i32x4_splat(0);
+            lane1 = i32x4_splat(0);
+            lane2 = i32x4_splat(0);
+            lane3 = i32x4_splat(0);
+            lane4 = i32x4_splat(0);
+            lane5 = i32x4_splat(0);
+            lane6 = i32x4_splat(0);
+            lane7 = i32x4_splat(0);
+            vectors = 0;
+        }
+    }
+
+    add_wasm_i32x4_lanes(lane0, &mut accumulators[0]);
+    add_wasm_i32x4_lanes(lane1, &mut accumulators[1]);
+    add_wasm_i32x4_lanes(lane2, &mut accumulators[2]);
+    add_wasm_i32x4_lanes(lane3, &mut accumulators[3]);
+    add_wasm_i32x4_lanes(lane4, &mut accumulators[4]);
+    add_wasm_i32x4_lanes(lane5, &mut accumulators[5]);
+    add_wasm_i32x4_lanes(lane6, &mut accumulators[6]);
+    add_wasm_i32x4_lanes(lane7, &mut accumulators[7]);
+
+    while index < cols {
+        let value = *input.get_unchecked(index) as i64;
+        accumulators[0] += (*row0.add(index) as i64) * value;
+        accumulators[1] += (*row1.add(index) as i64) * value;
+        accumulators[2] += (*row2.add(index) as i64) * value;
+        accumulators[3] += (*row3.add(index) as i64) * value;
+        accumulators[4] += (*row4.add(index) as i64) * value;
+        accumulators[5] += (*row5.add(index) as i64) * value;
+        accumulators[6] += (*row6.add(index) as i64) * value;
+        accumulators[7] += (*row7.add(index) as i64) * value;
+        index += 1;
+    }
+    accumulators
 }
 
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]

@@ -1,4 +1,3 @@
-import * as ort from "./node_modules/onnxruntime-web/dist/ort.webgpu.min.mjs";
 import init, {
   initPanicHook,
   lmEcdcChunk,
@@ -10,20 +9,22 @@ import init, {
   ecdcOverlapAddForMetadata,
   stableHashHex,
 } from "../pkg/encodec_rs.js";
-
-ort.env.wasm.wasmPaths = new URL("./node_modules/onnxruntime-web/dist/", window.location.href).href;
-ort.env.wasm.numThreads = 1;
-if (ort.env.webgpu) {
-  ort.env.webgpu.powerPreference = "high-performance";
-}
+import { createCustomDecoder } from "../browser-runtime/custom-decoder-runtime.js";
+import { createCustomEncoder } from "../browser-runtime/custom-encoder-runtime.js";
 
 let wasmReady;
+let ort = null;
+let ortPromise = null;
 const sessionCache = new Map();
 
 window.webgpuMatrix = {
   ready,
   encode,
   decode,
+  compareDecoders,
+  readyCustom,
+  customRoundTrip,
+  customRuntimeChunk,
 };
 
 async function ready() {
@@ -31,7 +32,7 @@ async function ready() {
   if (providers.includes("webgpu") && !navigator.gpu) {
     throw new Error(`navigator.gpu is unavailable in ${navigator.userAgent}`);
   }
-  await initWasm();
+  await Promise.all([initWasm(), ensureOrt()]);
   return {
     userAgent: navigator.userAgent,
     secureContext: window.isSecureContext,
@@ -39,6 +40,35 @@ async function ready() {
     executionProviders: providers,
     ortWebVersion: ort.env?.versions?.web ?? null,
   };
+}
+
+async function readyCustom() {
+  await initWasm();
+  return {
+    userAgent: navigator.userAgent,
+    secureContext: window.isSecureContext,
+    crossOriginIsolated: globalThis.crossOriginIsolated,
+    ortLoaded: ort !== null,
+  };
+}
+
+async function ensureOrt() {
+  if (!ortPromise) {
+    ortPromise = import("./node_modules/onnxruntime-web/dist/ort.webgpu.min.mjs")
+      .then((module) => {
+        ort = module;
+        ort.env.wasm.wasmPaths = new URL(
+          "./node_modules/onnxruntime-web/dist/",
+          window.location.href,
+        ).href;
+        ort.env.wasm.numThreads = 1;
+        if (ort.env.webgpu) {
+          ort.env.webgpu.powerPreference = "high-performance";
+        }
+        return ort;
+      });
+  }
+  return ortPromise;
 }
 
 async function encode(options) {
@@ -158,6 +188,271 @@ async function decode(options) {
   };
 }
 
+async function compareDecoders(options) {
+  await ready();
+  const {
+    bundleName,
+    inputEcdcUrl,
+    customDecoderRootUrl,
+    customKernelModuleUrl,
+    iterations = 5,
+    warmupFrameCount = null,
+  } = options;
+  const runCount = Math.max(1, Math.floor(Number(iterations) || 1));
+  const bundleRoot = new URL(`../onnx-bundles/${bundleName}/`, window.location.href).href;
+  const bundleJson = await fetchText(new URL("bundle.json", bundleRoot).href);
+  const meta = JSON.parse(bundleJson);
+  const weights = new Uint8Array(
+    await fetchArrayBuffer(new URL(meta.lm_quant_weight_model, bundleRoot).href),
+  );
+  const ecdc = new Uint8Array(await fetchArrayBuffer(inputEcdcUrl));
+  const ecdcMeta = ecdcMetadata(ecdc);
+  const expectedHash = ecdcMeta.lmh ?? ecdcMeta.lm_hash;
+  const actualHash = stableHashHex(weights);
+  if (expectedHash !== actualHash) {
+    throw new Error(`payload requires LM hash ${expectedHash}, browser has ${actualHash}`);
+  }
+
+  const entropyStarted = performance.now();
+  const parsed = lmEcdcDecodeChunks(bundleJson, ecdc);
+  const frames = parsed.chunks.map((chunk) =>
+    decodeQ8LmFrame(bundleJson, weights, meta, chunk),
+  );
+  const entropyMs = performance.now() - entropyStarted;
+
+  const mainSetupStarted = performance.now();
+  const main = await getSession(
+    `${bundleName}:decode:comparison`,
+    new URL(meta.decode_model, bundleRoot).href,
+  );
+  const mainSetupMs = performance.now() - mainSetupStarted;
+
+  const customSetupStarted = performance.now();
+  const custom = await createCustomDecoder({
+    assetRoot: customDecoderRootUrl,
+    kernelModuleUrl: customKernelModuleUrl,
+    bundleMetadata: meta,
+  });
+  const customSetupMs = performance.now() - customSetupStarted;
+
+  const warmupFrames = frames.slice(
+    0,
+    Math.min(
+      frames.length,
+      Math.max(1, Math.floor(Number(warmupFrameCount) || frames.length)),
+    ),
+  );
+  let mainOutput = await decodeFrameBatch(main, warmupFrames, meta, 1);
+  let customOutput = custom.decode(warmupFrames);
+  const mainSamples = [];
+  const customSamples = [];
+  for (let iteration = 0; iteration < runCount; iteration += 1) {
+    if (iteration % 2 === 0) {
+      mainOutput = await decodeFrameBatch(main, frames, meta, 1);
+      mainSamples.push(mainOutput.decodeOnnxMs);
+      customOutput = custom.decode(frames);
+      customSamples.push(customOutput.elapsedMs);
+    } else {
+      customOutput = custom.decode(frames);
+      customSamples.push(customOutput.elapsedMs);
+      mainOutput = await decodeFrameBatch(main, frames, meta, 1);
+      mainSamples.push(mainOutput.decodeOnnxMs);
+    }
+  }
+  const parity = comparePcm(mainOutput.audio, customOutput.audio);
+  custom.release();
+  const audioLength = ecdcMeta.al ?? ecdcMeta.audio_length;
+  const audioSeconds = audioLength / meta.sample_rate;
+  const mainMedianMs = median(mainSamples);
+  const customMedianMs = median(customSamples);
+  return {
+    runtime: "headless browser WASM",
+    userAgent: navigator.userAgent,
+    crossOriginIsolated,
+    executionProviders: matrixExecutionProviders(),
+    bundleName,
+    frames: frames.length,
+    audioSeconds,
+    entropyMs: roundMs(entropyMs),
+    setupMs: {
+      main: roundMs(mainSetupMs),
+      custom: roundMs(customSetupMs),
+    },
+    model: {
+      main: {
+        samplesMs: mainSamples.map(roundMs),
+        medianMs: roundMs(mainMedianMs),
+        realtimeFactor: roundRatio(audioSeconds / (mainMedianMs / 1000)),
+      },
+      custom: {
+        samplesMs: customSamples.map(roundMs),
+        medianMs: roundMs(customMedianMs),
+        realtimeFactor: roundRatio(audioSeconds / (customMedianMs / 1000)),
+      },
+      speedup: roundRatio(mainMedianMs / customMedianMs),
+    },
+    parity,
+  };
+}
+
+async function customRoundTrip(options) {
+  await initWasm();
+  const {
+    bundleName,
+    inputWavUrl,
+    expectedEcdcUrl,
+    referenceWavUrl,
+    customEncoderRootUrl,
+    customEncoderKernelUrl,
+    customDecoderRootUrl,
+    customDecoderKernelUrl,
+  } = options;
+  const bundleRoot = new URL(`../onnx-bundles/${bundleName}/`, window.location.href).href;
+  const bundleJson = await fetchText(new URL("bundle.json", bundleRoot).href);
+  const meta = JSON.parse(bundleJson);
+  const lmWeights = new Uint8Array(
+    await fetchArrayBuffer(new URL(meta.lm_quant_weight_model, bundleRoot).href),
+  );
+  const wav = decodeWav(await fetchArrayBuffer(inputWavUrl));
+  if (wav.sampleRate !== meta.sample_rate || wav.channels !== meta.channels) {
+    throw new Error("round-trip input WAV does not match the fixed bundle");
+  }
+
+  const encoderSetupStarted = performance.now();
+  const encoder = await createCustomEncoder({
+    assetRoot: customEncoderRootUrl,
+    kernelModuleUrl: customEncoderKernelUrl,
+    bundleMetadata: meta,
+  });
+  const encoderSetupMs = performance.now() - encoderSetupStarted;
+  const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
+  const chunks = [lmEcdcFixedHeaderForWeights(bundleJson, wav.frames, 2, lmWeights)];
+  let encodeModelMs = 0;
+  let encodeEntropyMs = 0;
+  try {
+    for (let index = 0; index < segments.count; index += 1) {
+      const segment = buildSingleSegment(wav.audio, wav.frames, segments, index, meta);
+      const encoded = encoder.encode(segment.audio);
+      encodeModelMs += encoded.elapsedMs;
+      const frame = buildRawFrame(
+        encoded.codes,
+        new Float32Array([encoded.scale]),
+        segment,
+        meta,
+        index,
+      );
+      const entropyStarted = performance.now();
+      chunks.push(lmEcdcChunk(encodeQ8LmFrame(bundleJson, lmWeights, frame, meta)));
+      encodeEntropyMs += performance.now() - entropyStarted;
+    }
+  } finally {
+    encoder.release();
+  }
+  const encodedEcdc = concatUint8Chunks(chunks);
+  const expectedEcdc = new Uint8Array(await fetchArrayBuffer(expectedEcdcUrl));
+  const encodedParity = compareBytes(expectedEcdc, encodedEcdc);
+
+  const entropyDecodeStarted = performance.now();
+  const parsed = lmEcdcDecodeChunks(bundleJson, encodedEcdc);
+  const frames = parsed.chunks.map((chunk) =>
+    decodeQ8LmFrame(bundleJson, lmWeights, meta, chunk),
+  );
+  const decodeEntropyMs = performance.now() - entropyDecodeStarted;
+  const decoderSetupStarted = performance.now();
+  const decoder = await createCustomDecoder({
+    assetRoot: customDecoderRootUrl,
+    kernelModuleUrl: customDecoderKernelUrl,
+    bundleMetadata: meta,
+  });
+  const decoderSetupMs = performance.now() - decoderSetupStarted;
+  let decodedFrames;
+  try {
+    decodedFrames = decoder.decode(frames);
+  } finally {
+    decoder.release();
+  }
+  const metadata = ecdcMetadata(encodedEcdc);
+  const decodedAudio = ecdcOverlapAddForMetadata(
+    bundleJson,
+    JSON.stringify(metadata),
+    decodedFrames.audio,
+  );
+  const referenceWav = decodeWav(await fetchArrayBuffer(referenceWavUrl));
+  const decodedParity = comparePcm(referenceWav.audio, decodedAudio);
+  let nonFiniteSamples = 0;
+  for (const sample of decodedAudio) {
+    if (!Number.isFinite(sample)) nonFiniteSamples += 1;
+  }
+  return {
+    runtime: "browser custom WASM (ONNX-free)",
+    userAgent: navigator.userAgent,
+    ortLoaded: ort !== null,
+    bundleName,
+    inputFrames: wav.frames,
+    encodedFrames: frames.length,
+    ecdcBytes: encodedEcdc.byteLength,
+    encodedParity,
+    decodedFrames: decodedAudio.length / meta.channels,
+    nonFiniteSamples,
+    decodedParity,
+    timings: {
+      encoderSetupMs: roundMs(encoderSetupMs),
+      encodeModelMs: roundMs(encodeModelMs),
+      encodeEntropyMs: roundMs(encodeEntropyMs),
+      decodeEntropyMs: roundMs(decodeEntropyMs),
+      decoderSetupMs: roundMs(decoderSetupMs),
+      decodeModelMs: roundMs(decodedFrames.elapsedMs),
+    },
+  };
+}
+
+async function customRuntimeChunk(options) {
+  await initWasm();
+  const {
+    bundleRootUrl,
+    runtimeModuleUrl,
+    runtimeRootUrl,
+    inputWavUrl,
+    expectedEcdcUrl,
+  } = options;
+  const bundleJson = await fetchText(new URL("bundle.json", bundleRootUrl).href);
+  const meta = JSON.parse(bundleJson);
+  const lmWeights = new Uint8Array(
+    await fetchArrayBuffer(new URL(meta.lm_quant_weight_model, bundleRootUrl).href),
+  );
+  const wav = decodeWav(await fetchArrayBuffer(inputWavUrl));
+  const segments = buildSegmentBatch(wav.audio, wav.frames, meta);
+  const segment = buildSingleSegment(wav.audio, wav.frames, segments, 0, meta);
+  const module = await import(runtimeModuleUrl);
+  const runtime = module.createEncodecEcdcRuntime({
+    encodecWasmBaseUrl: runtimeRootUrl,
+  });
+  const chunk = await runtime.encodeEcdcChunk({
+    sessionKey: "production-runtime-smoke",
+    bundleRoot: bundleRootUrl,
+    bundleJson,
+    lmWeights,
+    segment: segment.audio,
+    segmentIndex: 0,
+    segmentSamples: segment.samples,
+    segmentFrameLength: segment.frameLength,
+  });
+  const expectedEcdc = new Uint8Array(await fetchArrayBuffer(expectedEcdcUrl));
+  const expectedFrames = lmEcdcDecodeChunks(bundleJson, expectedEcdc);
+  const expectedChunk = lmEcdcChunk(expectedFrames.chunks[0].payload);
+  const parity = compareBytes(expectedChunk, chunk);
+  const diagnosticsBeforeRelease = runtime.diagnostics();
+  runtime.releaseJobState("production-runtime-smoke");
+  await runtime.clearSessionCache();
+  return {
+    runtime: "browser production custom WASM",
+    ortLoaded: ort !== null,
+    parity,
+    diagnosticsBeforeRelease,
+    diagnosticsAfterRelease: runtime.diagnostics(),
+  };
+}
+
 async function initWasm() {
   if (!wasmReady) {
     wasmReady = init(new URL("../pkg/encodec_rs_bg.wasm?v=q8-webgpu-matrix", window.location.href).href).then(() => {
@@ -168,6 +463,7 @@ async function initWasm() {
 }
 
 async function getSession(key, modelUrl) {
+  await ensureOrt();
   const cached = sessionCache.get(key);
   if (cached) {
     return cached;
@@ -523,11 +819,73 @@ function readAscii(view, offset, length) {
 }
 
 function matrixExecutionProviders() {
+  if (new URLSearchParams(window.location.search).get("provider") === "wasm") {
+    return ["wasm"];
+  }
   const providers = globalThis.WEBGPU_MATRIX_EXECUTION_PROVIDERS;
   if (Array.isArray(providers) && providers.length) {
     return providers.map((provider) => String(provider)).filter(Boolean);
   }
   return ["webgpu", "wasm"];
+}
+
+function comparePcm(reference, candidate) {
+  if (reference.length !== candidate.length) {
+    return {
+      comparable: false,
+      referenceLength: reference.length,
+      candidateLength: candidate.length,
+    };
+  }
+  let exactMismatches = 0;
+  let signal = 0;
+  let noise = 0;
+  let maxAbsError = 0;
+  for (let index = 0; index < reference.length; index += 1) {
+    const expected = reference[index];
+    const actual = candidate[index];
+    const difference = actual - expected;
+    if (!Object.is(expected, actual)) exactMismatches += 1;
+    signal += expected * expected;
+    noise += difference * difference;
+    maxAbsError = Math.max(maxAbsError, Math.abs(difference));
+  }
+  return {
+    comparable: true,
+    exact: exactMismatches === 0,
+    exactMismatches,
+    maxAbsError,
+    maxErrorDbfs: maxAbsError === 0 ? null : roundRatio(20 * Math.log10(maxAbsError)),
+    rmse: Math.sqrt(noise / reference.length),
+    snrDb: noise === 0 ? null : roundRatio(10 * Math.log10(signal / noise)),
+  };
+}
+
+function compareBytes(reference, candidate) {
+  const length = Math.min(reference.length, candidate.length);
+  let mismatches = Math.abs(reference.length - candidate.length);
+  let firstMismatch = null;
+  for (let index = 0; index < length; index += 1) {
+    if (reference[index] !== candidate[index]) {
+      mismatches += 1;
+      if (firstMismatch === null) firstMismatch = index;
+    }
+  }
+  return {
+    exact: mismatches === 0,
+    mismatches,
+    firstMismatch,
+    referenceBytes: reference.length,
+    candidateBytes: candidate.length,
+  };
+}
+
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[middle - 1] + sorted[middle]) / 2
+    : sorted[middle];
 }
 
 function writeAscii(out, offset, text) {
@@ -546,4 +904,8 @@ function toU16Code(raw, index) {
 
 function roundMs(ms) {
   return Number(ms.toFixed(1));
+}
+
+function roundRatio(value) {
+  return Number(value.toFixed(3));
 }

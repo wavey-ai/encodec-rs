@@ -431,6 +431,31 @@ impl ArithmeticDecoder {
         min_range: i64,
         scratch: &mut CdfScratch,
     ) -> Result<Vec<usize>> {
+        let mut out = vec![0; n_cols];
+        self.pull_symbols_into_with_scratch(
+            pdf, n_bins, n_cols, fp_scale, min_range, scratch, &mut out,
+        )?;
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn pull_symbols_into_with_scratch(
+        &mut self,
+        pdf: &[f64],
+        n_bins: usize,
+        n_cols: usize,
+        fp_scale: i64,
+        min_range: i64,
+        scratch: &mut CdfScratch,
+        out: &mut [usize],
+    ) -> Result<()> {
+        if out.len() != n_cols {
+            bail!(
+                "output symbol count {} does not match pdf column count {}",
+                out.len(),
+                n_cols,
+            );
+        }
         let cdf = deterministic_cdf_multi_with_scratch(
             pdf,
             n_bins,
@@ -440,11 +465,10 @@ impl ArithmeticDecoder {
             min_range,
             scratch,
         )?;
-        let mut out = Vec::with_capacity(n_cols);
-        for col in 0..n_cols {
-            out.push(self.pull_symbol(cdf, n_bins, n_cols, col)?);
+        for (col, symbol) in out.iter_mut().enumerate() {
+            *symbol = self.pull_symbol(cdf, n_bins, n_cols, col)?;
         }
-        Ok(out)
+        Ok(())
     }
 
     fn delta(&self) -> u64 {

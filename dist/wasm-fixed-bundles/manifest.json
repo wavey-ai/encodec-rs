@@ -1,101 +1,142 @@
 {
+  "schemaVersion": 2,
   "pkg": "pkg",
+  "runtimeModule": "encodec-ecdc-runtime.js",
+  "encoderRuntimeModule": "custom-encoder-runtime.js",
+  "decoderRuntimeModule": "custom-decoder-runtime.js",
+  "neuralRuntime": "custom_wasm_simd",
   "bundles": [
     {
       "name": "encodec_48khz_6kbps_1333ms",
       "bundleJson": "bundle.json",
       "lmWeights": "lm_weights_q8.bin",
-      "encodeModel": "encode_frame.onnx",
-      "decodeModel": "decode_frame.onnx",
+      "runtime": {
+        "schema_version": 1,
+        "kind": "custom_wasm_simd",
+        "encoder": {
+          "asset_root": "encoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-encoder-relaxed.mjs",
+          "fallback_kernel": "encodec-encoder.mjs"
+        },
+        "decoder": {
+          "asset_root": "decoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-convtranspose-relaxed.mjs",
+          "fallback_kernel": "encodec-convtranspose.mjs"
+        }
+      },
       "modelName": "encodec_48khz",
-      "bandwidthKbps": 6.0,
+      "bandwidthKbps": 6,
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 64960,
       "segmentStride": 64000,
       "frameLength": 203,
-      "numCodebooks": 4,
-      "lm": {
-        "dim": 200,
-        "layers": 5,
-        "heads": 8,
-        "codebooks": 4,
-        "cardinality": 1024,
-        "frame_length": 300,
-        "past_context": 525
-      }
+      "numCodebooks": 4
     },
     {
       "name": "encodec_48khz_6kbps_1800ms",
       "bundleJson": "bundle.json",
       "lmWeights": "lm_weights_q8.bin",
-      "encodeModel": "encode_frame.onnx",
-      "decodeModel": "decode_frame.onnx",
+      "runtime": {
+        "schema_version": 1,
+        "kind": "custom_wasm_simd",
+        "encoder": {
+          "asset_root": "encoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-encoder-relaxed.mjs",
+          "fallback_kernel": "encodec-encoder.mjs"
+        },
+        "decoder": {
+          "asset_root": "decoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-convtranspose-relaxed.mjs",
+          "fallback_kernel": "encodec-convtranspose.mjs"
+        }
+      },
       "modelName": "encodec_48khz",
-      "bandwidthKbps": 6.0,
+      "bandwidthKbps": 6,
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 87360,
       "segmentStride": 86400,
       "frameLength": 273,
-      "numCodebooks": 4,
-      "lm": {
-        "dim": 200,
-        "layers": 5,
-        "heads": 8,
-        "codebooks": 4,
-        "cardinality": 1024,
-        "frame_length": 300,
-        "past_context": 525
-      }
+      "numCodebooks": 4
     },
     {
       "name": "encodec_48khz_12kbps_1333ms",
       "bundleJson": "bundle.json",
       "lmWeights": "lm_weights_q8.bin",
-      "encodeModel": "encode_frame.onnx",
-      "decodeModel": "decode_frame.onnx",
+      "runtime": {
+        "schema_version": 1,
+        "kind": "custom_wasm_simd",
+        "encoder": {
+          "asset_root": "encoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-encoder-relaxed.mjs",
+          "fallback_kernel": "encodec-encoder.mjs"
+        },
+        "decoder": {
+          "asset_root": "decoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-convtranspose-relaxed.mjs",
+          "fallback_kernel": "encodec-convtranspose.mjs"
+        }
+      },
       "modelName": "encodec_48khz",
-      "bandwidthKbps": 12.0,
+      "bandwidthKbps": 12,
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 64960,
       "segmentStride": 64000,
       "frameLength": 203,
-      "numCodebooks": 8,
-      "lm": {
-        "dim": 200,
-        "layers": 5,
-        "heads": 8,
-        "codebooks": 8,
-        "cardinality": 1024,
-        "frame_length": 300,
-        "past_context": 525
-      }
+      "numCodebooks": 8
     },
     {
       "name": "encodec_48khz_12kbps_1800ms",
       "bundleJson": "bundle.json",
       "lmWeights": "lm_weights_q8.bin",
-      "encodeModel": "encode_frame.onnx",
-      "decodeModel": "decode_frame.onnx",
+      "runtime": {
+        "schema_version": 1,
+        "kind": "custom_wasm_simd",
+        "encoder": {
+          "asset_root": "encoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-encoder-relaxed.mjs",
+          "fallback_kernel": "encodec-encoder.mjs"
+        },
+        "decoder": {
+          "asset_root": "decoder/",
+          "metadata": "metadata.json",
+          "weights_manifest": "weights.json",
+          "weights": "weights.f32le",
+          "kernel": "encodec-convtranspose-relaxed.mjs",
+          "fallback_kernel": "encodec-convtranspose.mjs"
+        }
+      },
       "modelName": "encodec_48khz",
-      "bandwidthKbps": 12.0,
+      "bandwidthKbps": 12,
       "sampleRate": 48000,
       "channels": 2,
       "segmentSamples": 87360,
       "segmentStride": 86400,
       "frameLength": 273,
-      "numCodebooks": 8,
-      "lm": {
-        "dim": 200,
-        "layers": 5,
-        "heads": 8,
-        "codebooks": 8,
-        "cardinality": 1024,
-        "frame_length": 300,
-        "past_context": 525
-      }
+      "numCodebooks": 8
     }
   ]
 }

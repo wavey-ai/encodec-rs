@@ -400,9 +400,11 @@ impl QuantizedLmChunkEncoder {
                 self.lm_window_frame_length
             );
         }
-        let logits = self.lm.forward_step(&mut self.state, &self.input_symbols)?;
+        let logits = self
+            .lm
+            .forward_step_borrowed(&mut self.state, &self.input_symbols)?;
         let pdf = probability_columns_from_flat_logits(
-            &logits,
+            logits,
             self.meta.lm_cardinality(),
             self.meta.num_codebooks,
             1,
@@ -503,6 +505,44 @@ impl QuantizedLmChunkDecoder {
     }
 
     pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> {
+        let mut symbols = vec![0; self.meta.num_codebooks];
+        self.pull_symbols_into(&mut symbols)?;
+        symbols
+            .into_iter()
+            .map(|symbol| {
+                u16::try_from(symbol)
+                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))
+            })
+            .collect()
+    }
+
+    #[wasm_bindgen(js_name = pullAll)]
+    pub fn pull_all(&mut self, frame_length: usize) -> Result<Vec<u16>, JsValue> {
+        let remaining = self
+            .lm_window_frame_length
+            .saturating_sub(self.pulled_steps);
+        if frame_length > remaining {
+            return Err(to_js_error(format!(
+                "requested {frame_length} LM steps with only {remaining} remaining",
+            )));
+        }
+
+        let codebooks = self.meta.num_codebooks;
+        let mut codes = vec![0_u16; codebooks * frame_length];
+        let mut symbols = vec![0_usize; codebooks];
+        for step in 0..frame_length {
+            self.pull_symbols_into(&mut symbols)?;
+            for (codebook, symbol) in symbols.iter().copied().enumerate() {
+                codes[codebook * frame_length + step] = u16::try_from(symbol)
+                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))?;
+            }
+        }
+        Ok(codes)
+    }
+}
+
+impl QuantizedLmChunkDecoder {
+    fn pull_symbols_into(&mut self, symbols: &mut [usize]) -> Result<(), JsValue> {
         if self.pulled_steps >= self.lm_window_frame_length {
             return Err(to_js_error(format!(
                 "chunk exceeds LM positional capacity {}",
@@ -511,10 +551,10 @@ impl QuantizedLmChunkDecoder {
         }
         let logits = self
             .lm
-            .forward_step(&mut self.state, &self.input_symbols)
+            .forward_step_borrowed(&mut self.state, &self.input_symbols)
             .map_err(to_js_error)?;
         let pdf = probability_columns_from_flat_logits(
-            &logits,
+            logits,
             self.meta.lm_cardinality(),
             self.meta.num_codebooks,
             1,
@@ -526,28 +566,22 @@ impl QuantizedLmChunkDecoder {
             &mut self.probability_scratch,
         )
         .map_err(to_js_error)?;
-        let symbols = self
-            .decoder
-            .pull_symbols_with_scratch(
+        self.decoder
+            .pull_symbols_into_with_scratch(
                 pdf,
                 self.meta.lm_cardinality(),
                 self.meta.num_codebooks,
                 DEFAULT_FP_SCALE,
                 DEFAULT_MIN_RANGE,
                 &mut self.cdf_scratch,
+                symbols,
             )
             .map_err(to_js_error)?;
         for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
             *dst = symbol + 1;
         }
         self.pulled_steps += 1;
-        symbols
-            .into_iter()
-            .map(|symbol| {
-                u16::try_from(symbol)
-                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))
-            })
-            .collect()
+        Ok(())
     }
 }
 
@@ -1105,5 +1139,14 @@ mod tests {
                 .collect();
             assert_eq!(decoded, expected);
         }
+
+        let mut bulk_decoder =
+            QuantizedLmChunkDecoder::new(&bundle_json, &weights, &native_payload).unwrap();
+        let decoded = bulk_decoder.pull_all(steps).unwrap();
+        let codes_ref = &codes;
+        let expected: Vec<u16> = (0..metadata.num_codebooks)
+            .flat_map(|codebook| (0..steps).map(move |time| codes_ref[[0, codebook, time]] as u16))
+            .collect();
+        assert_eq!(decoded, expected);
     }
 }

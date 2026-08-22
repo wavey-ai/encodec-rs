@@ -1,0 +1,318 @@
+{
+  "onnxFree": true,
+  "frameLength": 203,
+  "numCodebooks": 8,
+  "channels": 2,
+  "segmentSamples": 64960,
+  "front": {
+    "rvq": {
+      "codebooks": 8,
+      "entries": 1024,
+      "dimension": 128
+    },
+    "conv": {
+      "inputChannels": 128,
+      "outputChannels": 512,
+      "kernel": 7,
+      "stride": 1,
+      "inputTime": 203,
+      "paddingLeft": 3,
+      "paddingRight": 3,
+      "paddedInputTime": 209,
+      "outputTime": 203
+    },
+    "lstmLayers": [
+      {
+        "layer": 0,
+        "name": "/decoder/model/model.1/lstm/LSTM",
+        "inputSize": 512,
+        "hiddenSize": 512,
+        "gateSize": 2048
+      },
+      {
+        "layer": 1,
+        "name": "/decoder/model/model.1/lstm/LSTM_1",
+        "inputSize": 512,
+        "hiddenSize": 512,
+        "gateSize": 2048
+      }
+    ]
+  },
+  "post": {
+    "convLayers": [
+      {
+        "layer": 0,
+        "block": 0,
+        "role": "shortcut",
+        "name": "/decoder/model/model.4/shortcut/conv/conv/Conv",
+        "inputChannels": 256,
+        "outputChannels": 256,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 1624,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 1624,
+        "outputTime": 1624
+      },
+      {
+        "layer": 1,
+        "block": 0,
+        "role": "mainReduce",
+        "name": "/decoder/model/model.4/block/block.1/conv/conv/Conv",
+        "inputChannels": 256,
+        "outputChannels": 128,
+        "kernel": 3,
+        "stride": 1,
+        "inputTime": 1624,
+        "paddingLeft": 1,
+        "paddingRight": 1,
+        "paddedInputTime": 1626,
+        "outputTime": 1624
+      },
+      {
+        "layer": 2,
+        "block": 0,
+        "role": "mainExpand",
+        "name": "/decoder/model/model.4/block/block.3/conv/conv/Conv",
+        "inputChannels": 128,
+        "outputChannels": 256,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 1624,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 1624,
+        "outputTime": 1624
+      },
+      {
+        "layer": 3,
+        "block": 1,
+        "role": "shortcut",
+        "name": "/decoder/model/model.7/shortcut/conv/conv/Conv",
+        "inputChannels": 128,
+        "outputChannels": 128,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 8120,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 8120,
+        "outputTime": 8120
+      },
+      {
+        "layer": 4,
+        "block": 1,
+        "role": "mainReduce",
+        "name": "/decoder/model/model.7/block/block.1/conv/conv/Conv",
+        "inputChannels": 128,
+        "outputChannels": 64,
+        "kernel": 3,
+        "stride": 1,
+        "inputTime": 8120,
+        "paddingLeft": 1,
+        "paddingRight": 1,
+        "paddedInputTime": 8122,
+        "outputTime": 8120
+      },
+      {
+        "layer": 5,
+        "block": 1,
+        "role": "mainExpand",
+        "name": "/decoder/model/model.7/block/block.3/conv/conv/Conv",
+        "inputChannels": 64,
+        "outputChannels": 128,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 8120,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 8120,
+        "outputTime": 8120
+      },
+      {
+        "layer": 6,
+        "block": 2,
+        "role": "shortcut",
+        "name": "/decoder/model/model.10/shortcut/conv/conv/Conv",
+        "inputChannels": 64,
+        "outputChannels": 64,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 32480,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 32480,
+        "outputTime": 32480
+      },
+      {
+        "layer": 7,
+        "block": 2,
+        "role": "mainReduce",
+        "name": "/decoder/model/model.10/block/block.1/conv/conv/Conv",
+        "inputChannels": 64,
+        "outputChannels": 32,
+        "kernel": 3,
+        "stride": 1,
+        "inputTime": 32480,
+        "paddingLeft": 1,
+        "paddingRight": 1,
+        "paddedInputTime": 32482,
+        "outputTime": 32480
+      },
+      {
+        "layer": 8,
+        "block": 2,
+        "role": "mainExpand",
+        "name": "/decoder/model/model.10/block/block.3/conv/conv/Conv",
+        "inputChannels": 32,
+        "outputChannels": 64,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 32480,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 32480,
+        "outputTime": 32480
+      },
+      {
+        "layer": 9,
+        "block": 3,
+        "role": "shortcut",
+        "name": "/decoder/model/model.13/shortcut/conv/conv/Conv",
+        "inputChannels": 32,
+        "outputChannels": 32,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 64960,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 64960,
+        "outputTime": 64960
+      },
+      {
+        "layer": 10,
+        "block": 3,
+        "role": "mainReduce",
+        "name": "/decoder/model/model.13/block/block.1/conv/conv/Conv",
+        "inputChannels": 32,
+        "outputChannels": 16,
+        "kernel": 3,
+        "stride": 1,
+        "inputTime": 64960,
+        "paddingLeft": 1,
+        "paddingRight": 1,
+        "paddedInputTime": 64962,
+        "outputTime": 64960
+      },
+      {
+        "layer": 11,
+        "block": 3,
+        "role": "mainExpand",
+        "name": "/decoder/model/model.13/block/block.3/conv/conv/Conv",
+        "inputChannels": 16,
+        "outputChannels": 32,
+        "kernel": 1,
+        "stride": 1,
+        "inputTime": 64960,
+        "paddingLeft": 0,
+        "paddingRight": 0,
+        "paddedInputTime": 64960,
+        "outputTime": 64960
+      }
+    ],
+    "blocks": [
+      [
+        0,
+        1,
+        2
+      ],
+      [
+        3,
+        4,
+        5
+      ],
+      [
+        6,
+        7,
+        8
+      ],
+      [
+        9,
+        10,
+        11
+      ]
+    ],
+    "finalConv": {
+      "inputChannels": 32,
+      "outputChannels": 2,
+      "kernelOutputChannels": 8,
+      "kernel": 7,
+      "stride": 1,
+      "inputTime": 64960,
+      "paddingLeft": 3,
+      "paddingRight": 3,
+      "paddedInputTime": 64966,
+      "outputTime": 64960
+    }
+  },
+  "layers": [
+    {
+      "layer": 0,
+      "inputChannels": 512,
+      "outputChannels": 256,
+      "kernel": 16,
+      "stride": 8,
+      "inputTime": 203,
+      "rawOutputTime": 1632,
+      "croppedOutputTime": 1624,
+      "cropLeft": 4,
+      "cropRight": 4,
+      "inputName": "/decoder/model/model.2/Elu_output_0",
+      "outputName": "/decoder/model/model.3/convtr/convtr/ConvTranspose_output_0"
+    },
+    {
+      "layer": 1,
+      "inputChannels": 256,
+      "outputChannels": 128,
+      "kernel": 10,
+      "stride": 5,
+      "inputTime": 1624,
+      "rawOutputTime": 8125,
+      "croppedOutputTime": 8120,
+      "cropLeft": 3,
+      "cropRight": 2,
+      "inputName": "/decoder/model/model.5/Elu_output_0",
+      "outputName": "/decoder/model/model.6/convtr/convtr/ConvTranspose_output_0"
+    },
+    {
+      "layer": 2,
+      "inputChannels": 128,
+      "outputChannels": 64,
+      "kernel": 8,
+      "stride": 4,
+      "inputTime": 8120,
+      "rawOutputTime": 32484,
+      "croppedOutputTime": 32480,
+      "cropLeft": 2,
+      "cropRight": 2,
+      "inputName": "/decoder/model/model.8/Elu_output_0",
+      "outputName": "/decoder/model/model.9/convtr/convtr/ConvTranspose_output_0"
+    },
+    {
+      "layer": 3,
+      "inputChannels": 64,
+      "outputChannels": 32,
+      "kernel": 4,
+      "stride": 2,
+      "inputTime": 32480,
+      "rawOutputTime": 64962,
+      "croppedOutputTime": 64960,
+      "cropLeft": 1,
+      "cropRight": 1,
+      "inputName": "/decoder/model/model.11/Elu_output_0",
+      "outputName": "/decoder/model/model.12/convtr/convtr/ConvTranspose_output_0"
+    }
+  ],
+  "stages": 5
+}
