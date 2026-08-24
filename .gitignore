@@ -1,5 +1,6 @@
 target/
 build/
+/.build/
 apple/.build/
 apple/.swiftpm/
 apple/DeviceBench/EncodecMLXDeviceBench.xcodeproj/

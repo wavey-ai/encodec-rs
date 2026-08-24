@@ -153,56 +153,97 @@ public protocol EncodecFrameBackend {
     func decodeFrame(codes: MLXArray, scale: MLXArray) throws -> MLXArray
 }
 
+public enum EncodecMLXRuntimeMode: Sendable {
+    case encodeOnly
+    case decodeOnly
+    case encodeAndDecode
+
+    fileprivate var loadsEncoder: Bool {
+        self != .decodeOnly
+    }
+
+    fileprivate var loadsDecoder: Bool {
+        self != .encodeOnly
+    }
+}
+
 public final class MLXEncodecFrameBackend: EncodecFrameBackend {
     public let metadata: EncodecFrameMetadata
     public let manifest: EncodecMLXWeightManifest
 
     private let encodeTensorCount: Int
     private let decodeTensorCount: Int
-    private let encoder: MLXEncodecFrameEncoder
-    private let decoder: MLXEncodecFrameDecoder
+    private let encoder: MLXEncodecFrameEncoder?
+    private let decoder: MLXEncodecFrameDecoder?
     private let compiledEncoder: (@Sendable ([MLXArray]) -> [MLXArray])?
     private let compiledDecoder: (@Sendable ([MLXArray]) -> [MLXArray])?
 
-    public init(bundleURL: URL) throws {
+    public init(
+        bundleURL: URL,
+        mode: EncodecMLXRuntimeMode = .encodeAndDecode
+    ) throws {
         self.metadata = try EncodecFrameMetadata.load(from: bundleURL)
         self.manifest = try EncodecMLXWeightManifest.load(from: bundleURL)
 
-        guard let encodeModel = manifest.models["encode_frame"] else {
-            throw EncodecMLXRuntimeError.missingModel("encode_frame")
+        let encoder: MLXEncodecFrameEncoder?
+        if mode.loadsEncoder {
+            guard let model = manifest.models["encode_frame"] else {
+                throw EncodecMLXRuntimeError.missingModel("encode_frame")
+            }
+            let weights = try Self.loadWeightArrays(
+                from: bundleURL.appendingPathComponent(model.safetensors)
+            )
+            guard !weights.isEmpty else {
+                throw EncodecMLXRuntimeError.emptyWeights("encode_frame")
+            }
+            self.encodeTensorCount = weights.count
+            encoder = try MLXEncodecFrameEncoder(
+                metadata: metadata,
+                weights: weights
+            )
+        } else {
+            self.encodeTensorCount = 0
+            encoder = nil
         }
-        guard let decodeModel = manifest.models["decode_frame"] else {
-            throw EncodecMLXRuntimeError.missingModel("decode_frame")
-        }
-
-        let encodeWeights = try Self.loadWeightArrays(
-            from: bundleURL.appendingPathComponent(encodeModel.safetensors)
-        )
-        let decodeWeights = try Self.loadWeightArrays(
-            from: bundleURL.appendingPathComponent(decodeModel.safetensors)
-        )
-
-        guard !encodeWeights.isEmpty else {
-            throw EncodecMLXRuntimeError.emptyWeights("encode_frame")
-        }
-        guard !decodeWeights.isEmpty else {
-            throw EncodecMLXRuntimeError.emptyWeights("decode_frame")
-        }
-        self.encodeTensorCount = encodeWeights.count
-        self.decodeTensorCount = decodeWeights.count
-
-        let encoder = try MLXEncodecFrameEncoder(metadata: metadata, weights: encodeWeights)
-        let decoder = try MLXEncodecFrameDecoder(metadata: metadata, weights: decodeWeights)
         self.encoder = encoder
+
+        let decoder: MLXEncodecFrameDecoder?
+        if mode.loadsDecoder {
+            guard let model = manifest.models["decode_frame"] else {
+                throw EncodecMLXRuntimeError.missingModel("decode_frame")
+            }
+            let weights = try Self.loadWeightArrays(
+                from: bundleURL.appendingPathComponent(model.safetensors)
+            )
+            guard !weights.isEmpty else {
+                throw EncodecMLXRuntimeError.emptyWeights("decode_frame")
+            }
+            self.decodeTensorCount = weights.count
+            decoder = try MLXEncodecFrameDecoder(
+                metadata: metadata,
+                weights: weights
+            )
+        } else {
+            self.decodeTensorCount = 0
+            decoder = nil
+        }
         self.decoder = decoder
 
         if ProcessInfo.processInfo.environment["BITNEEDLE_MLX_COMPILE"] == "1" {
-            self.compiledEncoder = compile { inputs in
-                let encoded = try! encoder.encodeFrame(audio: inputs[0])
-                return [encoded.codes, encoded.scale]
+            if let encoder {
+                self.compiledEncoder = compile { inputs in
+                    let encoded = try! encoder.encodeFrame(audio: inputs[0])
+                    return [encoded.codes, encoded.scale]
+                }
+            } else {
+                self.compiledEncoder = nil
             }
-            self.compiledDecoder = compile { inputs in
-                [try! decoder.decodeFrame(codes: inputs[0], scale: inputs[1])]
+            if let decoder {
+                self.compiledDecoder = compile { inputs in
+                    [try! decoder.decodeFrame(codes: inputs[0], scale: inputs[1])]
+                }
+            } else {
+                self.compiledDecoder = nil
             }
         } else {
             self.compiledEncoder = nil
@@ -234,6 +275,11 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
     }
 
     public func encodeFrame(audio: MLXArray) throws -> (codes: MLXArray, scale: MLXArray) {
+        guard let encoder else {
+            throw EncodecMLXRuntimeError.unsupportedBundle(
+                "This Encodec runtime did not load its encoder."
+            )
+        }
         if let compiledEncoder {
             let encoded = compiledEncoder([audio])
             return (encoded[0], encoded[1])
@@ -242,6 +288,11 @@ public final class MLXEncodecFrameBackend: EncodecFrameBackend {
     }
 
     public func decodeFrame(codes: MLXArray, scale: MLXArray) throws -> MLXArray {
+        guard let decoder else {
+            throw EncodecMLXRuntimeError.unsupportedBundle(
+                "This Encodec runtime did not load its decoder."
+            )
+        }
         if let compiledDecoder {
             return compiledDecoder([codes, scale])[0]
         }
