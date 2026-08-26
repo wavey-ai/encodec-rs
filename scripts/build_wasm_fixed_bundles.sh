@@ -8,7 +8,7 @@ RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-nightly}"
 RUST_WASM_TARGET="${RUST_WASM_TARGET:-wasm32-unknown-unknown}"
 RUST_WASM_TARGET_FEATURES="${RUST_WASM_TARGET_FEATURES:-+simd128}"
 PYTHON_BIN="${PYTHON_BIN:-/opt/anaconda3/envs/encodec-export/bin/python}"
-BUNDLES="${BUNDLES:-encodec_48khz_6kbps_1333ms encodec_48khz_6kbps_1800ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_1800ms}"
+BUNDLES="${BUNDLES:-encodec_48khz_3kbps_1333ms encodec_48khz_6kbps_1333ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_7cb_1333ms encodec_48khz_24kbps_1333ms encodec_48khz_3kbps_1800ms encodec_48khz_6kbps_1800ms encodec_48khz_12kbps_1800ms encodec_48khz_12kbps_7cb_1800ms encodec_48khz_24kbps_1800ms}"
 
 cd "$ROOT"
 
@@ -25,6 +25,7 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   exit 1
 fi
 
+mkdir -p "$ROOT/target"
 build_root="$(mktemp -d "$ROOT/target/custom-wasm-bundles.XXXXXX")"
 cleanup() {
   rm -rf "$build_root"
@@ -33,19 +34,24 @@ trap cleanup EXIT
 
 rustup target add "$RUST_WASM_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
-if ! command -v wasm-bindgen >/dev/null 2>&1; then
-  # Pin wasm-bindgen-cli to the locked wasm-bindgen version from Cargo.lock.
-  version="$(
-    awk '
-      /^name = "wasm-bindgen"$/ { found = 1; next }
-      found && /^version = / { gsub(/[",]/, "", $3); print $3; exit }
-    ' Cargo.lock
-  )"
-  if [[ -z "$version" ]]; then
-    echo "wasm-bindgen version not found in Cargo.lock" >&2
-    exit 1
-  fi
-  cargo +"$RUST_TOOLCHAIN" install wasm-bindgen-cli --version "$version"
+version="$(
+  awk '
+    /^name = "wasm-bindgen"$/ { found = 1; next }
+    found && /^version = / { gsub(/[",]/, "", $3); print $3; exit }
+  ' Cargo.lock
+)"
+if [[ -z "$version" ]]; then
+  echo "wasm-bindgen version not found in Cargo.lock" >&2
+  exit 1
+fi
+
+installed_version=""
+if command -v wasm-bindgen >/dev/null 2>&1; then
+  installed_version="$(wasm-bindgen --version | awk '{print $2}')"
+fi
+if [[ "$installed_version" != "$version" ]]; then
+  # wasm-bindgen's generated schema must exactly match the Rust crate version.
+  cargo +"$RUST_TOOLCHAIN" install wasm-bindgen-cli --version "$version" --force --locked
 fi
 
 rm -rf "$OUT" "$ROOT/pkg"
@@ -71,11 +77,15 @@ if [[ -z "$crate_name" ]]; then
   exit 1
 fi
 
-wasm_path="$ROOT/target/${RUST_WASM_TARGET}/release/${crate_name}.wasm"
+cargo_target_dir="$(
+  cargo +"$RUST_TOOLCHAIN" metadata --format-version 1 --no-deps \
+    | "$PYTHON_BIN" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+)"
+wasm_path="$cargo_target_dir/${RUST_WASM_TARGET}/release/${crate_name}.wasm"
 
 if [[ ! -f "$wasm_path" ]]; then
   echo "missing wasm output: $wasm_path" >&2
-  find "$ROOT/target/${RUST_WASM_TARGET}/release" -maxdepth 1 -name '*.wasm' -print >&2 || true
+  find "$cargo_target_dir/${RUST_WASM_TARGET}/release" -maxdepth 1 -name '*.wasm' -print >&2 || true
   exit 1
 fi
 
@@ -83,6 +93,7 @@ wasm-bindgen "$wasm_path" \
   --target "$BINDGEN_TARGET" \
   --out-dir "$ROOT/pkg"
 
+cp "$ROOT/scripts/wasm-pkg-package.json" "$ROOT/pkg/package.json"
 cp -R "$ROOT/pkg/." "$OUT/pkg/"
 cp "$ROOT/browser-runtime/encodec-ecdc-runtime.js" "$OUT/encodec-ecdc-runtime.js"
 cp "$ROOT/browser-runtime/browser-neural-runtime.js" "$OUT/browser-neural-runtime.js"

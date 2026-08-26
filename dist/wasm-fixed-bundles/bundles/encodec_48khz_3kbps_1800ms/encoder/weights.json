@@ -1,0 +1,411 @@
+{
+  "schemaVersion": 1,
+  "file": "weights.f32le",
+  "dataType": "float32",
+  "byteOrder": "little",
+  "alignment": 16,
+  "byteLength": 30753728,
+  "sha256": "2b32e8890664914fc764a9b86df6d1db1dadcf4166eff108ed43c2edea151bc0",
+  "tensors": {
+    "conv-0-bias.f32le": {
+      "offsetBytes": 0,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-0-norm-bias.f32le": {
+      "offsetBytes": 128,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-0-norm-scale.f32le": {
+      "offsetBytes": 256,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-0-weight.f32le": {
+      "offsetBytes": 384,
+      "byteLength": 1792,
+      "length": 448
+    },
+    "conv-1-bias.f32le": {
+      "offsetBytes": 2176,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-1-norm-bias.f32le": {
+      "offsetBytes": 2304,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-1-norm-scale.f32le": {
+      "offsetBytes": 2432,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-1-weight.f32le": {
+      "offsetBytes": 2560,
+      "byteLength": 4096,
+      "length": 1024
+    },
+    "conv-10-bias.f32le": {
+      "offsetBytes": 6656,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-10-norm-bias.f32le": {
+      "offsetBytes": 6912,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-10-norm-scale.f32le": {
+      "offsetBytes": 7168,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-10-weight.f32le": {
+      "offsetBytes": 7424,
+      "byteLength": 98304,
+      "length": 24576
+    },
+    "conv-11-bias.f32le": {
+      "offsetBytes": 105728,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-11-norm-bias.f32le": {
+      "offsetBytes": 106240,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-11-norm-scale.f32le": {
+      "offsetBytes": 106752,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-11-weight.f32le": {
+      "offsetBytes": 107264,
+      "byteLength": 32768,
+      "length": 8192
+    },
+    "conv-12-bias.f32le": {
+      "offsetBytes": 140032,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-12-norm-bias.f32le": {
+      "offsetBytes": 141056,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-12-norm-scale.f32le": {
+      "offsetBytes": 142080,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-12-weight.f32le": {
+      "offsetBytes": 143104,
+      "byteLength": 1310720,
+      "length": 327680
+    },
+    "conv-13-bias.f32le": {
+      "offsetBytes": 1453824,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-13-norm-bias.f32le": {
+      "offsetBytes": 1454848,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-13-norm-scale.f32le": {
+      "offsetBytes": 1455872,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-13-weight.f32le": {
+      "offsetBytes": 1456896,
+      "byteLength": 262144,
+      "length": 65536
+    },
+    "conv-14-bias.f32le": {
+      "offsetBytes": 1719040,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-14-norm-bias.f32le": {
+      "offsetBytes": 1719552,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-14-norm-scale.f32le": {
+      "offsetBytes": 1720064,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-14-weight.f32le": {
+      "offsetBytes": 1720576,
+      "byteLength": 393216,
+      "length": 98304
+    },
+    "conv-15-bias.f32le": {
+      "offsetBytes": 2113792,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-15-norm-bias.f32le": {
+      "offsetBytes": 2114816,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-15-norm-scale.f32le": {
+      "offsetBytes": 2115840,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "conv-15-weight.f32le": {
+      "offsetBytes": 2116864,
+      "byteLength": 131072,
+      "length": 32768
+    },
+    "conv-16-bias.f32le": {
+      "offsetBytes": 2247936,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "conv-16-norm-bias.f32le": {
+      "offsetBytes": 2249984,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "conv-16-norm-scale.f32le": {
+      "offsetBytes": 2252032,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "conv-16-weight.f32le": {
+      "offsetBytes": 2254080,
+      "byteLength": 8388608,
+      "length": 2097152
+    },
+    "conv-17-bias.f32le": {
+      "offsetBytes": 10642688,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-17-norm-bias.f32le": {
+      "offsetBytes": 10643200,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-17-norm-scale.f32le": {
+      "offsetBytes": 10643712,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-17-weight.f32le": {
+      "offsetBytes": 10644224,
+      "byteLength": 1835008,
+      "length": 458752
+    },
+    "conv-2-bias.f32le": {
+      "offsetBytes": 12479232,
+      "byteLength": 64,
+      "length": 16
+    },
+    "conv-2-norm-bias.f32le": {
+      "offsetBytes": 12479296,
+      "byteLength": 64,
+      "length": 16
+    },
+    "conv-2-norm-scale.f32le": {
+      "offsetBytes": 12479360,
+      "byteLength": 64,
+      "length": 16
+    },
+    "conv-2-weight.f32le": {
+      "offsetBytes": 12479424,
+      "byteLength": 6144,
+      "length": 1536
+    },
+    "conv-3-bias.f32le": {
+      "offsetBytes": 12485568,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-3-norm-bias.f32le": {
+      "offsetBytes": 12485696,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-3-norm-scale.f32le": {
+      "offsetBytes": 12485824,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-3-weight.f32le": {
+      "offsetBytes": 12485952,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "conv-4-bias.f32le": {
+      "offsetBytes": 12488000,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-4-norm-bias.f32le": {
+      "offsetBytes": 12488256,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-4-norm-scale.f32le": {
+      "offsetBytes": 12488512,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-4-weight.f32le": {
+      "offsetBytes": 12488768,
+      "byteLength": 32768,
+      "length": 8192
+    },
+    "conv-5-bias.f32le": {
+      "offsetBytes": 12521536,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-5-norm-bias.f32le": {
+      "offsetBytes": 12521792,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-5-norm-scale.f32le": {
+      "offsetBytes": 12522048,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-5-weight.f32le": {
+      "offsetBytes": 12522304,
+      "byteLength": 16384,
+      "length": 4096
+    },
+    "conv-6-bias.f32le": {
+      "offsetBytes": 12538688,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-6-norm-bias.f32le": {
+      "offsetBytes": 12538816,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-6-norm-scale.f32le": {
+      "offsetBytes": 12538944,
+      "byteLength": 128,
+      "length": 32
+    },
+    "conv-6-weight.f32le": {
+      "offsetBytes": 12539072,
+      "byteLength": 24576,
+      "length": 6144
+    },
+    "conv-7-bias.f32le": {
+      "offsetBytes": 12563648,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-7-norm-bias.f32le": {
+      "offsetBytes": 12563904,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-7-norm-scale.f32le": {
+      "offsetBytes": 12564160,
+      "byteLength": 256,
+      "length": 64
+    },
+    "conv-7-weight.f32le": {
+      "offsetBytes": 12564416,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "conv-8-bias.f32le": {
+      "offsetBytes": 12572608,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-8-norm-bias.f32le": {
+      "offsetBytes": 12573120,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-8-norm-scale.f32le": {
+      "offsetBytes": 12573632,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-8-weight.f32le": {
+      "offsetBytes": 12574144,
+      "byteLength": 262144,
+      "length": 65536
+    },
+    "conv-9-bias.f32le": {
+      "offsetBytes": 12836288,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-9-norm-bias.f32le": {
+      "offsetBytes": 12836800,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-9-norm-scale.f32le": {
+      "offsetBytes": 12837312,
+      "byteLength": 512,
+      "length": 128
+    },
+    "conv-9-weight.f32le": {
+      "offsetBytes": 12837824,
+      "byteLength": 65536,
+      "length": 16384
+    },
+    "lstm-0-bias.f32le": {
+      "offsetBytes": 12903360,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "lstm-0-input-weight.f32le": {
+      "offsetBytes": 12911552,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "lstm-0-recurrent-weight.f32le": {
+      "offsetBytes": 17105856,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "lstm-1-bias.f32le": {
+      "offsetBytes": 21300160,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "lstm-1-input-weight.f32le": {
+      "offsetBytes": 21308352,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "lstm-1-recurrent-weight.f32le": {
+      "offsetBytes": 25502656,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "rvq-embeddings.f32le": {
+      "offsetBytes": 29696960,
+      "byteLength": 1048576,
+      "length": 262144
+    },
+    "rvq-norms.f32le": {
+      "offsetBytes": 30745536,
+      "byteLength": 8192,
+      "length": 2048
+    }
+  }
+}

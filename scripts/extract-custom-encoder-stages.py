@@ -111,11 +111,13 @@ def main() -> None:
         )
 
     quantizer_matmuls = [node for node in nodes if node.op_type == "MatMul"]
-    if len(quantizer_matmuls) != int(bundle_metadata["num_codebooks"]):
+    expected_codebooks = int(bundle_metadata["num_codebooks"])
+    if len(quantizer_matmuls) < expected_codebooks:
         raise RuntimeError(
-            f"expected {bundle_metadata['num_codebooks']} quantizer MatMul nodes, "
+            f"expected at least {expected_codebooks} quantizer MatMul nodes, "
             f"found {len(quantizer_matmuls)}"
         )
+    quantizer_matmuls = quantizer_matmuls[:expected_codebooks]
     codebooks = []
     for node in quantizer_matmuls:
         embedding = numpy_helper.to_array(initializers[node.input[1]]).T.astype(

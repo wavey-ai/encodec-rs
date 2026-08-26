@@ -1,0 +1,406 @@
+{
+  "schemaVersion": 1,
+  "file": "weights.f32le",
+  "dataType": "float32",
+  "byteOrder": "little",
+  "alignment": 16,
+  "byteLength": 30744048,
+  "sha256": "f984533517bd2b85125350b0c32818278ad5addd11e8179e9da27a14d0f39cfa",
+  "tensors": {
+    "final-conv-bias.f32le": {
+      "offsetBytes": 0,
+      "byteLength": 8,
+      "length": 2
+    },
+    "final-conv-norm-bias.f32le": {
+      "offsetBytes": 16,
+      "byteLength": 8,
+      "length": 2
+    },
+    "final-conv-norm-scale.f32le": {
+      "offsetBytes": 32,
+      "byteLength": 8,
+      "length": 2
+    },
+    "final-conv-weight.f32le": {
+      "offsetBytes": 48,
+      "byteLength": 1792,
+      "length": 448
+    },
+    "front-conv-bias.f32le": {
+      "offsetBytes": 1840,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "front-conv-norm-bias.f32le": {
+      "offsetBytes": 3888,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "front-conv-norm-scale.f32le": {
+      "offsetBytes": 5936,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "front-conv-weight.f32le": {
+      "offsetBytes": 7984,
+      "byteLength": 1835008,
+      "length": 458752
+    },
+    "front-lstm-0-bias.f32le": {
+      "offsetBytes": 1842992,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "front-lstm-0-input-weight.f32le": {
+      "offsetBytes": 1851184,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "front-lstm-0-recurrent-weight.f32le": {
+      "offsetBytes": 6045488,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "front-lstm-1-bias.f32le": {
+      "offsetBytes": 10239792,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "front-lstm-1-input-weight.f32le": {
+      "offsetBytes": 10247984,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "front-lstm-1-recurrent-weight.f32le": {
+      "offsetBytes": 14442288,
+      "byteLength": 4194304,
+      "length": 1048576
+    },
+    "front-rvq-embeddings.f32le": {
+      "offsetBytes": 18636592,
+      "byteLength": 1048576,
+      "length": 262144
+    },
+    "layer-0-bias.f32le": {
+      "offsetBytes": 19685168,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "layer-0-norm-bias.f32le": {
+      "offsetBytes": 19686192,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "layer-0-norm-scale.f32le": {
+      "offsetBytes": 19687216,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "layer-0-weight.f32le": {
+      "offsetBytes": 19688240,
+      "byteLength": 8388608,
+      "length": 2097152
+    },
+    "layer-1-bias.f32le": {
+      "offsetBytes": 28076848,
+      "byteLength": 512,
+      "length": 128
+    },
+    "layer-1-norm-bias.f32le": {
+      "offsetBytes": 28077360,
+      "byteLength": 512,
+      "length": 128
+    },
+    "layer-1-norm-scale.f32le": {
+      "offsetBytes": 28077872,
+      "byteLength": 512,
+      "length": 128
+    },
+    "layer-1-weight.f32le": {
+      "offsetBytes": 28078384,
+      "byteLength": 1310720,
+      "length": 327680
+    },
+    "layer-2-bias.f32le": {
+      "offsetBytes": 29389104,
+      "byteLength": 256,
+      "length": 64
+    },
+    "layer-2-norm-bias.f32le": {
+      "offsetBytes": 29389360,
+      "byteLength": 256,
+      "length": 64
+    },
+    "layer-2-norm-scale.f32le": {
+      "offsetBytes": 29389616,
+      "byteLength": 256,
+      "length": 64
+    },
+    "layer-2-weight.f32le": {
+      "offsetBytes": 29389872,
+      "byteLength": 262144,
+      "length": 65536
+    },
+    "layer-3-bias.f32le": {
+      "offsetBytes": 29652016,
+      "byteLength": 128,
+      "length": 32
+    },
+    "layer-3-norm-bias.f32le": {
+      "offsetBytes": 29652144,
+      "byteLength": 128,
+      "length": 32
+    },
+    "layer-3-norm-scale.f32le": {
+      "offsetBytes": 29652272,
+      "byteLength": 128,
+      "length": 32
+    },
+    "layer-3-weight.f32le": {
+      "offsetBytes": 29652400,
+      "byteLength": 32768,
+      "length": 8192
+    },
+    "post-conv-0-bias.f32le": {
+      "offsetBytes": 29685168,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-0-norm-bias.f32le": {
+      "offsetBytes": 29686192,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-0-norm-scale.f32le": {
+      "offsetBytes": 29687216,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-0-weight.f32le": {
+      "offsetBytes": 29688240,
+      "byteLength": 262144,
+      "length": 65536
+    },
+    "post-conv-1-bias.f32le": {
+      "offsetBytes": 29950384,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-1-norm-bias.f32le": {
+      "offsetBytes": 29950896,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-1-norm-scale.f32le": {
+      "offsetBytes": 29951408,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-1-weight.f32le": {
+      "offsetBytes": 29951920,
+      "byteLength": 393216,
+      "length": 98304
+    },
+    "post-conv-10-bias.f32le": {
+      "offsetBytes": 30345136,
+      "byteLength": 64,
+      "length": 16
+    },
+    "post-conv-10-norm-bias.f32le": {
+      "offsetBytes": 30345200,
+      "byteLength": 64,
+      "length": 16
+    },
+    "post-conv-10-norm-scale.f32le": {
+      "offsetBytes": 30345264,
+      "byteLength": 64,
+      "length": 16
+    },
+    "post-conv-10-weight.f32le": {
+      "offsetBytes": 30345328,
+      "byteLength": 6144,
+      "length": 1536
+    },
+    "post-conv-11-bias.f32le": {
+      "offsetBytes": 30351472,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-11-norm-bias.f32le": {
+      "offsetBytes": 30351600,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-11-norm-scale.f32le": {
+      "offsetBytes": 30351728,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-11-weight.f32le": {
+      "offsetBytes": 30351856,
+      "byteLength": 2048,
+      "length": 512
+    },
+    "post-conv-2-bias.f32le": {
+      "offsetBytes": 30353904,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-2-norm-bias.f32le": {
+      "offsetBytes": 30354928,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-2-norm-scale.f32le": {
+      "offsetBytes": 30355952,
+      "byteLength": 1024,
+      "length": 256
+    },
+    "post-conv-2-weight.f32le": {
+      "offsetBytes": 30356976,
+      "byteLength": 131072,
+      "length": 32768
+    },
+    "post-conv-3-bias.f32le": {
+      "offsetBytes": 30488048,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-3-norm-bias.f32le": {
+      "offsetBytes": 30488560,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-3-norm-scale.f32le": {
+      "offsetBytes": 30489072,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-3-weight.f32le": {
+      "offsetBytes": 30489584,
+      "byteLength": 65536,
+      "length": 16384
+    },
+    "post-conv-4-bias.f32le": {
+      "offsetBytes": 30555120,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-4-norm-bias.f32le": {
+      "offsetBytes": 30555376,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-4-norm-scale.f32le": {
+      "offsetBytes": 30555632,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-4-weight.f32le": {
+      "offsetBytes": 30555888,
+      "byteLength": 98304,
+      "length": 24576
+    },
+    "post-conv-5-bias.f32le": {
+      "offsetBytes": 30654192,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-5-norm-bias.f32le": {
+      "offsetBytes": 30654704,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-5-norm-scale.f32le": {
+      "offsetBytes": 30655216,
+      "byteLength": 512,
+      "length": 128
+    },
+    "post-conv-5-weight.f32le": {
+      "offsetBytes": 30655728,
+      "byteLength": 32768,
+      "length": 8192
+    },
+    "post-conv-6-bias.f32le": {
+      "offsetBytes": 30688496,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-6-norm-bias.f32le": {
+      "offsetBytes": 30688752,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-6-norm-scale.f32le": {
+      "offsetBytes": 30689008,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-6-weight.f32le": {
+      "offsetBytes": 30689264,
+      "byteLength": 16384,
+      "length": 4096
+    },
+    "post-conv-7-bias.f32le": {
+      "offsetBytes": 30705648,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-7-norm-bias.f32le": {
+      "offsetBytes": 30705776,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-7-norm-scale.f32le": {
+      "offsetBytes": 30705904,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-7-weight.f32le": {
+      "offsetBytes": 30706032,
+      "byteLength": 24576,
+      "length": 6144
+    },
+    "post-conv-8-bias.f32le": {
+      "offsetBytes": 30730608,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-8-norm-bias.f32le": {
+      "offsetBytes": 30730864,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-8-norm-scale.f32le": {
+      "offsetBytes": 30731120,
+      "byteLength": 256,
+      "length": 64
+    },
+    "post-conv-8-weight.f32le": {
+      "offsetBytes": 30731376,
+      "byteLength": 8192,
+      "length": 2048
+    },
+    "post-conv-9-bias.f32le": {
+      "offsetBytes": 30739568,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-9-norm-bias.f32le": {
+      "offsetBytes": 30739696,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-9-norm-scale.f32le": {
+      "offsetBytes": 30739824,
+      "byteLength": 128,
+      "length": 32
+    },
+    "post-conv-9-weight.f32le": {
+      "offsetBytes": 30739952,
+      "byteLength": 4096,
+      "length": 1024
+    }
+  }
+}

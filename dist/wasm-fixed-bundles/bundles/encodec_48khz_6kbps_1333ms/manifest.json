@@ -31,6 +31,8 @@
   "segmentStride": 64000,
   "frameLength": 203,
   "numCodebooks": 4,
+  "nominalCodebookKbps": 6,
+  "profileBandwidthKbps": 6,
   "assets": {
     "bundle.json": {
       "bytes": 2256,

@@ -147,10 +147,11 @@ def main() -> None:
         if candidate.ndim == 2 and candidate.shape[0] == 1024:
             codebooks.append(candidate.astype("<f4", copy=False))
     expected_codebooks = int(bundle_metadata["num_codebooks"])
-    if len(codebooks) != expected_codebooks:
+    if len(codebooks) < expected_codebooks:
         raise RuntimeError(
-            f"expected {expected_codebooks} decoder codebooks, found {len(codebooks)}"
+            f"expected at least {expected_codebooks} decoder codebooks, found {len(codebooks)}"
         )
+    codebooks = codebooks[:expected_codebooks]
     embeddings = np.stack(codebooks)
     embeddings.tofile(output / "front-rvq-embeddings.f32le")
 
@@ -424,7 +425,7 @@ def main() -> None:
                 "output": str(output),
                 "frameLength": report["frameLength"],
                 "numCodebooks": report["numCodebooks"],
-                "transposeLayers": len(layers),
+                "transposeLayers": len(layer_metadata),
                 "onnxFree": report["onnxFree"],
             }
         )

@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 2,
+  "name": "encodec_48khz_3kbps_1800ms",
+  "bundleJson": "bundle.json",
+  "lmWeights": "lm_weights_q8.bin",
+  "runtime": {
+    "schema_version": 1,
+    "kind": "custom_wasm_simd",
+    "encoder": {
+      "asset_root": "encoder/",
+      "metadata": "metadata.json",
+      "weights_manifest": "weights.json",
+      "weights": "weights.f32le",
+      "kernel": "encodec-encoder-relaxed.mjs",
+      "fallback_kernel": "encodec-encoder.mjs"
+    },
+    "decoder": {
+      "asset_root": "decoder/",
+      "metadata": "metadata.json",
+      "weights_manifest": "weights.json",
+      "weights": "weights.f32le",
+      "kernel": "encodec-convtranspose-relaxed.mjs",
+      "fallback_kernel": "encodec-convtranspose.mjs"
+    }
+  },
+  "modelName": "encodec_48khz",
+  "bandwidthKbps": 3,
+  "sampleRate": 48000,
+  "channels": 2,
+  "segmentSamples": 87360,
+  "segmentStride": 86400,
+  "frameLength": 273,
+  "numCodebooks": 2,
+  "nominalCodebookKbps": 3,
+  "profileBandwidthKbps": 3,
+  "assets": {
+    "bundle.json": {
+      "bytes": 2256,
+      "sha256": "142a14b30aa2a4672fd45b6441804ed7bc1822b2b04e8b6715ca3bf09cd3a038"
+    },
+    "lm_weights_q8.bin": {
+      "bytes": 4795620,
+      "sha256": "566d0e59c35405bea2420bcee3381ea0b938bb95117e5d034190e0cae259f3af"
+    },
+    "encoder/metadata.json": {
+      "bytes": 9261,
+      "sha256": "ef0ff6e4475ac56e0f2ed08bf7184830f50eb8bea0c6793dadfb644686f82773"
+    },
+    "encoder/weights.json": {
+      "bytes": 9364,
+      "sha256": "c22e0447b214517fe4634c49e778d9e0a680a309944ba211ec6f395203924455"
+    },
+    "encoder/weights.f32le": {
+      "bytes": 30753728,
+      "sha256": "2b32e8890664914fc764a9b86df6d1db1dadcf4166eff108ed43c2edea151bc0"
+    },
+    "encoder/encodec-encoder-relaxed.mjs": {
+      "bytes": 9057,
+      "sha256": "6c0cc07a28f717ca1f75f2d802d74c291db7e3feaed9625c73d528bd5ee3f927"
+    },
+    "encoder/encodec-encoder-relaxed.wasm": {
+      "bytes": 23524,
+      "sha256": "aa6cd5a0b00ee9f82c02fa4aa55f7b3284206c47b0e1bb7a0d49acf234c9adb2"
+    },
+    "encoder/encodec-encoder.mjs": {
+      "bytes": 9041,
+      "sha256": "f6509bfc0ae96dda6c56a4e089603e2700c089f6ccadb60bbb37f257726c50a1"
+    },
+    "encoder/encodec-encoder.wasm": {
+      "bytes": 23905,
+      "sha256": "88a8fb6a4c97fa5dde8939ce6dda1ded41aa99c0ec22fee7ccbfddd20a2db7a1"
+    },
+    "decoder/metadata.json": {
+      "bytes": 7796,
+      "sha256": "6dc8c80c6e4f385c7e1bb9b99b1e7903056aee783f935e7f1ebaab0f88efb5dc"
+    },
+    "decoder/weights.json": {
+      "bytes": 9590,
+      "sha256": "e1bb38c1629a3a11fbf17a73fdef8e151b4f90f923dacd81ad694f092d611866"
+    },
+    "decoder/weights.f32le": {
+      "bytes": 30744048,
+      "sha256": "f984533517bd2b85125350b0c32818278ad5addd11e8179e9da27a14d0f39cfa"
+    },
+    "decoder/encodec-convtranspose-relaxed.mjs": {
+      "bytes": 9894,
+      "sha256": "57cd10560654c45c39090c2355698aa7d1781260eaefaf2f9d08c60f97e9b64c"
+    },
+    "decoder/encodec-convtranspose-relaxed.wasm": {
+      "bytes": 32211,
+      "sha256": "2926d6608ae0e1776df997cb812975e07d707c6b663bdce799000d8542e1a551"
+    },
+    "decoder/encodec-convtranspose.mjs": {
+      "bytes": 9878,
+      "sha256": "1c3c1a94f1692a967503c85fca31b51df5fffb8d6ee194b95326f185b437cbb2"
+    },
+    "decoder/encodec-convtranspose.wasm": {
+      "bytes": 32898,
+      "sha256": "89c1cb2c9f26f1c1f18119f0acaf2b00770f2c7eb0c0325b04d226c31de41181"
+    }
+  }
+}

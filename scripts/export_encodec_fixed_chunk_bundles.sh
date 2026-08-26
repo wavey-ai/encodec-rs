@@ -8,7 +8,8 @@ DEVICE="${DEVICE:-cpu}"
 OPSET="${OPSET:-17}"
 LM_FRAME_LENGTH="${LM_FRAME_LENGTH:-300}"
 LM_ENTROPY_LOGIT_STEP="${LM_ENTROPY_LOGIT_STEP:-2.1}"
-BANDWIDTHS="${BANDWIDTHS:-6.0 12.0}"
+BANDWIDTHS="${BANDWIDTHS:-3.0 6.0 12.0 24.0}"
+PYTHON_BIN="${PYTHON_BIN:-/opt/anaconda3/envs/encodec-export/bin/python}"
 
 # Fixed model windows with 10ms (480-sample) source context on each side.
 # Format: bundle-suffix:trace-samples:trace-stride
@@ -18,6 +19,11 @@ CHUNKS="${CHUNKS:-1333ms:64960:64000 1800ms:87360:86400}"
 
 cd "$ENCODEC_REPO"
 
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "missing Python environment: $PYTHON_BIN" >&2
+  exit 1
+fi
+
 export PYTHONPATH="$ENCODEC_REPO${PYTHONPATH:+:$PYTHONPATH}"
 export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
@@ -25,7 +31,7 @@ export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 
 for BANDWIDTH in $BANDWIDTHS; do
   bw_tag="$(
-    python - "$BANDWIDTH" <<'PY'
+    "$PYTHON_BIN" - "$BANDWIDTH" <<'PY'
 import sys
 
 value = float(sys.argv[1])
@@ -44,14 +50,14 @@ PY
 
     ENCODEC_ONNX_TRACE_SAMPLES="$trace_samples" \
       ENCODEC_ONNX_TRACE_STRIDE="$trace_stride" \
-      python scripts/export_frame_onnx.py \
+      "$PYTHON_BIN" scripts/export_frame_onnx.py \
       --model "$MODEL" \
       --bandwidth "$BANDWIDTH" \
       --output-dir "$OUTPUT_DIR" \
       --device "$DEVICE" \
       --opset-version "$OPSET"
 
-    python - \
+    "$PYTHON_BIN" - \
       "$OUTPUT_DIR" \
       "$MODEL" \
       "$BANDWIDTH" \
@@ -580,7 +586,7 @@ print(
 )
 PY
 
-    python - "$OUTPUT_DIR" "$trace_samples" "$trace_stride" <<'PY'
+    "$PYTHON_BIN" - "$OUTPUT_DIR" "$trace_samples" "$trace_stride" <<'PY'
 import json
 import struct
 import sys

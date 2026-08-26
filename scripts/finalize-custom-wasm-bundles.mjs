@@ -94,7 +94,14 @@ for (const name of bundleNames) {
     segmentStride: bundle.segment_stride,
     frameLength: bundle.frame_length,
     numCodebooks: bundle.num_codebooks,
+    nominalCodebookKbps:
+      bundle.nominal_codebook_kbps ?? bundle.num_codebooks * 1.5,
+    profileBandwidthKbps:
+      bundle.profile_bandwidth_kbps ?? bundle.bandwidth_kbps,
   };
+  if (bundle.codebook_prefix_source) {
+    summary.codebookPrefixSource = bundle.codebook_prefix_source;
+  }
   writeJson(path.join(bundleRoot, "manifest.json"), {
     schemaVersion: 2,
     ...summary,

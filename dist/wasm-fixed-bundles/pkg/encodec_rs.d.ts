@@ -23,6 +23,19 @@ export class QuantizedLmChunkEncoder {
     push(codes: Uint16Array): void;
 }
 
+/**
+ * Encodes a full-rate chunk and its codebook-prefix chunk with one retained
+ * q8 weight set and two exact LM states.
+ */
+export class QuantizedLmPairedChunkEncoder {
+    free(): void;
+    [Symbol.dispose](): void;
+    finish(): any;
+    lmWindowFrameLength(): number;
+    constructor(primary_bundle_json: string, derived_bundle_json: string, primary_weights: Uint8Array, derived_weights: Uint8Array, scale: number);
+    push(codes: Uint16Array): void;
+}
+
 export function bundleMetadata(bundle_json: string): any;
 
 export function ecdcMetadata(payload: Uint8Array): any;
@@ -32,6 +45,13 @@ export function ecdcOverlapAdd(bundle_json: string, audio_length: number, decode
 export function ecdcOverlapAddForMetadata(bundle_json: string, metadata_json: string, decoded_frames: Float32Array): Float32Array;
 
 export function fixedEcdcBundleName(bandwidth_kbps: any, chunk_ms: any): string;
+
+/**
+ * Selects an explicitly supported codebook variant without changing the
+ * established bitrate-only selector. In particular, `(12, 7, 1333)` and
+ * `(12, 7, 1800)` resolve the 10.5 kbps raw seven-codebook prefix bundles.
+ */
+export function fixedEcdcBundleNameWithCodebooks(bandwidth_kbps: any, num_codebooks: number, chunk_ms: any): string;
 
 export function initPanicHook(): void;
 
@@ -61,11 +81,13 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_quantizedlmchunkdecoder_free: (a: number, b: number) => void;
     readonly __wbg_quantizedlmchunkencoder_free: (a: number, b: number) => void;
+    readonly __wbg_quantizedlmpairedchunkencoder_free: (a: number, b: number) => void;
     readonly bundleMetadata: (a: number, b: number) => [number, number, number];
     readonly ecdcMetadata: (a: number, b: number) => [number, number, number];
     readonly ecdcOverlapAdd: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly ecdcOverlapAddForMetadata: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly fixedEcdcBundleName: (a: any, b: any) => [number, number, number, number];
+    readonly fixedEcdcBundleNameWithCodebooks: (a: any, b: number, c: any) => [number, number, number, number];
     readonly lmEcdcChunk: (a: number, b: number) => [number, number, number, number];
     readonly lmEcdcChunkFromFrame: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly lmEcdcDecodeChunks: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -82,6 +104,10 @@ export interface InitOutput {
     readonly quantizedlmchunkencoder_lmWindowFrameLength: (a: number) => number;
     readonly quantizedlmchunkencoder_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly quantizedlmchunkencoder_push: (a: number, b: number, c: number) => [number, number];
+    readonly quantizedlmpairedchunkencoder_finish: (a: number) => [number, number, number];
+    readonly quantizedlmpairedchunkencoder_lmWindowFrameLength: (a: number) => number;
+    readonly quantizedlmpairedchunkencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
+    readonly quantizedlmpairedchunkencoder_push: (a: number, b: number, c: number) => [number, number];
     readonly stableHashHex: (a: number, b: number) => [number, number];
     readonly triangleOverlapAddPlanarFrames: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly quantizedlmchunkencoder_bitstream_version: (a: number) => number;

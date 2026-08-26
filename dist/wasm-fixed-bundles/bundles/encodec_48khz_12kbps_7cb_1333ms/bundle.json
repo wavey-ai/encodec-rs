@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "model_name": "encodec_48khz",
+  "bandwidth_kbps": 12,
+  "sample_rate": 48000,
+  "channels": 2,
+  "segment_samples": 64960,
+  "segment_stride": 64000,
+  "normalize": true,
+  "num_codebooks": 7,
+  "frame_length": 203,
+  "encode_model": "encoder/metadata.json",
+  "decode_model": "decoder/metadata.json",
+  "opset_version": 17,
+  "bits_per_codebook": 10,
+  "codebook_cardinality": 1024,
+  "lm_cardinality": 1024,
+  "lm_quant_weight_model": "lm_weights_q8.bin",
+  "lm_dim": 200,
+  "lm_num_layers": 5,
+  "lm_past_context": 525,
+  "lm_logit_step": 0.015625,
+  "lm_entropy_logit_step": 2.1,
+  "codebook_prefix_source": "encodec_48khz_12kbps_1333ms",
+  "nominal_codebook_kbps": 10.5,
+  "profile_bandwidth_kbps": 12,
+  "custom_wasm_runtime": {
+    "schema_version": 1,
+    "kind": "custom_wasm_simd",
+    "encoder": {
+      "asset_root": "encoder/",
+      "metadata": "metadata.json",
+      "weights_manifest": "weights.json",
+      "weights": "weights.f32le",
+      "kernel": "encodec-encoder-relaxed.mjs",
+      "fallback_kernel": "encodec-encoder.mjs"
+    },
+    "decoder": {
+      "asset_root": "decoder/",
+      "metadata": "metadata.json",
+      "weights_manifest": "weights.json",
+      "weights": "weights.f32le",
+      "kernel": "encodec-convtranspose-relaxed.mjs",
+      "fallback_kernel": "encodec-convtranspose.mjs"
+    }
+  },
+  "bitneedle_player_assets": {
+    "lm_weights_q8.bin": {
+      "split": false
+    },
+    "encoder/metadata.json": {
+      "split": false
+    },
+    "encoder/weights.json": {
+      "split": false
+    },
+    "encoder/weights.f32le": {
+      "split": false
+    },
+    "encoder/encodec-encoder-relaxed.mjs": {
+      "split": false
+    },
+    "encoder/encodec-encoder-relaxed.wasm": {
+      "split": false
+    },
+    "encoder/encodec-encoder.mjs": {
+      "split": false
+    },
+    "encoder/encodec-encoder.wasm": {
+      "split": false
+    },
+    "decoder/metadata.json": {
+      "split": false
+    },
+    "decoder/weights.json": {
+      "split": false
+    },
+    "decoder/weights.f32le": {
+      "split": false
+    },
+    "decoder/encodec-convtranspose-relaxed.mjs": {
+      "split": false
+    },
+    "decoder/encodec-convtranspose-relaxed.wasm": {
+      "split": false
+    },
+    "decoder/encodec-convtranspose.mjs": {
+      "split": false
+    },
+    "decoder/encodec-convtranspose.wasm": {
+      "split": false
+    }
+  }
+}

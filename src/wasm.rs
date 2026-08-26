@@ -3,7 +3,8 @@ use crate::binary::{
     read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
 };
 use crate::ecdc_presets::{
-    bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name, fixed_context_samples,
+    bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name,
+    fixed_bundle_name_with_codebooks, fixed_context_samples,
 };
 use crate::entropy::{
     probability_columns_from_flat_logits, ProbabilityParameters, ProbabilityScratch,
@@ -55,6 +56,24 @@ pub fn fixed_ecdc_bundle_name_js(
     let bandwidth = bandwidth_preset_from_kbps(bandwidth_kbps).map_err(to_js_error)?;
     let chunk = chunk_preset_from_ms(chunk_ms).map_err(to_js_error)?;
     Ok(fixed_bundle_name(bandwidth, chunk).to_owned())
+}
+
+/// Selects an explicitly supported codebook variant without changing the
+/// established bitrate-only selector. In particular, `(12, 7, 1333)` and
+/// `(12, 7, 1800)` resolve the 10.5 kbps raw seven-codebook prefix bundles.
+#[wasm_bindgen(js_name = fixedEcdcBundleNameWithCodebooks)]
+pub fn fixed_ecdc_bundle_name_with_codebooks_js(
+    bandwidth_kbps: JsValue,
+    num_codebooks: usize,
+    chunk_ms: JsValue,
+) -> Result<String, JsValue> {
+    let bandwidth_kbps = optional_f64(&bandwidth_kbps)?;
+    let chunk_ms = optional_f64(&chunk_ms)?;
+    let bandwidth = bandwidth_preset_from_kbps(bandwidth_kbps).map_err(to_js_error)?;
+    let chunk = chunk_preset_from_ms(chunk_ms).map_err(to_js_error)?;
+    fixed_bundle_name_with_codebooks(bandwidth, num_codebooks, chunk)
+        .map(str::to_owned)
+        .map_err(to_js_error)
 }
 
 fn optional_f64(value: &JsValue) -> Result<Option<f64>, JsValue> {

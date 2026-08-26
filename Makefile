@@ -4,6 +4,8 @@ ROOT ?= $(CURDIR)
 
 WASM_SCRIPT ?= $(ROOT)/scripts/build_wasm_fixed_bundles.sh
 BUNDLE_EXPORT_SCRIPT ?= $(ROOT)/scripts/export_encodec_fixed_chunk_bundles.sh
+PREFIX_BUNDLE_SCRIPT ?= $(ROOT)/scripts/derive-codebook-prefix-bundle.py
+PYTHON_BIN ?= /opt/anaconda3/envs/encodec-export/bin/python
 
 WASM_DIST ?= $(ROOT)/dist/wasm-fixed-bundles
 ONNX_BUNDLES ?= $(ROOT)/onnx-bundles
@@ -13,10 +15,16 @@ RUST_TOOLCHAIN ?= nightly
 RUST_WASM_TARGET ?= wasm32-unknown-unknown
 
 FIXED_BUNDLES := \
+	encodec_48khz_3kbps_1333ms \
 	encodec_48khz_6kbps_1333ms \
-	encodec_48khz_6kbps_1800ms \
 	encodec_48khz_12kbps_1333ms \
-	encodec_48khz_12kbps_1800ms
+	encodec_48khz_12kbps_7cb_1333ms \
+	encodec_48khz_24kbps_1333ms \
+	encodec_48khz_3kbps_1800ms \
+	encodec_48khz_6kbps_1800ms \
+	encodec_48khz_12kbps_1800ms \
+	encodec_48khz_12kbps_7cb_1800ms \
+	encodec_48khz_24kbps_1800ms
 
 .PHONY: \
 	wasm \
@@ -48,15 +56,29 @@ wasm-clean:
 
 bundles-clean:
 	rm -rf \
+		"$(ONNX_BUNDLES)/encodec_48khz_3kbps_1333ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_3kbps_1800ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_6kbps_1333ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_6kbps_1800ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms"
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1333ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1800ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_24kbps_1333ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_24kbps_1800ms"
 
 bundles:
 	CHUNKS="1333ms:64960:64000 1800ms:87360:86400" \
 	ENCODEC_RS_REPO="$(ROOT)" \
 	"$(BUNDLE_EXPORT_SCRIPT)"
+	"$(PYTHON_BIN)" "$(PREFIX_BUNDLE_SCRIPT)" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1333ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1333ms" \
+		--codebooks 7 --profile-bandwidth-kbps 12
+	"$(PYTHON_BIN)" "$(PREFIX_BUNDLE_SCRIPT)" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms" \
+		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1800ms" \
+		--codebooks 7 --profile-bandwidth-kbps 12
 
 bundles-check:
 	@set -euo pipefail; \
@@ -89,6 +111,7 @@ benchmark-encodec-memory:
 wasm-check:
 	test -f "$(WASM_DIST)/pkg/encodec_rs.js"
 	test -f "$(WASM_DIST)/pkg/encodec_rs_bg.wasm"
+	test -f "$(WASM_DIST)/pkg/package.json"
 	test -f "$(WASM_DIST)/encodec-ecdc-runtime.js"
 	test -f "$(WASM_DIST)/manifest.json"
 	@set -euo pipefail; \

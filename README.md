@@ -260,12 +260,24 @@ The runtime falls back to standard WASM SIMD when relaxed SIMD is unavailable.
 
 | Bundle | Rate | Owned samples | Model samples | LM steps | Codebooks |
 |---|---:|---:|---:|---:|---:|
+| `encodec_48khz_3kbps_1333ms` | 3 kbps | 64,000 | 64,960 | 203 | 2 |
 | `encodec_48khz_6kbps_1333ms` | 6 kbps | 64,000 | 64,960 | 203 | 4 |
 | `encodec_48khz_12kbps_1333ms` | 12 kbps | 64,000 | 64,960 | 203 | 8 |
+| `encodec_48khz_12kbps_7cb_1333ms` | 12 kbps profile / 10.5 kbps raw | 64,000 | 64,960 | 203 | 7 |
+| `encodec_48khz_24kbps_1333ms` | 24 kbps | 64,000 | 64,960 | 203 | 16 |
+| `encodec_48khz_3kbps_1800ms` | 3 kbps | 86,400 | 87,360 | 273 | 2 |
 | `encodec_48khz_6kbps_1800ms` | 6 kbps | 86,400 | 87,360 | 273 | 4 |
 | `encodec_48khz_12kbps_1800ms` | 12 kbps | 86,400 | 87,360 | 273 | 8 |
+| `encodec_48khz_12kbps_7cb_1800ms` | 12 kbps profile / 10.5 kbps raw | 86,400 | 87,360 | 273 | 7 |
+| `encodec_48khz_24kbps_1800ms` | 24 kbps | 86,400 | 87,360 | 273 | 16 |
 
 Each model window has 480 guard samples before and after the owned region.
+
+`fixedEcdcBundleName(bandwidthKbps, chunkMs)` retains the standard upstream
+mapping, including 12 kbps to 8 codebooks. Use
+`fixedEcdcBundleNameWithCodebooks(12, 7, chunkMs)` to select the exact
+seven-codebook prefix at either supported chunk duration. Its raw neural rate
+is 10.5 kbps; the final LM-compressed ECDC rate is content-dependent.
 
 The encoder supplies real source guards when those samples exist.
 

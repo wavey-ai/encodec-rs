@@ -10,6 +10,7 @@ export async function createCustomEncoder(root, kernelModulePath) {
     fs.readFileSync(path.join(assetRoot, "metadata.json"), "utf8"),
   );
   validateMetadata(metadata);
+  const readWeight = createFloat32WeightReader(assetRoot);
 
   const createKernel = (await import(pathToFileURL(modulePath))).default;
   const kernel = await createKernel({
@@ -36,8 +37,8 @@ export async function createCustomEncoder(root, kernelModulePath) {
       (layer) => layer.paddedInputTime * layer.inputChannels,
     ),
   );
-  const embeddings = readFloat32(path.join(assetRoot, "rvq-embeddings.f32le"));
-  const norms = readFloat32(path.join(assetRoot, "rvq-norms.f32le"));
+  const embeddings = readWeight("rvq-embeddings.f32le");
+  const norms = readWeight("rvq-norms.f32le");
   const pointers = {
     audio: allocate(audioLength),
     normalizedAudio: allocate(audioLength),
@@ -57,18 +58,10 @@ export async function createCustomEncoder(root, kernelModulePath) {
   kernel.HEAPF32.set(norms, pointers.rvqNorms / 4);
 
   const layers = metadata.convLayers.map((layer) => {
-    const weights = readFloat32(
-      path.join(assetRoot, `conv-${layer.layer}-weight.f32le`),
-    );
-    const bias = readFloat32(
-      path.join(assetRoot, `conv-${layer.layer}-bias.f32le`),
-    );
-    const normScale = readFloat32(
-      path.join(assetRoot, `conv-${layer.layer}-norm-scale.f32le`),
-    );
-    const normBias = readFloat32(
-      path.join(assetRoot, `conv-${layer.layer}-norm-bias.f32le`),
-    );
+    const weights = readWeight(`conv-${layer.layer}-weight.f32le`);
+    const bias = readWeight(`conv-${layer.layer}-bias.f32le`);
+    const normScale = readWeight(`conv-${layer.layer}-norm-scale.f32le`);
+    const normBias = readWeight(`conv-${layer.layer}-norm-bias.f32le`);
     const unpackedWeights = allocate(weights.length);
     const layerPointers = {
       packed: allocate(weights.length),
@@ -95,15 +88,13 @@ export async function createCustomEncoder(root, kernelModulePath) {
   });
 
   const lstmLayers = metadata.lstmLayers.map((layer) => {
-    const inputWeights = readFloat32(
-      path.join(assetRoot, `lstm-${layer.layer}-input-weight.f32le`),
+    const inputWeights = readWeight(
+      `lstm-${layer.layer}-input-weight.f32le`,
     );
-    const recurrentWeights = readFloat32(
-      path.join(assetRoot, `lstm-${layer.layer}-recurrent-weight.f32le`),
+    const recurrentWeights = readWeight(
+      `lstm-${layer.layer}-recurrent-weight.f32le`,
     );
-    const bias = readFloat32(
-      path.join(assetRoot, `lstm-${layer.layer}-bias.f32le`),
-    );
+    const bias = readWeight(`lstm-${layer.layer}-bias.f32le`);
     const unpackedInput = allocate(inputWeights.length);
     const unpackedRecurrent = allocate(recurrentWeights.length);
     const layerPointers = {
@@ -337,6 +328,33 @@ function readFloat32(file) {
     bytes.byteOffset + bytes.byteLength,
   );
   return new Float32Array(copy);
+}
+
+function createFloat32WeightReader(root) {
+  const manifestPath = path.join(root, "weights.json");
+  if (!fs.existsSync(manifestPath)) {
+    return (name) => readFloat32(path.join(root, name));
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const packedPath = path.join(root, manifest.file);
+  const bytes = fs.readFileSync(packedPath);
+  if (bytes.byteLength !== manifest.byteLength) {
+    throw new Error(
+      `packed encoder weight length mismatch: ${bytes.byteLength} != ${manifest.byteLength}`,
+    );
+  }
+  const packed = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  return (name) => {
+    const tensor = manifest.tensors?.[name];
+    if (!tensor) {
+      throw new Error(`packed encoder weight is missing: ${name}`);
+    }
+    return new Float32Array(packed, tensor.offsetBytes, tensor.length);
+  };
 }
 
 function validateMetadata(metadata) {

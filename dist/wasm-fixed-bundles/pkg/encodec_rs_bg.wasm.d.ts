@@ -3,11 +3,13 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_quantizedlmchunkdecoder_free: (a: number, b: number) => void;
 export const __wbg_quantizedlmchunkencoder_free: (a: number, b: number) => void;
+export const __wbg_quantizedlmpairedchunkencoder_free: (a: number, b: number) => void;
 export const bundleMetadata: (a: number, b: number) => [number, number, number];
 export const ecdcMetadata: (a: number, b: number) => [number, number, number];
 export const ecdcOverlapAdd: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const ecdcOverlapAddForMetadata: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const fixedEcdcBundleName: (a: any, b: any) => [number, number, number, number];
+export const fixedEcdcBundleNameWithCodebooks: (a: any, b: number, c: any) => [number, number, number, number];
 export const lmEcdcChunk: (a: number, b: number) => [number, number, number, number];
 export const lmEcdcChunkFromFrame: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
 export const lmEcdcDecodeChunks: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -24,6 +26,10 @@ export const quantizedlmchunkencoder_finishPadded: (a: number, b: number) => [nu
 export const quantizedlmchunkencoder_lmWindowFrameLength: (a: number) => number;
 export const quantizedlmchunkencoder_new: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const quantizedlmchunkencoder_push: (a: number, b: number, c: number) => [number, number];
+export const quantizedlmpairedchunkencoder_finish: (a: number) => [number, number, number];
+export const quantizedlmpairedchunkencoder_lmWindowFrameLength: (a: number) => number;
+export const quantizedlmpairedchunkencoder_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
+export const quantizedlmpairedchunkencoder_push: (a: number, b: number, c: number) => [number, number];
 export const stableHashHex: (a: number, b: number) => [number, number];
 export const triangleOverlapAddPlanarFrames: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const quantizedlmchunkencoder_bitstream_version: (a: number) => number;

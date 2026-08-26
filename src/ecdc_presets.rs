@@ -63,7 +63,9 @@ pub fn fixed_context_samples(
 pub enum EcdcBandwidthPreset {
     #[default]
     Kbps6,
+    Kbps3,
     Kbps12,
+    Kbps24,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -76,9 +78,13 @@ pub enum EcdcChunkPreset {
 pub fn bandwidth_preset_from_kbps(value: Option<f64>) -> Result<EcdcBandwidthPreset> {
     match value {
         None => Ok(EcdcBandwidthPreset::Kbps6),
+        Some(v) if (v - 3.0).abs() <= 0.001 => Ok(EcdcBandwidthPreset::Kbps3),
         Some(v) if (v - 6.0).abs() <= 0.001 => Ok(EcdcBandwidthPreset::Kbps6),
         Some(v) if (v - 12.0).abs() <= 0.001 => Ok(EcdcBandwidthPreset::Kbps12),
-        Some(v) => bail!("unsupported ECDC bandwidth {v}; supported values are 6.0 and 12.0"),
+        Some(v) if (v - 24.0).abs() <= 0.001 => Ok(EcdcBandwidthPreset::Kbps24),
+        Some(v) => {
+            bail!("unsupported ECDC bandwidth {v}; supported values are 3.0, 6.0, 12.0, and 24.0")
+        }
     }
 }
 
@@ -97,10 +103,46 @@ pub fn chunk_preset_from_ms(value: Option<f64>) -> Result<EcdcChunkPreset> {
 
 pub fn fixed_bundle_name(bandwidth: EcdcBandwidthPreset, chunk: EcdcChunkPreset) -> &'static str {
     match (bandwidth, chunk) {
+        (EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1333) => "encodec_48khz_3kbps_1333ms",
+        (EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1800) => "encodec_48khz_3kbps_1800ms",
         (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1333) => "encodec_48khz_6kbps_1333ms",
         (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1800) => "encodec_48khz_6kbps_1800ms",
         (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1333) => "encodec_48khz_12kbps_1333ms",
         (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1800) => "encodec_48khz_12kbps_1800ms",
+        (EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1333) => "encodec_48khz_24kbps_1333ms",
+        (EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1800) => "encodec_48khz_24kbps_1800ms",
+    }
+}
+
+/// Resolves a fixed bundle while allowing an explicitly supported codebook
+/// count. The ordinary bandwidth selector continues to choose the upstream
+/// profile default; currently the only alternate is the exact seven-codebook
+/// prefix of the 12 kbps model (10.5 kbps before entropy coding).
+pub fn fixed_bundle_name_with_codebooks(
+    bandwidth: EcdcBandwidthPreset,
+    num_codebooks: usize,
+    chunk: EcdcChunkPreset,
+) -> Result<&'static str> {
+    let standard_codebooks = match bandwidth {
+        EcdcBandwidthPreset::Kbps3 => 2,
+        EcdcBandwidthPreset::Kbps6 => 4,
+        EcdcBandwidthPreset::Kbps12 => 8,
+        EcdcBandwidthPreset::Kbps24 => 16,
+    };
+    if num_codebooks == standard_codebooks {
+        return Ok(fixed_bundle_name(bandwidth, chunk));
+    }
+    match (bandwidth, num_codebooks, chunk) {
+        (EcdcBandwidthPreset::Kbps12, 7, EcdcChunkPreset::Ms1333) => {
+            Ok("encodec_48khz_12kbps_7cb_1333ms")
+        }
+        (EcdcBandwidthPreset::Kbps12, 7, EcdcChunkPreset::Ms1800) => {
+            Ok("encodec_48khz_12kbps_7cb_1800ms")
+        }
+        _ => bail!(
+            "unsupported {num_codebooks}-codebook ECDC variant for this bandwidth; \
+             supported alternate is the 12 kbps profile with 7 codebooks"
+        ),
     }
 }
 
@@ -145,5 +187,93 @@ mod tests {
     #[test]
     fn rejects_context_not_equal_to_480_samples_per_side() {
         assert!(fixed_context_samples(65_000, 64_000).is_err());
+    }
+
+    #[test]
+    fn maps_all_supported_bandwidths_to_fixed_bundles() {
+        let cases = [
+            (
+                3.0,
+                EcdcBandwidthPreset::Kbps3,
+                "encodec_48khz_3kbps_1333ms",
+            ),
+            (
+                6.0,
+                EcdcBandwidthPreset::Kbps6,
+                "encodec_48khz_6kbps_1333ms",
+            ),
+            (
+                12.0,
+                EcdcBandwidthPreset::Kbps12,
+                "encodec_48khz_12kbps_1333ms",
+            ),
+            (
+                24.0,
+                EcdcBandwidthPreset::Kbps24,
+                "encodec_48khz_24kbps_1333ms",
+            ),
+        ];
+        for (rate, preset, bundle) in cases {
+            assert_eq!(bandwidth_preset_from_kbps(Some(rate)).unwrap(), preset);
+            assert_eq!(fixed_bundle_name(preset, EcdcChunkPreset::Ms1333), bundle);
+        }
+    }
+
+    #[test]
+    fn maps_new_bandwidths_to_1800ms_bundles() {
+        assert_eq!(
+            fixed_bundle_name(EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1800),
+            "encodec_48khz_3kbps_1800ms"
+        );
+        assert_eq!(
+            fixed_bundle_name(EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1800),
+            "encodec_48khz_24kbps_1800ms"
+        );
+    }
+
+    #[test]
+    fn maps_seven_codebook_12kbps_prefix_at_both_chunk_sizes() {
+        assert_eq!(
+            fixed_bundle_name_with_codebooks(
+                EcdcBandwidthPreset::Kbps12,
+                7,
+                EcdcChunkPreset::Ms1333,
+            )
+            .unwrap(),
+            "encodec_48khz_12kbps_7cb_1333ms"
+        );
+        assert_eq!(
+            fixed_bundle_name_with_codebooks(
+                EcdcBandwidthPreset::Kbps12,
+                7,
+                EcdcChunkPreset::Ms1800,
+            )
+            .unwrap(),
+            "encodec_48khz_12kbps_7cb_1800ms"
+        );
+    }
+
+    #[test]
+    fn codebook_aware_mapping_preserves_standard_profiles() {
+        assert_eq!(
+            fixed_bundle_name_with_codebooks(
+                EcdcBandwidthPreset::Kbps24,
+                16,
+                EcdcChunkPreset::Ms1800,
+            )
+            .unwrap(),
+            "encodec_48khz_24kbps_1800ms"
+        );
+        assert!(fixed_bundle_name_with_codebooks(
+            EcdcBandwidthPreset::Kbps6,
+            7,
+            EcdcChunkPreset::Ms1333,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_bandwidth() {
+        assert!(bandwidth_preset_from_kbps(Some(9.0)).is_err());
     }
 }

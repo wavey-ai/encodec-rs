@@ -914,6 +914,7 @@ function validateCustomEncoderMetadata(metadata, bundleMeta) {
 
 function initializeCustomKernel(module, root, metadata) {
   const layers = metadata.layers;
+  const readWeight = createFloat32WeightReader(root, "decoder");
   const allocate = (length) => {
     const pointer = module._malloc(length * Float32Array.BYTES_PER_ELEMENT);
     if (pointer === 0) {
@@ -935,8 +936,8 @@ function initializeCustomKernel(module, root, metadata) {
   };
 
   for (const layer of layers) {
-    const weights = readFloat32(path.join(root, `layer-${layer.layer}-weight.f32le`));
-    const bias = readFloat32(path.join(root, `layer-${layer.layer}-bias.f32le`));
+    const weights = readWeight(`layer-${layer.layer}-weight.f32le`);
+    const bias = readWeight(`layer-${layer.layer}-bias.f32le`);
     const rawWeights = allocate(weights.length);
     const packed = allocate(weights.length);
     const biasPointer = allocate(bias.length);
@@ -955,12 +956,10 @@ function initializeCustomKernel(module, root, metadata) {
     }
     const layerState = { packed, bias: biasPointer };
     if (metadata.post) {
-      const normScale = readFloat32(
-        path.join(root, `layer-${layer.layer}-norm-scale.f32le`),
+      const normScale = readWeight(
+        `layer-${layer.layer}-norm-scale.f32le`,
       );
-      const normBias = readFloat32(
-        path.join(root, `layer-${layer.layer}-norm-bias.f32le`),
-      );
+      const normBias = readWeight(`layer-${layer.layer}-norm-bias.f32le`);
       layerState.normScale = allocate(normScale.length);
       layerState.normBias = allocate(normBias.length);
       module.HEAPF32.set(normScale, layerState.normScale / 4);
@@ -969,19 +968,19 @@ function initializeCustomKernel(module, root, metadata) {
     state.layers.push(layerState);
   }
   state.front = metadata.front
-    ? initializeCustomDecoderFront(module, root, metadata.front, allocate)
+    ? initializeCustomDecoderFront(module, readWeight, metadata.front, allocate)
     : null;
   state.post = metadata.post
-    ? initializeCustomDecoderPost(module, root, metadata, allocate)
+    ? initializeCustomDecoderPost(module, readWeight, metadata, allocate)
     : null;
   return state;
 }
 
-function initializeCustomDecoderFront(module, root, metadata, allocate) {
+function initializeCustomDecoderFront(module, readWeight, metadata, allocate) {
   const frameLength = metadata.conv.inputTime;
   const hiddenSize = metadata.conv.outputChannels;
   const activationLength = frameLength * hiddenSize;
-  const embeddings = readFloat32(path.join(root, "front-rvq-embeddings.f32le"));
+  const embeddings = readWeight("front-rvq-embeddings.f32le");
   const pointers = {
     codes: allocate(metadata.rvq.codebooks * frameLength),
     embeddings: allocate(embeddings.length),
@@ -1005,19 +1004,19 @@ function initializeCustomDecoderFront(module, root, metadata, allocate) {
   };
   module.HEAPF32.set(embeddings, pointers.embeddings / 4);
 
-  const convWeights = readFloat32(path.join(root, "front-conv-weight.f32le"));
+  const convWeights = readWeight("front-conv-weight.f32le");
   const unpackedConv = allocate(convWeights.length);
   module.HEAPF32.set(convWeights, unpackedConv / 4);
   module.HEAPF32.set(
-    readFloat32(path.join(root, "front-conv-bias.f32le")),
+    readWeight("front-conv-bias.f32le"),
     pointers.convBias / 4,
   );
   module.HEAPF32.set(
-    readFloat32(path.join(root, "front-conv-norm-scale.f32le")),
+    readWeight("front-conv-norm-scale.f32le"),
     pointers.convNormScale / 4,
   );
   module.HEAPF32.set(
-    readFloat32(path.join(root, "front-conv-norm-bias.f32le")),
+    readWeight("front-conv-norm-bias.f32le"),
     pointers.convNormBias / 4,
   );
   const convPacked = module._pack_conv1d_nhwc_weights_8(
@@ -1033,15 +1032,13 @@ function initializeCustomDecoderFront(module, root, metadata, allocate) {
   }
 
   const lstmLayers = metadata.lstmLayers.map((layer) => {
-    const inputWeights = readFloat32(
-      path.join(root, `front-lstm-${layer.layer}-input-weight.f32le`),
+    const inputWeights = readWeight(
+      `front-lstm-${layer.layer}-input-weight.f32le`,
     );
-    const recurrentWeights = readFloat32(
-      path.join(root, `front-lstm-${layer.layer}-recurrent-weight.f32le`),
+    const recurrentWeights = readWeight(
+      `front-lstm-${layer.layer}-recurrent-weight.f32le`,
     );
-    const bias = readFloat32(
-      path.join(root, `front-lstm-${layer.layer}-bias.f32le`),
-    );
+    const bias = readWeight(`front-lstm-${layer.layer}-bias.f32le`);
     const unpackedInput = allocate(inputWeights.length);
     const unpackedRecurrent = allocate(recurrentWeights.length);
     const layerPointers = {
@@ -1075,20 +1072,14 @@ function initializeCustomDecoderFront(module, root, metadata, allocate) {
   return { pointers, lstmLayers };
 }
 
-function initializeCustomDecoderPost(module, root, metadata, allocate) {
+function initializeCustomDecoderPost(module, readWeight, metadata, allocate) {
   const convLayers = metadata.post.convLayers.map((layer) => {
-    const weights = readFloat32(
-      path.join(root, `post-conv-${layer.layer}-weight.f32le`),
+    const weights = readWeight(`post-conv-${layer.layer}-weight.f32le`);
+    const bias = readWeight(`post-conv-${layer.layer}-bias.f32le`);
+    const normScale = readWeight(
+      `post-conv-${layer.layer}-norm-scale.f32le`,
     );
-    const bias = readFloat32(
-      path.join(root, `post-conv-${layer.layer}-bias.f32le`),
-    );
-    const normScale = readFloat32(
-      path.join(root, `post-conv-${layer.layer}-norm-scale.f32le`),
-    );
-    const normBias = readFloat32(
-      path.join(root, `post-conv-${layer.layer}-norm-bias.f32le`),
-    );
+    const normBias = readWeight(`post-conv-${layer.layer}-norm-bias.f32le`);
     const unpacked = allocate(weights.length);
     const pointers = {
       packed: allocate(weights.length),
@@ -1115,14 +1106,10 @@ function initializeCustomDecoderPost(module, root, metadata, allocate) {
   });
 
   const final = metadata.post.finalConv;
-  const finalWeights = readFloat32(path.join(root, "final-conv-weight.f32le"));
-  const finalBias = readFloat32(path.join(root, "final-conv-bias.f32le"));
-  const finalNormScale = readFloat32(
-    path.join(root, "final-conv-norm-scale.f32le"),
-  );
-  const finalNormBias = readFloat32(
-    path.join(root, "final-conv-norm-bias.f32le"),
-  );
+  const finalWeights = readWeight("final-conv-weight.f32le");
+  const finalBias = readWeight("final-conv-bias.f32le");
+  const finalNormScale = readWeight("final-conv-norm-scale.f32le");
+  const finalNormBias = readWeight("final-conv-norm-bias.f32le");
   const paddedFinalWeights = new Float32Array(
     final.kernelOutputChannels * final.inputChannels * final.kernel,
   );
@@ -1332,6 +1319,37 @@ function readFloat32(file) {
   const bytes = readFileSync(file);
   const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   return new Float32Array(copy);
+}
+
+function createFloat32WeightReader(root, label) {
+  const manifestPath = path.join(root, "weights.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return (name) => readFloat32(path.join(root, name));
+    }
+    throw error;
+  }
+
+  const bytes = readFileSync(path.join(root, manifest.file));
+  if (bytes.byteLength !== manifest.byteLength) {
+    throw new Error(
+      `packed ${label} weight length mismatch: ${bytes.byteLength} != ${manifest.byteLength}`,
+    );
+  }
+  const packed = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  return (name) => {
+    const tensor = manifest.tensors?.[name];
+    if (!tensor) {
+      throw new Error(`packed ${label} weight is missing: ${name}`);
+    }
+    return new Float32Array(packed, tensor.offsetBytes, tensor.length);
+  };
 }
 
 function parseArgs(args) {
