@@ -48,6 +48,7 @@ Keep a separate lossless master.
 - [Qualification matrix](qualification-matrix.md)
 - [Implementation and test handoff](implementation-handoff.md)
 - [Durability and Bitcoin policy](durability-and-bitcoin.md)
+- [Browser backend parity and the PRAY 4 ME bitrate matrix](browser-backend-parity-and-bitrate-matrix.md)
 
 ## Recorded results
 

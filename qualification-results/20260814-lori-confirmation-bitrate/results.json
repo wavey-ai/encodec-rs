@@ -1,0 +1,68 @@
+{
+  "test_date": "2026-08-14",
+  "bundle": "encodec_48khz_12kbps_1333ms",
+  "language_model": "q8",
+  "sample_rate_hz": 48000,
+  "calculation": "payload_bytes * 8 / (source_frames / sample_rate_hz) / 1000",
+  "tracks": [
+    {
+      "title": "I Want Her",
+      "source_frames": 7104000,
+      "payload_bytes": 188244,
+      "effective_payload_kbps": 10.175351351351352
+    },
+    {
+      "title": "Sugar Free",
+      "source_frames": 7989248,
+      "payload_bytes": 214918,
+      "effective_payload_kbps": 10.329947449371955
+    },
+    {
+      "title": "As It Seems",
+      "source_frames": 8368128,
+      "payload_bytes": 214994,
+      "effective_payload_kbps": 9.865730543318648
+    },
+    {
+      "title": "Westside V2",
+      "source_frames": 9260919,
+      "payload_bytes": 256045,
+      "effective_payload_kbps": 10.616795158234297
+    },
+    {
+      "title": "After Dark",
+      "source_frames": 9531392,
+      "payload_bytes": 257742,
+      "effective_payload_kbps": 10.383890201976795
+    },
+    {
+      "title": "Pray 4 Me",
+      "source_frames": 10681520,
+      "payload_bytes": 282347,
+      "effective_payload_kbps": 10.150357627004396
+    },
+    {
+      "title": "1979",
+      "source_frames": 10937424,
+      "payload_bytes": 295912,
+      "effective_payload_kbps": 10.389119778112287
+    },
+    {
+      "title": "There Is a Light",
+      "source_frames": 11179834,
+      "payload_bytes": 294367,
+      "effective_payload_kbps": 10.11078769148093
+    }
+  ],
+  "summary": {
+    "track_count": 8,
+    "arithmetic_mean_kbps": 10.252747475106332,
+    "duration_weighted_mean_kbps": 10.256218713136205,
+    "population_variance_kbps_squared": 0.04508685507828195,
+    "population_standard_deviation_kbps": 0.212336671962116,
+    "minimum_kbps": 9.865730543318648,
+    "maximum_kbps": 10.616795158234297,
+    "range_kbps": 0.7510646149156486,
+    "coefficient_of_variation_percent": 2.071022168458795
+  }
+}
