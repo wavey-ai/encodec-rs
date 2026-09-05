@@ -82,11 +82,9 @@ PYTHON=/opt/anaconda3/envs/encodec-export/bin/python \
   scripts/create_mlx_fixed_bundles.sh
 ```
 
-The helper creates 1333 ms and 1800 ms bundles for both bitrates.
+The helper creates 1333 ms bundles for both bitrates.
 
 The 1333 ms bundle owns 64,000 samples and uses a 64,960-sample model window.
-
-The 1800 ms bundle owns 86,400 samples and uses an 87,360-sample model window.
 
 Each window includes two 480-sample guards.
 

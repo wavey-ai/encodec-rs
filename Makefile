@@ -19,12 +19,7 @@ FIXED_BUNDLES := \
 	encodec_48khz_6kbps_1333ms \
 	encodec_48khz_12kbps_1333ms \
 	encodec_48khz_12kbps_7cb_1333ms \
-	encodec_48khz_24kbps_1333ms \
-	encodec_48khz_3kbps_1800ms \
-	encodec_48khz_6kbps_1800ms \
-	encodec_48khz_12kbps_1800ms \
-	encodec_48khz_12kbps_7cb_1800ms \
-	encodec_48khz_24kbps_1800ms
+	encodec_48khz_24kbps_1333ms
 
 .PHONY: \
 	wasm \
@@ -57,27 +52,18 @@ wasm-clean:
 bundles-clean:
 	rm -rf \
 		"$(ONNX_BUNDLES)/encodec_48khz_3kbps_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_3kbps_1800ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_6kbps_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_6kbps_1800ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1800ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_24kbps_1333ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_24kbps_1800ms"
+		"$(ONNX_BUNDLES)/encodec_48khz_24kbps_1333ms"
 
 bundles:
-	CHUNKS="1333ms:64960:64000 1800ms:87360:86400" \
+	CHUNKS="1333ms:64960:64000" \
 	ENCODEC_RS_REPO="$(ROOT)" \
 	"$(BUNDLE_EXPORT_SCRIPT)"
 	"$(PYTHON_BIN)" "$(PREFIX_BUNDLE_SCRIPT)" \
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1333ms" \
 		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1333ms" \
-		--codebooks 7 --profile-bandwidth-kbps 12
-	"$(PYTHON_BIN)" "$(PREFIX_BUNDLE_SCRIPT)" \
-		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_1800ms" \
-		"$(ONNX_BUNDLES)/encodec_48khz_12kbps_7cb_1800ms" \
 		--codebooks 7 --profile-bandwidth-kbps 12
 
 bundles-check:

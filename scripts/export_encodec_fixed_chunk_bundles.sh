@@ -15,7 +15,7 @@ PYTHON_BIN="${PYTHON_BIN:-/opt/anaconda3/envs/encodec-export/bin/python}"
 # Format: bundle-suffix:trace-samples:trace-stride
 # trace-samples is the full fixed model input (480 prev + owned + 480 next);
 # trace-stride is the owned-audio advance between consecutive windows.
-CHUNKS="${CHUNKS:-1333ms:64960:64000 1800ms:87360:86400}"
+CHUNKS="${CHUNKS:-1333ms:64960:64000}"
 
 cd "$ENCODEC_REPO"
 

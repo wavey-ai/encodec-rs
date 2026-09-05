@@ -6,14 +6,15 @@ use anyhow::{anyhow, bail, Result};
 /// contextual bundle profile.
 const FIXED_CONTEXT_SAMPLES_PER_SIDE: usize = 480;
 
-/// Owned-audio strides (segment_stride) of the recognised fixed contextual
-/// bundle profiles: 1.333s (64,000 samples) and 1.8s (86,400 samples).
+/// Owned-audio stride (segment_stride) of the recognised fixed contextual
+/// bundle profile: 1.3333s, 64,000 samples — one revolution at 45 rpm, and
+/// two chunks to a revolution at 33 1/3.
 /// A bundle is only ever treated as a fixed-context profile (full-window
 /// decode + sample-domain crop, no overlap-add) when its segment_stride
-/// matches one of these. Legacy EnCodec bundles may also have
+/// matches this. Legacy EnCodec bundles may also have
 /// segment_samples > segment_stride for ordinary overlap-add (e.g. with a
 /// different stride) and must not be misclassified.
-const FIXED_CONTEXT_STRIDES: &[usize] = &[64_000, 86_400];
+const FIXED_CONTEXT_STRIDES: &[usize] = &[64_000];
 
 /// Returns the symmetric per-side context sample count for a recognized
 /// fixed contextual bundle profile, or `None` if `segment_stride` does not
@@ -72,7 +73,6 @@ pub enum EcdcBandwidthPreset {
 pub enum EcdcChunkPreset {
     #[default]
     Ms1333,
-    Ms1800,
 }
 
 pub fn bandwidth_preset_from_kbps(value: Option<f64>) -> Result<EcdcBandwidthPreset> {
@@ -94,9 +94,8 @@ pub fn chunk_preset_from_ms(value: Option<f64>) -> Result<EcdcChunkPreset> {
         Some(v) if (v - 1333.0).abs() <= 5.0 || (v - 1333.3).abs() <= 5.0 => {
             Ok(EcdcChunkPreset::Ms1333)
         }
-        Some(v) if (v - 1800.0).abs() <= 5.0 => Ok(EcdcChunkPreset::Ms1800),
         Some(v) => bail!(
-            "unsupported ECDC chunk duration {v}ms; supported fixed durations are 1333ms and 1800ms"
+            "unsupported ECDC chunk duration {v}ms; the supported fixed duration is 1333ms"
         ),
     }
 }
@@ -104,13 +103,9 @@ pub fn chunk_preset_from_ms(value: Option<f64>) -> Result<EcdcChunkPreset> {
 pub fn fixed_bundle_name(bandwidth: EcdcBandwidthPreset, chunk: EcdcChunkPreset) -> &'static str {
     match (bandwidth, chunk) {
         (EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1333) => "encodec_48khz_3kbps_1333ms",
-        (EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1800) => "encodec_48khz_3kbps_1800ms",
         (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1333) => "encodec_48khz_6kbps_1333ms",
-        (EcdcBandwidthPreset::Kbps6, EcdcChunkPreset::Ms1800) => "encodec_48khz_6kbps_1800ms",
         (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1333) => "encodec_48khz_12kbps_1333ms",
-        (EcdcBandwidthPreset::Kbps12, EcdcChunkPreset::Ms1800) => "encodec_48khz_12kbps_1800ms",
         (EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1333) => "encodec_48khz_24kbps_1333ms",
-        (EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1800) => "encodec_48khz_24kbps_1800ms",
     }
 }
 
@@ -135,9 +130,6 @@ pub fn fixed_bundle_name_with_codebooks(
     match (bandwidth, num_codebooks, chunk) {
         (EcdcBandwidthPreset::Kbps12, 7, EcdcChunkPreset::Ms1333) => {
             Ok("encodec_48khz_12kbps_7cb_1333ms")
-        }
-        (EcdcBandwidthPreset::Kbps12, 7, EcdcChunkPreset::Ms1800) => {
-            Ok("encodec_48khz_12kbps_7cb_1800ms")
         }
         _ => bail!(
             "unsupported {num_codebooks}-codebook ECDC variant for this bandwidth; \
@@ -165,12 +157,13 @@ mod tests {
     #[test]
     fn recognizes_known_fixed_context_geometries() {
         assert_eq!(fixed_context_samples(64_960, 64_000).unwrap(), Some(480));
-        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), Some(480));
     }
 
     #[test]
     fn does_not_recognize_unrelated_strides() {
         assert_eq!(fixed_context_samples(48_000, 47_520).unwrap(), None);
+        // The 1.8s geometry an LP was once cut at: no longer a fixed profile.
+        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), None);
         assert_eq!(fixed_context_samples(64_960, 64_960).unwrap(), None);
     }
 
@@ -220,19 +213,13 @@ mod tests {
     }
 
     #[test]
-    fn maps_new_bandwidths_to_1800ms_bundles() {
-        assert_eq!(
-            fixed_bundle_name(EcdcBandwidthPreset::Kbps3, EcdcChunkPreset::Ms1800),
-            "encodec_48khz_3kbps_1800ms"
-        );
-        assert_eq!(
-            fixed_bundle_name(EcdcBandwidthPreset::Kbps24, EcdcChunkPreset::Ms1800),
-            "encodec_48khz_24kbps_1800ms"
-        );
+    fn rejects_unsupported_chunk_duration() {
+        assert!(chunk_preset_from_ms(Some(1800.0)).is_err());
+        assert_eq!(chunk_preset_from_ms(None).unwrap(), EcdcChunkPreset::Ms1333);
     }
 
     #[test]
-    fn maps_seven_codebook_12kbps_prefix_at_both_chunk_sizes() {
+    fn maps_seven_codebook_12kbps_prefix() {
         assert_eq!(
             fixed_bundle_name_with_codebooks(
                 EcdcBandwidthPreset::Kbps12,
@@ -242,15 +229,6 @@ mod tests {
             .unwrap(),
             "encodec_48khz_12kbps_7cb_1333ms"
         );
-        assert_eq!(
-            fixed_bundle_name_with_codebooks(
-                EcdcBandwidthPreset::Kbps12,
-                7,
-                EcdcChunkPreset::Ms1800,
-            )
-            .unwrap(),
-            "encodec_48khz_12kbps_7cb_1800ms"
-        );
     }
 
     #[test]
@@ -259,10 +237,10 @@ mod tests {
             fixed_bundle_name_with_codebooks(
                 EcdcBandwidthPreset::Kbps24,
                 16,
-                EcdcChunkPreset::Ms1800,
+                EcdcChunkPreset::Ms1333,
             )
             .unwrap(),
-            "encodec_48khz_24kbps_1800ms"
+            "encodec_48khz_24kbps_1333ms"
         );
         assert!(fixed_bundle_name_with_codebooks(
             EcdcBandwidthPreset::Kbps6,

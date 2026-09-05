@@ -59,8 +59,8 @@ pub fn fixed_ecdc_bundle_name_js(
 }
 
 /// Selects an explicitly supported codebook variant without changing the
-/// established bitrate-only selector. In particular, `(12, 7, 1333)` and
-/// `(12, 7, 1800)` resolve the 10.5 kbps raw seven-codebook prefix bundles.
+/// established bitrate-only selector. In particular, `(12, 7, 1333)`
+/// resolves the 10.5 kbps raw seven-codebook prefix bundle.
 #[wasm_bindgen(js_name = fixedEcdcBundleNameWithCodebooks)]
 pub fn fixed_ecdc_bundle_name_with_codebooks_js(
     bandwidth_kbps: JsValue,
@@ -1190,50 +1190,8 @@ mod tests {
     }
 
     #[test]
-    fn fixed_block_1800ms_header_uses_logical_audio_length_and_full_frame_length() {
-        let bundle_json = serde_json::to_string(&OnnxFrameBundleMetadata {
-            schema_version: 1,
-            model_name: "encodec_48khz_test".to_string(),
-            bandwidth_kbps: 12.0,
-            sample_rate: 48_000,
-            channels: 2,
-            segment_samples: 87_360,
-            segment_stride: 86_400,
-            normalize: true,
-            num_codebooks: 8,
-            frame_length: 273,
-            bits_per_codebook: Some(10),
-            codebook_cardinality: Some(1024),
-            encode_model: "encode_frame.onnx".to_string(),
-            decode_model: "decode_frame.onnx".to_string(),
-            lm_quant_weight_model: Some("lm_weights_q8.bin".to_string()),
-            lm_dim: Some(128),
-            lm_num_layers: Some(1),
-            lm_past_context: Some(0),
-            lm_logit_step: Some(1.0 / 64.0),
-            lm_entropy_logit_step: Some(crate::metadata::Q8_LM_LOGIT_STEP as f32),
-            lm_cardinality: Some(1024),
-            opset_version: 17,
-        })
-        .unwrap();
-        let weights = [0x42_u8; 32];
-        let header = lm_ecdc_fixed_header_for_weights(
-            &bundle_json,
-            86_400,
-            QUANTIZED_LM_BITSTREAM_VERSION,
-            &weights,
-        )
-        .unwrap();
-        let metadata: EcdcMetadata = read_ecdc_header(&mut Cursor::new(header.as_slice())).unwrap();
-        assert_eq!(metadata.audio_length, 86_400);
-        assert_eq!(metadata.lm_frame_length, Some(273));
-        assert!(metadata.extra.is_empty());
-    }
-
-    #[test]
     fn fixed_context_geometry_is_recognized_with_480_sample_context() {
         assert_eq!(fixed_context_samples(64_960, 64_000).unwrap(), Some(480));
-        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), Some(480));
     }
 
     #[test]
@@ -1243,6 +1201,7 @@ mod tests {
         // recognised fixed-context geometries should be treated specially.
         assert_eq!(fixed_context_samples(48_000, 47_520).unwrap(), None);
         assert_eq!(fixed_context_samples(64_960, 64_960).unwrap(), None);
+        assert_eq!(fixed_context_samples(87_360, 86_400).unwrap(), None);
     }
 
     #[test]

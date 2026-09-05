@@ -325,8 +325,8 @@ export function fixedEcdcBundleName(bandwidth_kbps, chunk_ms) {
 
 /**
  * Selects an explicitly supported codebook variant without changing the
- * established bitrate-only selector. In particular, `(12, 7, 1333)` and
- * `(12, 7, 1800)` resolve the 10.5 kbps raw seven-codebook prefix bundles.
+ * established bitrate-only selector. In particular, `(12, 7, 1333)`
+ * resolves the 10.5 kbps raw seven-codebook prefix bundle.
  * @param {any} bandwidth_kbps
  * @param {number} num_codebooks
  * @param {any} chunk_ms

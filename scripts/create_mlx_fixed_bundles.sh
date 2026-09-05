@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ONNX_ROOT="${ONNX_ROOT:-$ROOT/onnx-bundles}"
 OUT_ROOT="${OUT_ROOT:-$ROOT/target/mlx-bundles}"
 BANDWIDTHS="${BANDWIDTHS:-6 12}"
-CHUNKS="${CHUNKS:-1333 1800}"
+CHUNKS="${CHUNKS:-1333}"
 PYTHON="${PYTHON:-python3}"
 
 q8_lm_window_frame_length() {
@@ -56,9 +56,6 @@ for bandwidth in $BANDWIDTHS; do
     case "$chunk" in
       1333|1333ms)
         suffix="1333ms"
-        ;;
-      1800|1800ms)
-        suffix="1800ms"
         ;;
       *)
         echo "unsupported chunk preset: $chunk" >&2

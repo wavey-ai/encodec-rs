@@ -178,7 +178,7 @@ final class EncodecMLXRuntimeTests: XCTestCase {
             ]
         }
 
-        for profileMilliseconds in [1333, 1800] {
+        for profileMilliseconds in [1333] {
             let primaryBundle = mlxBundleURL(
                 "encodec_48khz_12kbps_\(profileMilliseconds)ms"
             )

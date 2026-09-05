@@ -12,9 +12,7 @@ base_bundles=(
 
 fixed_bundles=(
   "encodec_48khz_6kbps_1333ms"
-  "encodec_48khz_6kbps_1800ms"
   "encodec_48khz_12kbps_1333ms"
-  "encodec_48khz_12kbps_1800ms"
 )
 
 files=("SHA256SUMS")

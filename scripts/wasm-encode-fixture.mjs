@@ -2097,8 +2097,7 @@ function fixedContextSamples(meta) {
   const samples = Number(meta.segment_samples);
   const stride = Number(meta.segment_stride);
   if (
-    (samples === 64_960 && stride === 64_000)
-    || (samples === 87_360 && stride === 86_400)
+    samples === 64_960 && stride === 64_000
   ) {
     return 480;
   }

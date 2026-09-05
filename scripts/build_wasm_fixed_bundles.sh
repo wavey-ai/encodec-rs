@@ -8,7 +8,7 @@ RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-nightly}"
 RUST_WASM_TARGET="${RUST_WASM_TARGET:-wasm32-unknown-unknown}"
 RUST_WASM_TARGET_FEATURES="${RUST_WASM_TARGET_FEATURES:-+simd128}"
 PYTHON_BIN="${PYTHON_BIN:-/opt/anaconda3/envs/encodec-export/bin/python}"
-BUNDLES="${BUNDLES:-encodec_48khz_3kbps_1333ms encodec_48khz_6kbps_1333ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_7cb_1333ms encodec_48khz_24kbps_1333ms encodec_48khz_3kbps_1800ms encodec_48khz_6kbps_1800ms encodec_48khz_12kbps_1800ms encodec_48khz_12kbps_7cb_1800ms encodec_48khz_24kbps_1800ms}"
+BUNDLES="${BUNDLES:-encodec_48khz_3kbps_1333ms encodec_48khz_6kbps_1333ms encodec_48khz_12kbps_1333ms encodec_48khz_12kbps_7cb_1333ms encodec_48khz_24kbps_1333ms}"
 
 cd "$ROOT"
 

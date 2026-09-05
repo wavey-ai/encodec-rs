@@ -2454,7 +2454,7 @@ mod tests {
             QuantizedLmWeights::from_bytes(&std::fs::read(dir.join(name))?)
         }
 
-        for profile in [1333, 1800] {
+        for profile in [1333] {
             let full_dir =
                 std::path::PathBuf::from(format!("onnx-bundles/encodec_48khz_12kbps_{profile}ms"));
             let derived_dir =
@@ -2573,7 +2573,7 @@ mod tests {
             Ok((started.elapsed(), checksum))
         }
 
-        for profile in [1333, 1800] {
+        for profile in [1333] {
             let root = std::path::Path::new("onnx-bundles");
             let primary_weights =
                 load_weights(&root.join(format!("encodec_48khz_12kbps_{profile}ms")))?;
