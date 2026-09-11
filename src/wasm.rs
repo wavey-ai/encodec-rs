@@ -17,7 +17,7 @@ use crate::format::{
 };
 use crate::metadata::OnnxFrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
-use crate::seam::triangle_overlap_add_planar_frames;
+use crate::seam::{triangle_overlap_add_planar_frames, SeamCursor, SeamSegment};
 use crate::stable_hash::stable_hash_hex;
 use serde::Serialize;
 use std::io::Cursor;
@@ -129,6 +129,264 @@ pub fn triangle_overlap_add_planar_frames_js(
         stride,
     )
     .map_err(to_js_error)
+}
+
+/// Assembles the encoder's model windows from a stream of decoded PCM.
+///
+/// The encode-side mirror of `decode_ecdc_model_windows`. It owns the fixed
+/// context geometry — how far before an owned span a window starts, how many
+/// samples each window owns, and the planar channel layout the bundle kernel
+/// reads — so the caller only moves PCM. A window is planar
+/// `[channel][sample]`, exactly what `normalize_audio_planar_to_nhwc` expects.
+///
+/// Handing the kernel interleaved samples is silent: the codes still shape up
+/// and the header still carries the right length, the encoder just describes
+/// the wrong audio. Keeping the layout here makes that impossible to get wrong
+/// on the JavaScript side.
+#[wasm_bindgen(js_name = ProgrammeWindowCursor)]
+pub struct ProgrammeWindowCursor {
+    channels: usize,
+    model_samples: usize,
+    owned_samples: usize,
+    context: usize,
+    /// Interleaved PCM from `start` onward, trimmed behind the last window.
+    samples: Vec<f32>,
+    /// Absolute frame index of `samples[0]`.
+    start: usize,
+    /// Absolute frames of PCM pushed so far.
+    frames: usize,
+}
+
+#[wasm_bindgen]
+impl ProgrammeWindowCursor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        channels: usize,
+        model_samples: usize,
+        owned_samples: usize,
+    ) -> Result<ProgrammeWindowCursor, JsValue> {
+        if channels == 0 || model_samples == 0 || owned_samples == 0 {
+            return Err(to_js_error("programme window geometry must be positive"));
+        }
+        if owned_samples > model_samples {
+            return Err(to_js_error(
+                "the owned span is larger than its model window",
+            ));
+        }
+        let context = fixed_context_samples(model_samples, owned_samples)
+            .map_err(to_js_error)?
+            .ok_or_else(|| to_js_error("the bundle is not a fixed-context geometry"))?;
+        Ok(Self {
+            channels,
+            model_samples,
+            owned_samples,
+            context,
+            samples: Vec::new(),
+            start: 0,
+            frames: 0,
+        })
+    }
+
+    /// Appends interleaved signed 16-bit PCM, converted and laid down at the
+    /// model's channel count. Mono is duplicated rather than refused, the same
+    /// rule the rest of the app uses.
+    #[wasm_bindgen(js_name = pushS16)]
+    pub fn push_s16(&mut self, pcm: &[i16], source_channels: usize) -> Result<(), JsValue> {
+        if source_channels == 0 {
+            return Err(to_js_error("the source channel count must be positive"));
+        }
+        if pcm.len() % source_channels != 0 {
+            return Err(to_js_error("PCM is not a whole number of frames"));
+        }
+        let frames = pcm.len() / source_channels;
+        self.samples.reserve(frames * self.channels);
+        for frame in 0..frames {
+            for channel in 0..self.channels {
+                let source = frame * source_channels + channel.min(source_channels - 1);
+                self.samples.push(crate::pcm::s16_to_f32(pcm[source]));
+            }
+        }
+        self.frames += frames;
+        Ok(())
+    }
+
+    /// The absolute frame a window's context reaches to. Pump until the source
+    /// has this many frames before asking for `index`.
+    #[wasm_bindgen(js_name = requiredEndFrame)]
+    pub fn required_end_frame(&self, index: usize) -> usize {
+        index
+            .saturating_mul(self.owned_samples)
+            .saturating_add(self.owned_samples)
+            .saturating_add(self.context)
+    }
+
+    /// Absolute frames of PCM pushed so far.
+    #[wasm_bindgen(js_name = frameCount)]
+    pub fn frame_count(&self) -> usize {
+        self.frames
+    }
+
+    /// The planar model window for `index`, or nothing once the programme is
+    /// behind it. Drops the PCM the next window no longer needs.
+    #[wasm_bindgen(js_name = takeWindow)]
+    pub fn take_window(&mut self, index: usize) -> Option<Vec<f32>> {
+        let owned = index.saturating_mul(self.owned_samples);
+        if owned >= self.frames {
+            return None;
+        }
+        let from = owned as isize - self.context as isize;
+        let mut window = vec![0.0f32; self.channels * self.model_samples];
+        for channel in 0..self.channels {
+            let output = channel * self.model_samples;
+            for sample in 0..self.model_samples {
+                let absolute = from + sample as isize;
+                if absolute < self.start as isize || absolute >= self.frames as isize {
+                    continue;
+                }
+                let at = (absolute as usize - self.start) * self.channels + channel;
+                if let Some(value) = self.samples.get(at) {
+                    window[output + sample] = *value;
+                }
+            }
+        }
+        let keep_from = owned
+            .saturating_add(self.owned_samples)
+            .saturating_sub(self.context);
+        if keep_from > self.start {
+            let drop = (keep_from - self.start) * self.channels;
+            if drop <= self.samples.len() {
+                self.samples.drain(..drop);
+                self.start = keep_from;
+            }
+        }
+        Some(window)
+    }
+}
+
+/// The owned PCM a [`SeamCursor`] just made final, ready for JavaScript.
+///
+/// Segments are triples `(chunkIndex, startFrame, endFrame)`; the PCM is
+/// planar and concatenated per segment, so a segment's channel `c` samples are
+/// at `pcm[offset + c * (end - start) ..],` with the offset advanced by
+/// `channels * (end - start)` after each segment.
+#[wasm_bindgen(js_name = SeamEmit)]
+pub struct SeamEmit {
+    segments: Vec<SeamSegment>,
+    pcm: Vec<i16>,
+}
+
+#[wasm_bindgen]
+impl SeamEmit {
+    #[wasm_bindgen(js_name = takeSegments)]
+    pub fn take_segments(&mut self) -> Box<[u32]> {
+        let mut out = Vec::with_capacity(self.segments.len() * 3);
+        for segment in &self.segments {
+            out.push(segment.chunk_index as u32);
+            out.push(segment.start_frame as u32);
+            out.push(segment.end_frame as u32);
+        }
+        out.into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = takePcm)]
+    pub fn take_pcm(&mut self) -> Box<[i16]> {
+        std::mem::take(&mut self.pcm).into_boxed_slice()
+    }
+}
+
+/// Streaming overlap-add and guard crop for record decode.
+///
+/// The decode-side counterpart of [`ProgrammeWindowCursor`]: the caller pushes
+/// decoded model windows, silent gap windows, and cached spans, and takes back
+/// only the owned PCM that can no longer change. All seam mathematics lives
+/// here, so the player cannot disagree with the encoder about the geometry.
+#[wasm_bindgen(js_name = SeamCursor)]
+pub struct WasmSeamCursor {
+    inner: SeamCursor,
+}
+
+#[wasm_bindgen]
+impl WasmSeamCursor {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        channels: usize,
+        model_samples: usize,
+        owned_samples: usize,
+        audio_length: usize,
+        frame_count: usize,
+        retain_full: bool,
+    ) -> Result<WasmSeamCursor, JsValue> {
+        Ok(Self {
+            inner: SeamCursor::new(
+                channels,
+                model_samples,
+                owned_samples,
+                audio_length,
+                frame_count,
+                retain_full,
+            )
+            .map_err(to_js_error)?,
+        })
+    }
+
+    #[wasm_bindgen(js_name = addDecodedFrame)]
+    pub fn add_decoded_frame(
+        &mut self,
+        frame_index: usize,
+        window: &[f32],
+    ) -> Result<(), JsValue> {
+        self.inner
+            .add_decoded_frame(frame_index, window)
+            .map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = addSilentFrame)]
+    pub fn add_silent_frame(&mut self, frame_index: usize) -> Result<(), JsValue> {
+        self.inner.add_silent_frame(frame_index).map_err(to_js_error)
+    }
+
+    #[wasm_bindgen(js_name = addCachedRange)]
+    pub fn add_cached_range(
+        &mut self,
+        start_frame: usize,
+        end_frame: usize,
+        interleaved: &[i16],
+    ) -> bool {
+        self.inner
+            .add_cached_range(start_frame, end_frame, interleaved)
+    }
+
+    #[wasm_bindgen(js_name = emitAfterBatch)]
+    pub fn emit_after_batch(&mut self, next_frame_index: usize) -> SeamEmit {
+        let segments = self.inner.emit_after_batch(next_frame_index);
+        self.build_emit(segments)
+    }
+
+    #[wasm_bindgen(js_name = flush)]
+    pub fn flush(&mut self) -> SeamEmit {
+        let segments = self.inner.flush();
+        self.build_emit(segments)
+    }
+
+    #[wasm_bindgen(js_name = resultPcm)]
+    pub fn result_pcm(&self) -> Box<[i16]> {
+        self.inner.full_channel_data().to_vec().into_boxed_slice()
+    }
+
+    #[wasm_bindgen(js_name = retainsFullPcm)]
+    pub fn retains_full_pcm(&self) -> bool {
+        self.inner.retains_full_pcm()
+    }
+}
+
+impl WasmSeamCursor {
+    fn build_emit(&self, segments: Vec<SeamSegment>) -> SeamEmit {
+        let mut pcm = Vec::new();
+        for segment in &segments {
+            pcm.extend(self.inner.segment_pcm(segment));
+        }
+        SeamEmit { segments, pcm }
+    }
 }
 
 #[wasm_bindgen(js_name = ecdcOverlapAdd)]

@@ -1,0 +1,514 @@
+{
+  "schema": "yl.vin.encodec-7cb-corpus-bitrate",
+  "measuredAt": "2026-09-04T00:56:24.789Z",
+  "bundle": "dist/wasm-fixed-bundles/bundles/encodec_48khz_12kbps_7cb_1333ms",
+  "corpus": "/Users/jamie/wavey.ai/soundkit/testdata/flac-packet-bench/diverse-v1",
+  "codebooks": 7,
+  "clipSeconds": 9.333333333333334,
+  "chunksPerClip": 7,
+  "clips": 40,
+  "groups": {
+    "bill-evans-secret-sessions": {
+      "clips": 10,
+      "payloadKbps": {
+        "min": 5.797064180863602,
+        "max": 9.129754634094075,
+        "mean": 7.899710703953713,
+        "median": 8.467159541412194,
+        "stdDev": 1.1199628604486878
+      },
+      "payloadKBytesPerSecond": {
+        "min": 0.7246330226079503,
+        "max": 1.1412193292617594,
+        "mean": 0.9874638379942141
+      },
+      "wholeFileKbps": {
+        "min": 5.927354548376727,
+        "max": 9.260045001607201,
+        "mean": 8.030001071466838
+      }
+    },
+    "blue-nile-hats": {
+      "clips": 10,
+      "payloadKbps": {
+        "min": 7.754848387442408,
+        "max": 8.544305153755491,
+        "mean": 8.176577734919103,
+        "median": 8.317154184078003,
+        "stdDev": 0.2671112630299253
+      },
+      "payloadKBytesPerSecond": {
+        "min": 0.969356048430301,
+        "max": 1.0680381442194364,
+        "mean": 1.022072216864888
+      },
+      "wholeFileKbps": {
+        "min": 7.885138754955534,
+        "max": 8.674595521268616,
+        "mean": 8.30686810243223
+      }
+    },
+    "lori-asha": {
+      "clips": 10,
+      "payloadKbps": {
+        "min": 8.416586306653809,
+        "max": 9.506910961105755,
+        "mean": 8.882545805207329,
+        "median": 8.956605593056894,
+        "stdDev": 0.4116950192321566
+      },
+      "payloadKBytesPerSecond": {
+        "min": 1.052073288331726,
+        "max": 1.1883638701382193,
+        "mean": 1.110318225650916
+      },
+      "wholeFileKbps": {
+        "min": 8.546876674166935,
+        "max": 9.637201328618879,
+        "mean": 9.012836172720455
+      }
+    },
+    "nocturnal-animals": {
+      "clips": 10,
+      "payloadKbps": {
+        "min": 6.377370620379299,
+        "max": 8.22029358191364,
+        "mean": 7.44789456766313,
+        "median": 7.459980713596914,
+        "stdDev": 0.5017037787228368
+      },
+      "payloadKBytesPerSecond": {
+        "min": 0.7971713275474124,
+        "max": 1.027536697739205,
+        "mean": 0.9309868209578912
+      },
+      "wholeFileKbps": {
+        "min": 6.507660987892424,
+        "max": 8.350583949426765,
+        "mean": 7.578184935176256
+      }
+    }
+  },
+  "overall": {
+    "clips": 40,
+    "payloadKbps": {
+      "min": 5.797064180863602,
+      "max": 9.506910961105755,
+      "mean": 8.10168220293582,
+      "median": 8.331726133076181,
+      "stdDev": 0.8411974754133564
+    },
+    "payloadKBytesPerSecond": {
+      "min": 0.7246330226079503,
+      "max": 1.1883638701382193,
+      "mean": 1.0127102753669774
+    },
+    "wholeFileKbps": {
+      "min": 5.927354548376727,
+      "max": 9.637201328618879,
+      "mean": 8.231972570448947
+    }
+  },
+  "rows": [
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 1,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9303,
+      "payloadBytes": 9151,
+      "rmsDbfs": -31.87,
+      "peakDbfs": -11.754
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 2,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10030,
+      "payloadBytes": 9878,
+      "rmsDbfs": -21.93,
+      "peakDbfs": -4.262
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 3,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10683,
+      "payloadBytes": 10531,
+      "rmsDbfs": -16.385,
+      "peakDbfs": -0.418
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 4,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10010,
+      "payloadBytes": 9858,
+      "rmsDbfs": -24.883,
+      "peakDbfs": -7.625
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 5,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10171,
+      "payloadBytes": 10019,
+      "rmsDbfs": -16.551,
+      "peakDbfs": 0
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 6,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8252,
+      "payloadBytes": 8100,
+      "rmsDbfs": -33.314,
+      "peakDbfs": -16.496
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 7,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 6915,
+      "payloadBytes": 6763,
+      "rmsDbfs": -30.211,
+      "peakDbfs": -14.59
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 8,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 7383,
+      "payloadBytes": 7231,
+      "rmsDbfs": -26.424,
+      "peakDbfs": -9.446
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 9,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10803,
+      "payloadBytes": 10651,
+      "rmsDbfs": -21.642,
+      "peakDbfs": -6.622
+    },
+    {
+      "group": "bill-evans-secret-sessions",
+      "slot": 10,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10130,
+      "payloadBytes": 9978,
+      "rmsDbfs": -19.567,
+      "peakDbfs": -0.632
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 1,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9855,
+      "payloadBytes": 9703,
+      "rmsDbfs": -27.139,
+      "peakDbfs": -12.613
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 2,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9821,
+      "payloadBytes": 9669,
+      "rmsDbfs": -17.578,
+      "peakDbfs": -2.349
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 3,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9199,
+      "payloadBytes": 9047,
+      "rmsDbfs": -18.133,
+      "peakDbfs": -4.161
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 4,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9254,
+      "payloadBytes": 9102,
+      "rmsDbfs": -20.94,
+      "peakDbfs": -3.163
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 5,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9872,
+      "payloadBytes": 9720,
+      "rmsDbfs": -18.932,
+      "peakDbfs": -2.175
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 6,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10120,
+      "payloadBytes": 9968,
+      "rmsDbfs": -17.974,
+      "peakDbfs": -2.39
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 7,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10013,
+      "payloadBytes": 9861,
+      "rmsDbfs": -19.506,
+      "peakDbfs": -3.336
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 8,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9900,
+      "payloadBytes": 9748,
+      "rmsDbfs": -27.127,
+      "peakDbfs": -10.736
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 9,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9470,
+      "payloadBytes": 9318,
+      "rmsDbfs": -17.955,
+      "peakDbfs": -1.898
+    },
+    {
+      "group": "blue-nile-hats",
+      "slot": 10,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9406,
+      "payloadBytes": 9254,
+      "rmsDbfs": -18.884,
+      "peakDbfs": -4.289
+    },
+    {
+      "group": "lori-asha",
+      "slot": 1,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10144,
+      "payloadBytes": 9992,
+      "rmsDbfs": -14.442,
+      "peakDbfs": -2.277
+    },
+    {
+      "group": "lori-asha",
+      "slot": 2,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 11047,
+      "payloadBytes": 10895,
+      "rmsDbfs": -15.487,
+      "peakDbfs": 0
+    },
+    {
+      "group": "lori-asha",
+      "slot": 3,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10089,
+      "payloadBytes": 9937,
+      "rmsDbfs": -15.999,
+      "peakDbfs": 0
+    },
+    {
+      "group": "lori-asha",
+      "slot": 4,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10601,
+      "payloadBytes": 10449,
+      "rmsDbfs": -19.424,
+      "peakDbfs": -2.251
+    },
+    {
+      "group": "lori-asha",
+      "slot": 5,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9976,
+      "payloadBytes": 9824,
+      "rmsDbfs": -17.375,
+      "peakDbfs": -0.717
+    },
+    {
+      "group": "lori-asha",
+      "slot": 6,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10161,
+      "payloadBytes": 10009,
+      "rmsDbfs": -16.061,
+      "peakDbfs": 0
+    },
+    {
+      "group": "lori-asha",
+      "slot": 7,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 11137,
+      "payloadBytes": 10985,
+      "rmsDbfs": -14.776,
+      "peakDbfs": 0
+    },
+    {
+      "group": "lori-asha",
+      "slot": 8,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 11243,
+      "payloadBytes": 11091,
+      "rmsDbfs": -15.399,
+      "peakDbfs": 0
+    },
+    {
+      "group": "lori-asha",
+      "slot": 9,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 10777,
+      "payloadBytes": 10625,
+      "rmsDbfs": -15.843,
+      "peakDbfs": -0.071
+    },
+    {
+      "group": "lori-asha",
+      "slot": 10,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9971,
+      "payloadBytes": 9819,
+      "rmsDbfs": -18.262,
+      "peakDbfs": -1.246
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 1,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8722,
+      "payloadBytes": 8570,
+      "rmsDbfs": -22.85,
+      "peakDbfs": -8.881
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 2,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9742,
+      "payloadBytes": 9590,
+      "rmsDbfs": -11.435,
+      "peakDbfs": -0.269
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 3,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8855,
+      "payloadBytes": 8703,
+      "rmsDbfs": -32.642,
+      "peakDbfs": -18.033
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 4,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9113,
+      "payloadBytes": 8961,
+      "rmsDbfs": -15.201,
+      "peakDbfs": -0.937
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 5,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 7592,
+      "payloadBytes": 7440,
+      "rmsDbfs": -25.213,
+      "peakDbfs": -9.658
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 6,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8404,
+      "payloadBytes": 8252,
+      "rmsDbfs": -22.443,
+      "peakDbfs": -9.065
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 7,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8962,
+      "payloadBytes": 8810,
+      "rmsDbfs": -25.662,
+      "peakDbfs": -10.775
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 8,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8645,
+      "payloadBytes": 8493,
+      "rmsDbfs": -30.874,
+      "peakDbfs": -16.041
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 9,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 8696,
+      "payloadBytes": 8544,
+      "rmsDbfs": -30.252,
+      "peakDbfs": -14.169
+    },
+    {
+      "group": "nocturnal-animals",
+      "slot": 10,
+      "seconds": 9.333,
+      "segments": 7,
+      "ecdcBytes": 9678,
+      "payloadBytes": 9526,
+      "rmsDbfs": -15.375,
+      "peakDbfs": -1.966
+    }
+  ]
+}
