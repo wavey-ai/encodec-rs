@@ -9,15 +9,13 @@ import { createCustomEncoder } from "./custom-encoder-runtime.mjs";
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 const options = parseArgs(process.argv.slice(2));
-const customDecoderOnnxFree = options.command === "decode" && options.customDecoderRoot
-  ? JSON.parse(readFileSync(path.join(options.customDecoderRoot, "metadata.json"), "utf8"))
-      .onnxFree === true
-  : false;
+const customDecoderSelected =
+  options.command === "decode" && Boolean(options.customDecoderRoot);
 const encodec = await import(
   pathToFileURL(path.join(options.encodecWasmRoot, "encodec-rs/pkg/encodec_rs.js")),
 );
 const needsOrt = options.command === "decode"
-  ? !customDecoderOnnxFree
+  ? !customDecoderSelected
   : options.customEncoderRoot === null;
 const ort = needsOrt
   ? await import(
@@ -335,15 +333,13 @@ async function decodeFixture(options) {
     preRepairWav,
     seamListeningPack,
     bundleDir: path.relative(repoRoot, options.bundleDir),
-    runtime: customDecoderOnnxFree
+    runtime: customDecoderSelected
       ? "custom SIMD WASM"
       : "onnxruntime-web wasm",
-    decoderBackend: customDecoderOnnxFree
-      ? "custom SIMD WASM (ONNX-free)"
-      : options.customDecoderRoot
-        ? "hybrid custom ConvTranspose + ONNX-WASM"
-        : "ONNX-WASM",
-    onnxSessionOptions: customDecoderOnnxFree
+    decoderBackend: customDecoderSelected
+      ? "custom SIMD WASM"
+      : "ONNX-WASM",
+    onnxSessionOptions: customDecoderSelected
       ? null
       : summarizeOnnxSessionOptions(options),
     lmRuntime: summarizeLmRuntime(lmRuntime),
@@ -365,7 +361,7 @@ async function decodeFixture(options) {
       lmDeterministicMs: roundMs(lmDeterministicMs),
       arithmeticMs: roundMs(arithmeticMs),
       decodeSessionMs: roundMs(decodeSessionMs),
-      decodeOnnxMs: customDecoderOnnxFree
+      decodeOnnxMs: customDecoderSelected
         ? 0
         : roundMs(decodedFrames.decodeOnnxMs),
       decodeModelMs: roundMs(decodedFrames.decodeOnnxMs),
@@ -444,11 +440,7 @@ async function createCustomDecoder(root, kernelModulePath, bundleMeta) {
   const metadata = JSON.parse(readFileSync(path.join(root, "metadata.json"), "utf8"));
   validateCustomDecoderMetadata(metadata, bundleMeta);
   const sessions = Array.from({ length: metadata.stages }, () => null);
-  const firstOnnxStage = metadata.onnxFree
-    ? metadata.stages
-    : metadata.front
-      ? 1
-      : 0;
+  const firstOnnxStage = metadata.stages;
   for (let stage = firstOnnxStage; stage < metadata.stages; stage += 1) {
     sessions[stage] = await createSession(path.join(root, `stage-${stage}.onnx`));
   }
@@ -471,128 +463,9 @@ async function createCustomDecoder(root, kernelModulePath, bundleMeta) {
 }
 
 async function decodeFrameCustom(decoder, frames, meta) {
-  const { metadata, sessions, kernel, kernelState } = decoder;
-  if (metadata.onnxFree) {
-    return decodeFrameFullyCustom(decoder, frames, meta);
-  }
-  const samplesPerDecodedFrame = meta.channels * meta.segment_samples;
-  const audio = new Float32Array(frames.length * samplesPerDecodedFrame);
-  const stageMs = Array.from({ length: metadata.stages }, () => 0);
-  const kernelMs = Array.from({ length: metadata.layers.length }, () => 0);
-  const transferMs = Array.from({ length: metadata.layers.length }, () => 0);
-  let frontMs = 0;
-  const decodeStarted = performance.now();
-
-  for (let frameIndex = 0; frameIndex < frames.length; frameIndex += 1) {
-    const frame = frames[frameIndex];
-    const frameScale = new Float32Array([Number(frame.scale ?? 1)]);
-    let activation = null;
-    let outputs = null;
-    let started = performance.now();
-    if (kernelState.front) {
-      runCustomDecoderFront(kernel, kernelState, frame.codes, metadata.front);
-      frontMs += performance.now() - started;
-    } else {
-      const decoderInputs = buildDecoderInputs([frame], meta);
-      const frameFeeds = {
-        codes: new ort.Tensor("int64", decoderInputs.codes, [
-          1,
-          meta.num_codebooks,
-          meta.frame_length,
-        ]),
-        scale: new ort.Tensor("float32", decoderInputs.scales, [1, 1]),
-      };
-      outputs = await sessions[0].run(frameFeeds);
-      stageMs[0] += performance.now() - started;
-      activation = outputs[sessions[0].outputNames[0]].data;
-    }
-
-    for (let layerIndex = 0; layerIndex < metadata.layers.length; layerIndex += 1) {
-      const layer = metadata.layers[layerIndex];
-      const layerState = kernelState.layers[layerIndex];
-
-      if (!(kernelState.front && layerIndex === 0)) {
-        started = performance.now();
-        kernel.HEAPF32.set(
-          activation,
-          kernelState.input / Float32Array.BYTES_PER_ELEMENT,
-        );
-        transferMs[layerIndex] += performance.now() - started;
-      }
-
-      started = performance.now();
-      const ok = kernel._conv_transpose1d_phase_simd_8x8(
-        kernelState.input,
-        layerState.packed,
-        layerState.bias,
-        kernelState.output,
-        layer.inputTime,
-        layer.inputChannels,
-        layer.outputChannels,
-        layer.stride,
-      );
-      if (ok !== 1) {
-        throw new Error(`custom decoder kernel rejected layer ${layerIndex}`);
-      }
-      kernelMs[layerIndex] += performance.now() - started;
-
-      started = performance.now();
-      const outputLength = layer.outputChannels * layer.rawOutputTime;
-      const outputOffset = kernelState.output / Float32Array.BYTES_PER_ELEMENT;
-      const customOutput = kernel.HEAPF32.slice(
-        outputOffset,
-        outputOffset + outputLength,
-      );
-      const activationTensor = new ort.Tensor("float32", customOutput, [
-        1,
-        layer.outputChannels,
-        layer.rawOutputTime,
-      ]);
-      transferMs[layerIndex] += performance.now() - started;
-
-      const stage = sessions[layerIndex + 1];
-      const feeds = {};
-      for (const inputName of stage.inputNames) {
-        feeds[inputName] = inputName === "scale"
-          ? new ort.Tensor("float32", frameScale, [1, 1])
-          : activationTensor;
-      }
-      started = performance.now();
-      outputs = await stage.run(feeds);
-      stageMs[layerIndex + 1] += performance.now() - started;
-      activation = outputs[stage.outputNames[0]].data;
-    }
-
-    if (activation.length !== samplesPerDecodedFrame) {
-      throw new Error(
-        `custom decoder frame ${frameIndex} returned ${activation.length} samples; expected ${samplesPerDecodedFrame}`,
-      );
-    }
-    audio.set(activation, frameIndex * samplesPerDecodedFrame);
-    reportProgress("custom neural decode", frameIndex + 1, frames.length, decodeStarted, null, options);
-  }
-
-  const decodeOnnxMs = performance.now() - decodeStarted;
-  return {
-    audio,
-    batchSize: 1,
-    decodeOnnxMs,
-    outputSummary: {
-      stages: sessions.length,
-      customConvTransposeLayers: metadata.layers.length,
-      output: [frames.length, meta.channels, meta.segment_samples],
-    },
-    customBreakdown: {
-      stageMs: stageMs.map(roundMs),
-      frontMs: roundMs(frontMs),
-      kernelMs: kernelMs.map(roundMs),
-      transferMs: transferMs.map(roundMs),
-      stageTotalMs: roundMs(stageMs.reduce((sum, value) => sum + value, 0)),
-      kernelTotalMs: roundMs(kernelMs.reduce((sum, value) => sum + value, 0)),
-      transferTotalMs: roundMs(transferMs.reduce((sum, value) => sum + value, 0)),
-    },
-    shape: [frames.length, meta.channels, meta.segment_samples],
-  };
+  // encodec-rs no longer ships an ONNX backend, so a custom decoder always
+  // runs the fully custom kernel path.
+  return decodeFrameFullyCustom(decoder, frames, meta);
 }
 
 async function decodeFrameFullyCustom(decoder, frames, meta) {
@@ -793,14 +666,12 @@ async function decodeFrameFullyCustom(decoder, frames, meta) {
     batchSize: 1,
     decodeOnnxMs: decodeModelMs,
     outputSummary: {
-      onnxFree: true,
       normalization: "ONNX-order two-pass",
       customConvTransposeLayers: metadata.layers.length,
       customConvLayers: metadata.post.convLayers.length + 2,
       output: [frames.length, meta.channels, meta.segment_samples],
     },
     customBreakdown: {
-      onnxFree: true,
       frontMs: roundMs(breakdown.front),
       frontPartsMs: Object.fromEntries(
         Object.entries(breakdown.frontParts).map(([name, value]) => [

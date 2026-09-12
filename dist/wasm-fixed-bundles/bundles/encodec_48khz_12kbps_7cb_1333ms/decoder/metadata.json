@@ -1,5 +1,4 @@
 {
-  "onnxFree": true,
   "frameLength": 203,
   "numCodebooks": 7,
   "channels": 2,

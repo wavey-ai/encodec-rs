@@ -61,7 +61,6 @@ const manifest = {
 mkdirSync(output, { recursive: true });
 const metadata = JSON.parse(readFileSync(path.join(source, "metadata.json"), "utf8"));
 delete metadata.sourceModel;
-metadata.onnxFree = true;
 writeFileSync(
   path.join(output, "metadata.json"),
   `${JSON.stringify(metadata, null, 2)}\n`,

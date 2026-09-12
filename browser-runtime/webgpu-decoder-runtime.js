@@ -63,7 +63,6 @@ function validateMetadata(metadata, bundle) {
     }
   }
   if (
-    metadata.onnxFree !== true ||
     metadata.front?.lstmLayers?.length !== 2 ||
     metadata.layers?.length !== 4 ||
     metadata.post?.convLayers?.length !== 12

@@ -386,7 +386,6 @@ def main() -> None:
 
     report = {
         "sourceModel": str(model_path),
-        "onnxFree": True,
         "frameLength": frame_length,
         "numCodebooks": int(bundle_metadata["num_codebooks"]),
         "channels": int(bundle_metadata["channels"]),
@@ -426,7 +425,6 @@ def main() -> None:
                 "frameLength": report["frameLength"],
                 "numCodebooks": report["numCodebooks"],
                 "transposeLayers": len(layer_metadata),
-                "onnxFree": report["onnxFree"],
             }
         )
     )

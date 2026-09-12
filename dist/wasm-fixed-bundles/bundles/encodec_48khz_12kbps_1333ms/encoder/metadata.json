@@ -395,6 +395,5 @@
     "codebooks": 8,
     "entries": 1024,
     "dimension": 128
-  },
-  "onnxFree": true
+  }
 }

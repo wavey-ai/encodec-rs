@@ -104,9 +104,6 @@ async function loadDecoderWeights(root, metadata, fetchImpl) {
 }
 
 function validateMetadata(metadata, bundle) {
-  if (metadata.onnxFree !== true) {
-    throw new Error("custom decoder metadata is not ONNX-free");
-  }
   const checks = [
     ["frame length", metadata.frameLength, bundle.frame_length],
     ["codebook count", metadata.numCodebooks, bundle.num_codebooks],
