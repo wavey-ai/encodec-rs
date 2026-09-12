@@ -118,6 +118,12 @@ The August 2026 audit used an Apple M1 host and one WASM thread, processing a
 227.863-second, 48 kHz stereo PCM24 master. Higher RTFx is faster, where
 `RTFx = audio duration / wall time`.
 
+Against the ONNX-WASM controls: encoding model time is 4.6% faster and the
+bytes are identical; decoding executes the model 3.19× faster; in the browser,
+model execution is 1.263× faster. Against official Meta on this host: complete
+encode and decode are faster, the payload is 6.63% larger, and quality is a
+tie.
+
 ### Encoding
 
 | Path | Model time | Total time | RTFx | Result |
@@ -154,9 +160,11 @@ backend.
 | ONNX Runtime Web | 514.1 ms | 1,075.2 ms | 3.72× |
 | Custom WASM | 280.2 ms | 851.1 ms | 4.70× |
 
-The production package completed an ONNX-free browser encode and decode round
-trip: the encoder produced the exact 4,589-byte reference ECDC file and the
-decoder produced bit-identical PCM for that four-second test.
+The custom browser decoder was 1.263× faster than ONNX Runtime Web for model
+execution in this test. The production package completed an ONNX-free browser
+encode and decode round trip: the encoder produced the exact 4,589-byte
+reference ECDC file and the decoder produced bit-identical PCM for that
+four-second test.
 
 ## Numerical parity
 
@@ -266,8 +274,10 @@ setup.
 | Meta loaded core API | 104.004 s | 2.191× | 104.171 s | 2.187× | 278,134 |
 | Meta standard fresh CLI | 108.605 s | 2.098× | 106.209 s | 2.145× | 278,134 |
 
-The `encodec-rs` payload is 6.63% larger than the Meta payload. The comparison
-measures complete implementations and does not isolate Python or FFI overhead.
+On this host the custom path completed encoding and decoding faster than both
+Meta rows; the `encodec-rs` payload is 6.63% larger than the Meta payload. The
+comparison measures complete implementations and does not isolate Python or FFI
+overhead.
 
 ## Full-file quality
 
@@ -287,7 +297,9 @@ Official ViSQOL scored ten matched, active eight-second excerpts.
 | Official Meta | 4.2769 | 4.2847 | 0.0676 |
 
 The paired mean difference was `+0.0105` for `encodec-rs`, with a 95% confidence
-interval of `-0.0038` to `+0.0248`.
+interval of `-0.0038` to `+0.0248`. The aggregate results do not show a material
+quality difference, and the interval spans zero, so neither candidate is a
+reliable winner on quality.
 
 ## Seam analysis
 
