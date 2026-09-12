@@ -22,13 +22,7 @@ track-specific values; one bundle works for all valid audio of its profile.
 
 ## ONNX Runtime
 
-ONNX Runtime is deliberately not supported. The release packages contain no
-ONNX files and never load an ONNX runtime. The build reads fixed ONNX models
-only as a source of model structure and weights, which it packs into the
-kernel's own form; nothing ONNX-shaped ships or runs.
-
-The Apple package likewise provides complete encoding and decoding through MLX
-on Metal, with no ONNX runtime at run time.
+Removed to use our far smaller foot-print and faster custom backend.
 
 ## Browser backends
 
