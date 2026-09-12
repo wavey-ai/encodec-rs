@@ -7,13 +7,13 @@ use ndarray::{Array3, Array4};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ecdc::PairedLmCodec;
 use crate::ecdc::{LmCodec, QUANTIZED_LM_BITSTREAM_VERSION};
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
 use crate::stable_hash::stable_hash_hex;
 
 pub struct PortableLmCodec {
     bundle_dir: Option<PathBuf>,
-    metadata: OnnxFrameBundleMetadata,
+    metadata: FrameBundleMetadata,
     lm_window_frame_length: usize,
     backend: PortableLmBackend,
     input_symbols: Vec<usize>,
@@ -29,8 +29,8 @@ enum PortableLmBackend {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PortablePairedLmCodec {
-    primary_metadata: OnnxFrameBundleMetadata,
-    derived_metadata: OnnxFrameBundleMetadata,
+    primary_metadata: FrameBundleMetadata,
+    derived_metadata: FrameBundleMetadata,
     lm_window_frame_length: usize,
     lm: QuantizedLm,
     primary_state: Option<QuantizedLmState>,
@@ -45,9 +45,9 @@ impl PortablePairedLmCodec {
         primary_dir: impl AsRef<Path>,
         derived_dir: impl AsRef<Path>,
     ) -> Result<Self> {
-        fn load(dir: &Path) -> Result<(OnnxFrameBundleMetadata, Vec<u8>)> {
+        fn load(dir: &Path) -> Result<(FrameBundleMetadata, Vec<u8>)> {
             let metadata_path = dir.join("bundle.json");
-            let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
+            let metadata: FrameBundleMetadata = serde_json::from_str(
                 &fs::read_to_string(&metadata_path)
                     .with_context(|| format!("failed to read {}", metadata_path.display()))?,
             )
@@ -94,7 +94,7 @@ impl PortableLmCodec {
     pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self> {
         let bundle_dir = dir.as_ref().to_path_buf();
         let metadata_path = bundle_dir.join("bundle.json");
-        let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
+        let metadata: FrameBundleMetadata = serde_json::from_str(
             &fs::read_to_string(&metadata_path)
                 .with_context(|| format!("failed to read {}", metadata_path.display()))?,
         )
@@ -113,7 +113,7 @@ impl PortableLmCodec {
     }
 
     pub fn from_quantized_weights(
-        metadata: OnnxFrameBundleMetadata,
+        metadata: FrameBundleMetadata,
         weights: &[u8],
     ) -> Result<Self> {
         let hash = stable_hash_hex(weights);
@@ -141,13 +141,13 @@ impl PortableLmCodec {
         self.bundle_dir.as_deref()
     }
 
-    pub fn metadata(&self) -> &OnnxFrameBundleMetadata {
+    pub fn metadata(&self) -> &FrameBundleMetadata {
         &self.metadata
     }
 }
 
 impl LmCodec for PortableLmCodec {
-    fn metadata(&self) -> &OnnxFrameBundleMetadata {
+    fn metadata(&self) -> &FrameBundleMetadata {
         &self.metadata
     }
 
@@ -275,11 +275,11 @@ impl LmCodec for PortableLmCodec {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl PairedLmCodec for PortablePairedLmCodec {
-    fn primary_metadata(&self) -> &OnnxFrameBundleMetadata {
+    fn primary_metadata(&self) -> &FrameBundleMetadata {
         &self.primary_metadata
     }
 
-    fn derived_metadata(&self) -> &OnnxFrameBundleMetadata {
+    fn derived_metadata(&self) -> &FrameBundleMetadata {
         &self.derived_metadata
     }
 
@@ -385,7 +385,7 @@ mod tests {
             eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
             return Ok(());
         }
-        let metadata: OnnxFrameBundleMetadata =
+        let metadata: FrameBundleMetadata =
             from_str(&fs::read_to_string(bundle_dir.join("bundle.json"))?)?;
         let weight_name = metadata
             .lm_quant_weight_model

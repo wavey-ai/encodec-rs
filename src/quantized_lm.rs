@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use std::sync::OnceLock;
 
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 
 const MAGIC: &[u8; 8] = b"ELMQ0001";
 const HEADER_U32S: usize = 7;
@@ -199,7 +199,7 @@ impl QuantizedLmWeights {
         Ok(())
     }
 
-    pub fn validate_for_metadata(&self, metadata: &OnnxFrameBundleMetadata) -> Result<()> {
+    pub fn validate_for_metadata(&self, metadata: &FrameBundleMetadata) -> Result<()> {
         metadata.validate_lm()?;
         if self.codebooks != metadata.num_codebooks {
             bail!(
@@ -2445,7 +2445,7 @@ mod tests {
     #[test]
     fn paired_full_and_prefix_steps_match_independent_models_bit_for_bit() -> Result<()> {
         fn load_weights(dir: &std::path::Path) -> Result<QuantizedLmWeights> {
-            let metadata: OnnxFrameBundleMetadata =
+            let metadata: FrameBundleMetadata =
                 serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json"))?)?;
             let name = metadata
                 .lm_quant_weight_model
@@ -2513,7 +2513,7 @@ mod tests {
         }
 
         fn load_weights(dir: &std::path::Path) -> Result<QuantizedLmWeights> {
-            let metadata: OnnxFrameBundleMetadata =
+            let metadata: FrameBundleMetadata =
                 serde_json::from_str(&std::fs::read_to_string(dir.join("bundle.json"))?)?;
             let name = metadata
                 .lm_quant_weight_model
@@ -2622,7 +2622,7 @@ mod tests {
             eprintln!("skipping LM fixture test; run scripts/download-onnx-bundles.sh first");
             return Ok(());
         }
-        let metadata: OnnxFrameBundleMetadata =
+        let metadata: FrameBundleMetadata =
             serde_json::from_str(&std::fs::read_to_string(bundle_dir.join("bundle.json"))?)?;
         let weight_name = metadata
             .lm_quant_weight_model

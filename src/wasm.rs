@@ -15,7 +15,7 @@ use crate::format::{
     ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
     QUANTIZED_LM_BITSTREAM_VERSION,
 };
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 use crate::quantized_lm::{QuantizedLm, QuantizedLmState, QuantizedLmWeights};
 use crate::seam::{triangle_overlap_add_planar_frames, SeamCursor, SeamSegment};
 use crate::stable_hash::stable_hash_hex;
@@ -596,7 +596,7 @@ pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValu
 
 #[wasm_bindgen]
 pub struct QuantizedLmChunkEncoder {
-    meta: OnnxFrameBundleMetadata,
+    meta: FrameBundleMetadata,
     lm: QuantizedLm,
     state: QuantizedLmState,
     lm_window_frame_length: usize,
@@ -726,8 +726,8 @@ impl QuantizedLmChunkEncoder {
 /// q8 weight set and two exact LM states.
 #[wasm_bindgen]
 pub struct QuantizedLmPairedChunkEncoder {
-    primary_meta: OnnxFrameBundleMetadata,
-    derived_meta: OnnxFrameBundleMetadata,
+    primary_meta: FrameBundleMetadata,
+    derived_meta: FrameBundleMetadata,
     lm: QuantizedLm,
     primary_state: QuantizedLmState,
     derived_state: QuantizedLmState,
@@ -906,8 +906,8 @@ impl QuantizedLmPairedChunkEncoder {
 }
 
 fn validate_paired_lm_metadata(
-    primary: &OnnxFrameBundleMetadata,
-    derived: &OnnxFrameBundleMetadata,
+    primary: &FrameBundleMetadata,
+    derived: &FrameBundleMetadata,
 ) -> anyhow::Result<()> {
     if derived.num_codebooks >= primary.num_codebooks {
         anyhow::bail!(
@@ -934,7 +934,7 @@ fn validate_paired_lm_metadata(
 
 #[wasm_bindgen]
 pub struct QuantizedLmChunkDecoder {
-    meta: OnnxFrameBundleMetadata,
+    meta: FrameBundleMetadata,
     lm: QuantizedLm,
     state: QuantizedLmState,
     lm_window_frame_length: usize,
@@ -1079,19 +1079,19 @@ impl QuantizedLmChunkDecoder {
     }
 }
 
-fn parse_bundle(bundle_json: &str) -> Result<OnnxFrameBundleMetadata, JsValue> {
-    let metadata: OnnxFrameBundleMetadata =
+fn parse_bundle(bundle_json: &str) -> Result<FrameBundleMetadata, JsValue> {
+    let metadata: FrameBundleMetadata =
         serde_json::from_str(bundle_json).map_err(to_js_error)?;
     metadata.validate().map_err(to_js_error)?;
     Ok(metadata)
 }
 
-fn validate_lm_metadata(meta: &OnnxFrameBundleMetadata) -> anyhow::Result<()> {
+fn validate_lm_metadata(meta: &FrameBundleMetadata) -> anyhow::Result<()> {
     meta.validate_lm()
 }
 
 fn validate_encoded_frame_length(
-    meta: &OnnxFrameBundleMetadata,
+    meta: &FrameBundleMetadata,
     frame_length: usize,
 ) -> anyhow::Result<()> {
     if frame_length == 0 || frame_length > meta.frame_length {
@@ -1111,7 +1111,7 @@ fn validate_encoded_frame_length(
     Ok(())
 }
 
-fn symbols_from_codes(codes: &[u16], meta: &OnnxFrameBundleMetadata) -> anyhow::Result<Vec<usize>> {
+fn symbols_from_codes(codes: &[u16], meta: &FrameBundleMetadata) -> anyhow::Result<Vec<usize>> {
     if codes.len() != meta.num_codebooks {
         anyhow::bail!(
             "LM code step length {} does not match num_codebooks {}",
@@ -1142,7 +1142,7 @@ fn symbols_from_codes(codes: &[u16], meta: &OnnxFrameBundleMetadata) -> anyhow::
 /// concatenates the results at logical stride positions. The output contains
 /// exact cropped PCM. Callers can apply an optional seam repair after assembly.
 fn fixed_context_crop_concat(
-    meta: &OnnxFrameBundleMetadata,
+    meta: &FrameBundleMetadata,
     audio_length: usize,
     decoded_frames: &[f32],
     stride: usize,
@@ -1191,7 +1191,7 @@ fn fixed_context_crop_concat(
 }
 
 fn overlap_add_decoded_frames(
-    meta: &OnnxFrameBundleMetadata,
+    meta: &FrameBundleMetadata,
     audio_length: usize,
     decoded_frames: &[f32],
     layout: EcdcChunkLayout,
@@ -1336,7 +1336,7 @@ mod tests {
     use std::path::Path;
 
     fn test_bundle_json() -> String {
-        serde_json::to_string(&OnnxFrameBundleMetadata {
+        serde_json::to_string(&FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz_test".to_string(),
             bandwidth_kbps: 12.0,
@@ -1366,7 +1366,7 @@ mod tests {
     #[test]
     fn fixed_block_header_validates_one_packet_entry() {
         let bundle_json = test_bundle_json();
-        let bundle_meta: OnnxFrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
+        let bundle_meta: FrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
         let weights = [0x42_u8; 32];
 
         for block_samples in [48_123_usize, 65_537_usize] {
@@ -1400,7 +1400,7 @@ mod tests {
     /// private model window holding 480 previous-context samples, 64,000
     /// owned samples, and 480 following-context samples.
     fn fixed_block_bundle_json() -> String {
-        serde_json::to_string(&OnnxFrameBundleMetadata {
+        serde_json::to_string(&FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz_test".to_string(),
             bandwidth_kbps: 12.0,
@@ -1475,7 +1475,7 @@ mod tests {
 
     #[test]
     fn fixed_context_entropy_rejects_partial_model_codes() {
-        let meta: OnnxFrameBundleMetadata =
+        let meta: FrameBundleMetadata =
             serde_json::from_str(&fixed_block_bundle_json()).unwrap();
         assert!(validate_encoded_frame_length(&meta, meta.frame_length).is_ok());
         assert!(validate_encoded_frame_length(&meta, meta.frame_length - 1).is_err());
@@ -1484,7 +1484,7 @@ mod tests {
 
     #[test]
     fn fixed_context_crop_concat_returns_untouched_owned_audio() {
-        let meta: OnnxFrameBundleMetadata =
+        let meta: FrameBundleMetadata =
             serde_json::from_str(&fixed_block_bundle_json()).unwrap();
         let stride = meta.segment_stride;
         let context = 480usize;
@@ -1524,7 +1524,7 @@ mod tests {
 
     #[test]
     fn fixed_context_crop_concat_rejects_too_short_decoded_output() {
-        let meta: OnnxFrameBundleMetadata =
+        let meta: FrameBundleMetadata =
             serde_json::from_str(&fixed_block_bundle_json()).unwrap();
         let stride = meta.segment_stride;
         let context = 480usize;
@@ -1545,7 +1545,7 @@ mod tests {
         }
 
         let bundle_json = fs::read_to_string(bundle_path).unwrap();
-        let metadata: OnnxFrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
+        let metadata: FrameBundleMetadata = serde_json::from_str(&bundle_json).unwrap();
         let weights = fs::read(weights_path).unwrap();
         let steps = 4;
         let scale = f32::from_bits(0x3f12_3456);

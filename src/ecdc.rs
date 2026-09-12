@@ -20,10 +20,10 @@ pub use crate::format::{
     EcdcMetadata, SourceAudioMetadata, ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE,
     DEFAULT_MIN_RANGE, QUANTIZED_LM_BITSTREAM_VERSION,
 };
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 
 pub trait FrameCodec {
-    fn metadata(&self) -> &OnnxFrameBundleMetadata;
+    fn metadata(&self) -> &FrameBundleMetadata;
 
     fn encode_frame(&mut self, audio: &Array3<f32>) -> Result<(Array3<i64>, Array2<f32>)>;
 
@@ -31,7 +31,7 @@ pub trait FrameCodec {
 }
 
 pub trait LmCodec {
-    fn metadata(&self) -> &OnnxFrameBundleMetadata;
+    fn metadata(&self) -> &FrameBundleMetadata;
 
     fn bitstream_version(&self) -> u8 {
         QUANTIZED_LM_BITSTREAM_VERSION
@@ -82,9 +82,9 @@ pub trait LmCodec {
 /// logits and arithmetic output.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) trait PairedLmCodec {
-    fn primary_metadata(&self) -> &OnnxFrameBundleMetadata;
+    fn primary_metadata(&self) -> &FrameBundleMetadata;
 
-    fn derived_metadata(&self) -> &OnnxFrameBundleMetadata;
+    fn derived_metadata(&self) -> &FrameBundleMetadata;
 
     fn primary_lm_hash(&self) -> &str;
 
@@ -524,7 +524,7 @@ pub fn encode_ecdc_header_with_options(
 }
 
 fn encode_ecdc_header_from_bundle_with_options(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    bundle_meta: &FrameBundleMetadata,
     audio_length: usize,
     source: Option<&SourceAudioMetadata>,
     lm_hash: Option<String>,
@@ -912,9 +912,9 @@ fn encode_audio_to_dual_ecdc_impl(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_dual_encode_metadata(
-    primary: &OnnxFrameBundleMetadata,
-    primary_lm: &OnnxFrameBundleMetadata,
-    derived: &OnnxFrameBundleMetadata,
+    primary: &FrameBundleMetadata,
+    primary_lm: &FrameBundleMetadata,
+    derived: &FrameBundleMetadata,
 ) -> Result<()> {
     if primary.model_name != primary_lm.model_name
         || primary.sample_rate != primary_lm.sample_rate
@@ -1037,7 +1037,7 @@ fn encode_ecdc_segment_batch_impl(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn validate_encoded_batch(
-    model_meta: &OnnxFrameBundleMetadata,
+    model_meta: &FrameBundleMetadata,
     batch: &Array3<f32>,
     frame_lengths: &[usize],
     codes: &Array3<i64>,
@@ -1660,7 +1660,7 @@ pub fn encode_lm_chunk_evidence(
 
 fn decode_lm_chunk_codes(
     lm_codec: &mut dyn LmCodec,
-    model_meta: &OnnxFrameBundleMetadata,
+    model_meta: &FrameBundleMetadata,
     payload: &[u8],
     frame_length: usize,
     fp_scale: i64,
@@ -1683,7 +1683,7 @@ fn decode_lm_chunk_codes(
 #[allow(clippy::too_many_arguments)]
 fn decode_lm_chunk_codes_with_scratch(
     lm_codec: &mut dyn LmCodec,
-    model_meta: &OnnxFrameBundleMetadata,
+    model_meta: &FrameBundleMetadata,
     payload: &[u8],
     frame_length: usize,
     fp_scale: i64,
@@ -1802,7 +1802,7 @@ fn decode_code_batch(
 
 fn encode_segment_batch(
     audio: &ArrayView3<'_, f32>,
-    meta: &OnnxFrameBundleMetadata,
+    meta: &FrameBundleMetadata,
     offsets: &[usize],
     chunk_layout: EcdcChunkLayout,
     fixed_lm_frame_length: Option<usize>,
@@ -2041,22 +2041,22 @@ mod tests {
     use super::*;
 
     struct TracingLm {
-        meta: OnnxFrameBundleMetadata,
+        meta: FrameBundleMetadata,
         capacity: usize,
         calls: Vec<(i64, Vec<i64>)>,
     }
 
     struct EvidenceFrameCodec {
-        meta: OnnxFrameBundleMetadata,
+        meta: FrameBundleMetadata,
     }
 
     struct BatchFrameCodec {
-        meta: OnnxFrameBundleMetadata,
+        meta: FrameBundleMetadata,
         decode_batches: Vec<usize>,
     }
 
     impl FrameCodec for EvidenceFrameCodec {
-        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        fn metadata(&self) -> &FrameBundleMetadata {
             &self.meta
         }
 
@@ -2093,7 +2093,7 @@ mod tests {
     }
 
     impl FrameCodec for BatchFrameCodec {
-        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        fn metadata(&self) -> &FrameBundleMetadata {
             &self.meta
         }
 
@@ -2138,7 +2138,7 @@ mod tests {
     impl TracingLm {
         fn new(capacity: usize) -> Self {
             Self {
-                meta: OnnxFrameBundleMetadata {
+                meta: FrameBundleMetadata {
                     schema_version: 1,
                     model_name: "trace_lm".into(),
                     bandwidth_kbps: 1.0,
@@ -2169,7 +2169,7 @@ mod tests {
     }
 
     impl LmCodec for TracingLm {
-        fn metadata(&self) -> &OnnxFrameBundleMetadata {
+        fn metadata(&self) -> &FrameBundleMetadata {
             &self.meta
         }
 
@@ -2200,8 +2200,8 @@ mod tests {
         }
     }
 
-    fn fixed_1333ms_meta() -> OnnxFrameBundleMetadata {
-        OnnxFrameBundleMetadata {
+    fn fixed_1333ms_meta() -> FrameBundleMetadata {
+        FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz_test".into(),
             bandwidth_kbps: 12.0,
@@ -2227,7 +2227,7 @@ mod tests {
         }
     }
 
-    fn variable_tail_meta() -> OnnxFrameBundleMetadata {
+    fn variable_tail_meta() -> FrameBundleMetadata {
         let mut meta = fixed_1333ms_meta();
         meta.segment_samples = 10;
         meta.segment_stride = 8;
@@ -2239,7 +2239,7 @@ mod tests {
         meta
     }
 
-    fn batch_decode_meta() -> OnnxFrameBundleMetadata {
+    fn batch_decode_meta() -> FrameBundleMetadata {
         let mut meta = TracingLm::new(4).meta;
         meta.segment_samples = 64_960;
         meta.segment_stride = 64_000;

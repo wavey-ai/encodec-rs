@@ -14,8 +14,6 @@ pub mod format;
 pub mod metadata;
 #[cfg(all(feature = "ecdc", not(target_arch = "wasm32")))]
 pub mod mlx_bridge;
-#[cfg(feature = "onnx")]
-pub mod onnx;
 #[cfg(feature = "ecdc")]
 pub mod pcm;
 #[cfg(feature = "ecdc")]

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const Q8_LM_LOGIT_STEP: f64 = 2.1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct OnnxFrameBundleMetadata {
+pub struct FrameBundleMetadata {
     pub schema_version: u32,
     pub model_name: String,
     pub bandwidth_kbps: f32,
@@ -38,7 +38,7 @@ pub struct OnnxFrameBundleMetadata {
     pub opset_version: usize,
 }
 
-impl OnnxFrameBundleMetadata {
+impl FrameBundleMetadata {
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported bundle schema_version {}", self.schema_version);

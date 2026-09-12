@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ecdc_presets::fixed_context_samples;
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 
 pub const DEFAULT_FP_SCALE: i64 = 1 << 13;
 pub const DEFAULT_MIN_RANGE: i64 = 2;
@@ -53,7 +53,7 @@ pub struct EcdcMetadata {
 
 impl EcdcMetadata {
     pub fn from_bundle(
-        bundle: &OnnxFrameBundleMetadata,
+        bundle: &FrameBundleMetadata,
         audio_length: usize,
         _source: Option<&SourceAudioMetadata>,
         lm_hash: Option<String>,
@@ -75,7 +75,7 @@ impl EcdcMetadata {
 }
 
 pub fn validate_metadata(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    bundle_meta: &FrameBundleMetadata,
     metadata: &EcdcMetadata,
 ) -> Result<()> {
     if metadata.model_name != bundle_meta.model_name {
@@ -128,7 +128,7 @@ pub fn validate_metadata(
 }
 
 pub fn ecdc_chunk_layout_from_ms(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    bundle_meta: &FrameBundleMetadata,
     chunk_ms: Option<f64>,
 ) -> Result<EcdcChunkLayout> {
     if fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)?.is_some() {
@@ -184,7 +184,7 @@ pub fn ecdc_chunk_layout_from_ms(
 /// field from one ECDC header. Recognised fixed-context bundles preserve their
 /// private model-window/sample-domain split here.
 pub fn ecdc_chunk_layout_from_bundle(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    bundle_meta: &FrameBundleMetadata,
 ) -> Result<EcdcChunkLayout> {
     match fixed_context_samples(bundle_meta.segment_samples, bundle_meta.segment_stride)? {
         Some(_context) => Ok(EcdcChunkLayout {
@@ -199,7 +199,7 @@ pub fn ecdc_chunk_layout_from_bundle(
 }
 
 pub fn ecdc_chunk_layout_from_metadata(
-    _bundle_meta: &OnnxFrameBundleMetadata,
+    _bundle_meta: &FrameBundleMetadata,
     metadata: &EcdcMetadata,
 ) -> Result<EcdcChunkLayout> {
     // Each ECDC stream carries a single chunk spanning the whole audio, so the
@@ -216,7 +216,7 @@ pub fn ecdc_chunk_layout_from_metadata(
 }
 
 pub fn ecdc_chunk_layout_for_chunk_count(
-    bundle_meta: &OnnxFrameBundleMetadata,
+    bundle_meta: &FrameBundleMetadata,
     metadata: &EcdcMetadata,
     chunk_count: usize,
 ) -> Result<EcdcChunkLayout> {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn metadata_version_is_q8_only() {
-        let bundle = OnnxFrameBundleMetadata {
+        let bundle = FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz".into(),
             bandwidth_kbps: 12.0,
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn chunk_ms_uses_sample_rate_and_rounds_to_samples() {
-        let bundle = OnnxFrameBundleMetadata {
+        let bundle = FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz".into(),
             bandwidth_kbps: 12.0,
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn chunk_layout_from_bundle_preserves_fixed_context_geometry() {
-        let bundle = OnnxFrameBundleMetadata {
+        let bundle = FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz".into(),
             bandwidth_kbps: 12.0,
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn chunk_ms_preserves_fixed_model_geometry() {
-        let bundle = OnnxFrameBundleMetadata {
+        let bundle = FrameBundleMetadata {
             schema_version: 1,
             model_name: "encodec_48khz".into(),
             bandwidth_kbps: 12.0,

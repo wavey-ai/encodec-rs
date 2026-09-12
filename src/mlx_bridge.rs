@@ -17,7 +17,7 @@ use crate::ecdc::{
 use crate::ecdc::{encode_audio_view_to_dual_ecdc_with_options, DualEcdcEncodeResult};
 use crate::ecdc_presets::fixed_context_samples;
 use crate::format::{ecdc_chunk_layout_from_ms, segment_frame_length, segment_starts};
-use crate::metadata::OnnxFrameBundleMetadata;
+use crate::metadata::FrameBundleMetadata;
 use crate::portable_lm::PortableLmCodec;
 use crate::portable_lm::PortablePairedLmCodec;
 
@@ -241,7 +241,7 @@ pub struct EncodecRsMlxAudioResult {
 }
 
 struct CallbackFrameCodec {
-    metadata: OnnxFrameBundleMetadata,
+    metadata: FrameBundleMetadata,
     callbacks: EncodecRsMlxFrameCallbacks,
 }
 
@@ -251,7 +251,7 @@ impl CallbackFrameCodec {
         callbacks: EncodecRsMlxFrameCallbacks,
     ) -> Result<Self> {
         let metadata_path = bundle_dir.as_ref().join("bundle.json");
-        let metadata: OnnxFrameBundleMetadata = serde_json::from_str(
+        let metadata: FrameBundleMetadata = serde_json::from_str(
             &std::fs::read_to_string(&metadata_path)
                 .with_context(|| format!("failed to read {}", metadata_path.display()))?,
         )
@@ -264,7 +264,7 @@ impl CallbackFrameCodec {
 }
 
 impl FrameCodec for CallbackFrameCodec {
-    fn metadata(&self) -> &OnnxFrameBundleMetadata {
+    fn metadata(&self) -> &FrameBundleMetadata {
         &self.metadata
     }
 
