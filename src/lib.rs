@@ -3,6 +3,8 @@ pub mod arithmetic;
 #[cfg(feature = "ecdc")]
 pub mod binary;
 #[cfg(feature = "ecdc")]
+pub mod chunk_decode;
+#[cfg(feature = "ecdc")]
 pub mod ecdc;
 #[cfg(feature = "ecdc")]
 pub mod ecdc_presets;

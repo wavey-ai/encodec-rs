@@ -1,6 +1,6 @@
-use crate::arithmetic::{ArithmeticDecoder, ArithmeticEncoder, CdfScratch};
+use crate::arithmetic::{ArithmeticEncoder, CdfScratch};
 use crate::binary::{
-    read_chunk_payload, read_ecdc_header, read_exactly, write_chunk, write_ecdc_header,
+    read_ecdc_header, write_chunk, write_ecdc_header,
 };
 use crate::ecdc_presets::{
     bandwidth_preset_from_kbps, chunk_preset_from_ms, fixed_bundle_name,
@@ -10,8 +10,8 @@ use crate::entropy::{
     probability_columns_from_flat_logits, ProbabilityParameters, ProbabilityScratch,
 };
 use crate::format::{
-    ecdc_chunk_layout_for_chunk_count, ecdc_chunk_layout_from_metadata, ecdc_lm_frame_length,
-    segment_frame_length, segment_starts, validate_metadata, EcdcChunkLayout, EcdcMetadata,
+    ecdc_chunk_layout_from_metadata,
+    segment_frame_length, segment_starts, EcdcChunkLayout, EcdcMetadata,
     ARITHMETIC_TOTAL_RANGE_BITS, DEFAULT_FP_SCALE, DEFAULT_MIN_RANGE,
     QUANTIZED_LM_BITSTREAM_VERSION,
 };
@@ -23,21 +23,6 @@ use serde::Serialize;
 use std::io::Cursor;
 use wasm_bindgen::prelude::*;
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LmEcdcChunk {
-    offset: usize,
-    samples: usize,
-    frame_length: usize,
-    payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LmEcdcChunks {
-    metadata: EcdcMetadata,
-    chunks: Vec<LmEcdcChunk>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -545,53 +530,8 @@ pub fn lm_ecdc_chunk_from_frame(
 
 #[wasm_bindgen(js_name = lmEcdcDecodeChunks)]
 pub fn lm_ecdc_decode_chunks(bundle_json: &str, payload: &[u8]) -> Result<JsValue, JsValue> {
-    let meta = parse_bundle(bundle_json)?;
-    let mut reader = Cursor::new(payload);
-    let metadata: EcdcMetadata = read_ecdc_header(&mut reader).map_err(to_js_error)?;
-    validate_metadata(&meta, &metadata).map_err(to_js_error)?;
-    if !metadata.use_lm {
-        return Err(to_js_error("ECDC payload does not use LM coding"));
-    }
-
-    let mut raw_chunks = Vec::new();
-    while (reader.position() as usize) < payload.len() {
-        raw_chunks.push(read_chunk_payload(&mut reader, true).map_err(to_js_error)?);
-    }
-
-    let layout = ecdc_chunk_layout_for_chunk_count(&meta, &metadata, raw_chunks.len())
-        .map_err(to_js_error)?;
-    let context =
-        fixed_context_samples(meta.segment_samples, meta.segment_stride).map_err(to_js_error)?;
-    let mut chunks = Vec::new();
-    let starts = segment_starts(metadata.audio_length, layout.stride);
-    if starts.len() != raw_chunks.len() {
-        return Err(to_js_error(format!(
-            "LM ECDC payload has {} chunks, but metadata implies {} chunks",
-            raw_chunks.len(),
-            starts.len()
-        )));
-    }
-    for (offset, payload) in starts.into_iter().zip(raw_chunks) {
-        // `samples` is the logical owned length of this chunk, bounded by
-        // segment_stride; it must never include the private context
-        // samples that make up the rest of a fixed model window.
-        let samples = (metadata.audio_length - offset).min(layout.stride);
-        let frame_length = if context.is_some() {
-            metadata
-                .lm_frame_length
-                .filter(|value| *value > 0)
-                .unwrap_or(meta.frame_length)
-        } else {
-            ecdc_lm_frame_length(&metadata, samples, meta.segment_samples, meta.frame_length)
-        };
-        chunks.push(LmEcdcChunk {
-            offset,
-            samples,
-            frame_length,
-            payload,
-        });
-    }
-    to_js_value(&LmEcdcChunks { metadata, chunks })
+    let chunks = crate::chunk_decode::lm_ecdc_decode_chunks(bundle_json, payload).map_err(to_js_error)?;
+    to_js_value(&chunks)
 }
 
 #[wasm_bindgen]
@@ -934,148 +874,23 @@ fn validate_paired_lm_metadata(
 
 #[wasm_bindgen]
 pub struct QuantizedLmChunkDecoder {
-    meta: FrameBundleMetadata,
-    lm: QuantizedLm,
-    state: QuantizedLmState,
-    lm_window_frame_length: usize,
-    input_symbols: Vec<usize>,
-    decoder: ArithmeticDecoder,
-    probability_scratch: ProbabilityScratch,
-    cdf_scratch: CdfScratch,
-    scale: f32,
-    pulled_steps: usize,
+    inner: crate::chunk_decode::QuantizedLmChunkDecoder,
 }
 
 #[wasm_bindgen]
 impl QuantizedLmChunkDecoder {
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        bundle_json: &str,
-        weights: &[u8],
-        payload: &[u8],
-    ) -> Result<QuantizedLmChunkDecoder, JsValue> {
-        let meta = parse_bundle(bundle_json)?;
-        validate_lm_metadata(&meta).map_err(to_js_error)?;
-        let weights = QuantizedLmWeights::from_bytes(weights).map_err(to_js_error)?;
-        weights.validate_for_metadata(&meta).map_err(to_js_error)?;
-        let lm_window_frame_length = weights.frame_length.max(1);
-        let lm = QuantizedLm::new(weights);
-        let state = lm.initial_state();
-        let mut cursor = Cursor::new(payload);
-        let scale = if meta.normalize {
-            let bytes = read_exactly(&mut cursor, 4).map_err(to_js_error)?;
-            f32::from_be_bytes(bytes.try_into().expect("slice length"))
-        } else {
-            1.0
-        };
-        let remaining = payload.len().saturating_sub(cursor.position() as usize);
-        let encoded = read_exactly(&mut cursor, remaining).map_err(to_js_error)?;
-        Ok(Self {
-            input_symbols: vec![0; meta.num_codebooks],
-            meta,
-            lm,
-            state,
-            lm_window_frame_length,
-            decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)
-                .map_err(to_js_error)?,
-            probability_scratch: ProbabilityScratch::default(),
-            cdf_scratch: CdfScratch::default(),
-            scale,
-            pulled_steps: 0,
-        })
+    pub fn new(bundle_json: &str, weights: &[u8], payload: &[u8]) -> Result<QuantizedLmChunkDecoder, JsValue> {
+        Ok(Self { inner: crate::chunk_decode::QuantizedLmChunkDecoder::new(bundle_json, weights, payload).map_err(to_js_error)? })
     }
-
-    pub fn bitstream_version(&self) -> u8 {
-        QUANTIZED_LM_BITSTREAM_VERSION
-    }
-
+    pub fn bitstream_version(&self) -> u8 { self.inner.bitstream_version() }
     #[wasm_bindgen(js_name = lmWindowFrameLength)]
-    pub fn lm_window_frame_length(&self) -> usize {
-        self.lm_window_frame_length
-    }
-
-    pub fn scale(&self) -> f32 {
-        self.scale
-    }
-
-    pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> {
-        let mut symbols = vec![0; self.meta.num_codebooks];
-        self.pull_symbols_into(&mut symbols)?;
-        symbols
-            .into_iter()
-            .map(|symbol| {
-                u16::try_from(symbol)
-                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))
-            })
-            .collect()
-    }
-
+    pub fn lm_window_frame_length(&self) -> usize { self.inner.lm_window_frame_length() }
+    pub fn scale(&self) -> f32 { self.inner.scale() }
+    pub fn pull(&mut self) -> Result<Vec<u16>, JsValue> { self.inner.pull().map_err(to_js_error) }
     #[wasm_bindgen(js_name = pullAll)]
     pub fn pull_all(&mut self, frame_length: usize) -> Result<Vec<u16>, JsValue> {
-        let remaining = self
-            .lm_window_frame_length
-            .saturating_sub(self.pulled_steps);
-        if frame_length > remaining {
-            return Err(to_js_error(format!(
-                "requested {frame_length} LM steps with only {remaining} remaining",
-            )));
-        }
-
-        let codebooks = self.meta.num_codebooks;
-        let mut codes = vec![0_u16; codebooks * frame_length];
-        let mut symbols = vec![0_usize; codebooks];
-        for step in 0..frame_length {
-            self.pull_symbols_into(&mut symbols)?;
-            for (codebook, symbol) in symbols.iter().copied().enumerate() {
-                codes[codebook * frame_length + step] = u16::try_from(symbol)
-                    .map_err(|_| to_js_error(format!("LM symbol {symbol} does not fit u16")))?;
-            }
-        }
-        Ok(codes)
-    }
-}
-
-impl QuantizedLmChunkDecoder {
-    fn pull_symbols_into(&mut self, symbols: &mut [usize]) -> Result<(), JsValue> {
-        if self.pulled_steps >= self.lm_window_frame_length {
-            return Err(to_js_error(format!(
-                "chunk exceeds LM positional capacity {}",
-                self.lm_window_frame_length
-            )));
-        }
-        let logits = self
-            .lm
-            .forward_step_borrowed(&mut self.state, &self.input_symbols)
-            .map_err(to_js_error)?;
-        let pdf = probability_columns_from_flat_logits(
-            logits,
-            self.meta.lm_cardinality(),
-            self.meta.num_codebooks,
-            1,
-            ProbabilityParameters {
-                tau: 1.0,
-                logit_step: self.meta.lm_entropy_logit_step(),
-                fp_scale: DEFAULT_FP_SCALE,
-            },
-            &mut self.probability_scratch,
-        )
-        .map_err(to_js_error)?;
-        self.decoder
-            .pull_valid_pdf_symbols_into_with_scratch(
-                pdf,
-                self.meta.lm_cardinality(),
-                self.meta.num_codebooks,
-                DEFAULT_FP_SCALE,
-                DEFAULT_MIN_RANGE,
-                &mut self.cdf_scratch,
-                symbols,
-            )
-            .map_err(to_js_error)?;
-        for (dst, symbol) in self.input_symbols.iter_mut().zip(symbols.iter().copied()) {
-            *dst = symbol + 1;
-        }
-        self.pulled_steps += 1;
-        Ok(())
+        self.inner.pull_all(frame_length).map_err(to_js_error)
     }
 }
 
@@ -1329,7 +1144,9 @@ fn to_js_error(error: impl std::fmt::Display) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binary::read_chunk_payload;
     use crate::ecdc::encode_lm_chunk_payload;
+    use crate::format::ecdc_chunk_layout_for_chunk_count;
     use crate::portable_lm::PortableLmCodec;
     use ndarray::{Array2, Array3};
     use std::fs;
