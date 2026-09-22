@@ -836,6 +836,36 @@ impl QuantizedLmPairedChunkEncoder {
         Ok(())
     }
 
+    /// Accepts the frame encoder's codebook-major tensor and feeds every LM
+    /// timestep in Rust. JavaScript should not own the codec's tensor layout.
+    #[wasm_bindgen(js_name = pushFrameCodes)]
+    pub fn push_frame_codes(&mut self, codes: &[u16], frame_length: usize) -> Result<(), JsValue> {
+        if frame_length == 0 || frame_length > self.primary_meta.frame_length {
+            return Err(to_js_error(format!(
+                "paired ECDC frame length {frame_length} is outside 1..={}",
+                self.primary_meta.frame_length
+            )));
+        }
+        let codebooks = self.primary_meta.num_codebooks;
+        let expected = codebooks
+            .checked_mul(frame_length)
+            .ok_or_else(|| to_js_error("paired ECDC code shape overflows usize"))?;
+        if codes.len() != expected {
+            return Err(to_js_error(format!(
+                "paired ECDC code length {} does not match {codebooks} codebooks * {frame_length} frames",
+                codes.len()
+            )));
+        }
+        let mut symbols = vec![0_u16; codebooks];
+        for step in 0..frame_length {
+            for book in 0..codebooks {
+                symbols[book] = codes[book * frame_length + step];
+            }
+            self.push(&symbols)?;
+        }
+        Ok(())
+    }
+
     pub fn finish(&mut self) -> Result<JsValue, JsValue> {
         let mut primary = std::mem::take(&mut self.primary_prefix);
         primary.extend_from_slice(&self.primary_encoder.finish());
