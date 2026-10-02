@@ -82,11 +82,51 @@ pub fn lm_ecdc_decode_chunks(
     Ok(LmEcdcChunks { metadata, chunks })
 }
 
-pub struct QuantizedLmChunkDecoder {
+/// The parsed LM of one model bundle: the metadata, the weights and their
+/// scratch space. One model decodes any number of chunks, so a host that
+/// decodes a stream parses the bundle and the weights once.
+pub struct QuantizedLmModel {
     meta: FrameBundleMetadata,
     lm: QuantizedLm,
-    state: QuantizedLmState,
     lm_window_frame_length: usize,
+}
+
+impl QuantizedLmModel {
+    pub fn new(bundle_json: &str, weights: &[u8]) -> Result<QuantizedLmModel, anyhow::Error> {
+        let meta = parse_bundle(bundle_json)?;
+        validate_lm_metadata(&meta)?;
+        let weights = QuantizedLmWeights::from_bytes(weights)?;
+        weights.validate_for_metadata(&meta)?;
+        let lm_window_frame_length = weights.frame_length.max(1);
+        Ok(Self {
+            meta,
+            lm: QuantizedLm::new(weights),
+            lm_window_frame_length,
+        })
+    }
+
+    pub fn lm_window_frame_length(&self) -> usize {
+        self.lm_window_frame_length
+    }
+
+    /// Decodes `frame_length` steps of one chunk payload: the chunk scale and
+    /// the codes, codebook-major. The result is the result of a new
+    /// `QuantizedLmChunkDecoder` for the payload.
+    pub fn decode_chunk(
+        &mut self,
+        payload: &[u8],
+        frame_length: usize,
+    ) -> Result<(f32, Vec<u16>), anyhow::Error> {
+        let mut cursor = ChunkCursor::new(self, payload)?;
+        let codes = cursor.pull_all(self, frame_length)?;
+        Ok((cursor.scale, codes))
+    }
+}
+
+/// The per-chunk decoding state: the LM state, the arithmetic decoder and
+/// their scratch space.
+struct ChunkCursor {
+    state: QuantizedLmState,
     input_symbols: Vec<usize>,
     decoder: ArithmeticDecoder,
     probability_scratch: ProbabilityScratch,
@@ -95,21 +135,11 @@ pub struct QuantizedLmChunkDecoder {
     pulled_steps: usize,
 }
 
-impl QuantizedLmChunkDecoder {
-    pub fn new(
-        bundle_json: &str,
-        weights: &[u8],
-        payload: &[u8],
-    ) -> Result<QuantizedLmChunkDecoder, anyhow::Error> {
-        let meta = parse_bundle(bundle_json)?;
-        validate_lm_metadata(&meta)?;
-        let weights = QuantizedLmWeights::from_bytes(weights)?;
-        weights.validate_for_metadata(&meta)?;
-        let lm_window_frame_length = weights.frame_length.max(1);
-        let lm = QuantizedLm::new(weights);
-        let state = lm.initial_state();
+impl ChunkCursor {
+    fn new(model: &QuantizedLmModel, payload: &[u8]) -> Result<ChunkCursor, anyhow::Error> {
+        let state = model.lm.initial_state();
         let mut cursor = Cursor::new(payload);
-        let scale = if meta.normalize {
+        let scale = if model.meta.normalize {
             let bytes = read_exactly(&mut cursor, 4)?;
             f32::from_be_bytes(bytes.try_into().expect("slice length"))
         } else {
@@ -118,11 +148,8 @@ impl QuantizedLmChunkDecoder {
         let remaining = payload.len().saturating_sub(cursor.position() as usize);
         let encoded = read_exactly(&mut cursor, remaining)?;
         Ok(Self {
-            input_symbols: vec![0; meta.num_codebooks],
-            meta,
-            lm,
+            input_symbols: vec![0; model.meta.num_codebooks],
             state,
-            lm_window_frame_length,
             decoder: ArithmeticDecoder::new(encoded, ARITHMETIC_TOTAL_RANGE_BITS)?,
             probability_scratch: ProbabilityScratch::default(),
             cdf_scratch: CdfScratch::default(),
@@ -131,21 +158,9 @@ impl QuantizedLmChunkDecoder {
         })
     }
 
-    pub fn bitstream_version(&self) -> u8 {
-        QUANTIZED_LM_BITSTREAM_VERSION
-    }
-
-    pub fn lm_window_frame_length(&self) -> usize {
-        self.lm_window_frame_length
-    }
-
-    pub fn scale(&self) -> f32 {
-        self.scale
-    }
-
-    pub fn pull(&mut self) -> Result<Vec<u16>, anyhow::Error> {
-        let mut symbols = vec![0; self.meta.num_codebooks];
-        self.pull_symbols_into(&mut symbols)?;
+    fn pull(&mut self, model: &mut QuantizedLmModel) -> Result<Vec<u16>, anyhow::Error> {
+        let mut symbols = vec![0; model.meta.num_codebooks];
+        self.pull_symbols_into(model, &mut symbols)?;
         symbols
             .into_iter()
             .map(|symbol| {
@@ -155,8 +170,12 @@ impl QuantizedLmChunkDecoder {
             .collect()
     }
 
-    pub fn pull_all(&mut self, frame_length: usize) -> Result<Vec<u16>, anyhow::Error> {
-        let remaining = self
+    fn pull_all(
+        &mut self,
+        model: &mut QuantizedLmModel,
+        frame_length: usize,
+    ) -> Result<Vec<u16>, anyhow::Error> {
+        let remaining = model
             .lm_window_frame_length
             .saturating_sub(self.pulled_steps);
         if frame_length > remaining {
@@ -165,11 +184,11 @@ impl QuantizedLmChunkDecoder {
             )));
         }
 
-        let codebooks = self.meta.num_codebooks;
+        let codebooks = model.meta.num_codebooks;
         let mut codes = vec![0_u16; codebooks * frame_length];
         let mut symbols = vec![0_usize; codebooks];
         for step in 0..frame_length {
-            self.pull_symbols_into(&mut symbols)?;
+            self.pull_symbols_into(model, &mut symbols)?;
             for (codebook, symbol) in symbols.iter().copied().enumerate() {
                 codes[codebook * frame_length + step] = u16::try_from(symbol)
                     .map_err(|_| anyhow::anyhow!(format!("LM symbol {symbol} does not fit u16")))?;
@@ -177,35 +196,37 @@ impl QuantizedLmChunkDecoder {
         }
         Ok(codes)
     }
-}
 
-impl QuantizedLmChunkDecoder {
-    fn pull_symbols_into(&mut self, symbols: &mut [usize]) -> Result<(), anyhow::Error> {
-        if self.pulled_steps >= self.lm_window_frame_length {
+    fn pull_symbols_into(
+        &mut self,
+        model: &mut QuantizedLmModel,
+        symbols: &mut [usize],
+    ) -> Result<(), anyhow::Error> {
+        if self.pulled_steps >= model.lm_window_frame_length {
             return Err(anyhow::anyhow!(format!(
                 "chunk exceeds LM positional capacity {}",
-                self.lm_window_frame_length
+                model.lm_window_frame_length
             )));
         }
-        let logits = self
+        let logits = model
             .lm
             .forward_step_borrowed(&mut self.state, &self.input_symbols)?;
         let pdf = probability_columns_from_flat_logits(
             logits,
-            self.meta.lm_cardinality(),
-            self.meta.num_codebooks,
+            model.meta.lm_cardinality(),
+            model.meta.num_codebooks,
             1,
             ProbabilityParameters {
                 tau: 1.0,
-                logit_step: self.meta.lm_entropy_logit_step(),
+                logit_step: model.meta.lm_entropy_logit_step(),
                 fp_scale: DEFAULT_FP_SCALE,
             },
             &mut self.probability_scratch,
         )?;
         self.decoder.pull_valid_pdf_symbols_into_with_scratch(
             pdf,
-            self.meta.lm_cardinality(),
-            self.meta.num_codebooks,
+            model.meta.lm_cardinality(),
+            model.meta.num_codebooks,
             DEFAULT_FP_SCALE,
             DEFAULT_MIN_RANGE,
             &mut self.cdf_scratch,
@@ -219,6 +240,44 @@ impl QuantizedLmChunkDecoder {
     }
 }
 
+/// Decodes one chunk payload step by step with its own copy of the model.
+pub struct QuantizedLmChunkDecoder {
+    model: QuantizedLmModel,
+    cursor: ChunkCursor,
+}
+
+impl QuantizedLmChunkDecoder {
+    pub fn new(
+        bundle_json: &str,
+        weights: &[u8],
+        payload: &[u8],
+    ) -> Result<QuantizedLmChunkDecoder, anyhow::Error> {
+        let model = QuantizedLmModel::new(bundle_json, weights)?;
+        let cursor = ChunkCursor::new(&model, payload)?;
+        Ok(Self { model, cursor })
+    }
+
+    pub fn bitstream_version(&self) -> u8 {
+        QUANTIZED_LM_BITSTREAM_VERSION
+    }
+
+    pub fn lm_window_frame_length(&self) -> usize {
+        self.model.lm_window_frame_length
+    }
+
+    pub fn scale(&self) -> f32 {
+        self.cursor.scale
+    }
+
+    pub fn pull(&mut self) -> Result<Vec<u16>, anyhow::Error> {
+        self.cursor.pull(&mut self.model)
+    }
+
+    pub fn pull_all(&mut self, frame_length: usize) -> Result<Vec<u16>, anyhow::Error> {
+        self.cursor.pull_all(&mut self.model, frame_length)
+    }
+}
+
 fn parse_bundle(bundle_json: &str) -> anyhow::Result<FrameBundleMetadata> {
     let metadata: FrameBundleMetadata = serde_json::from_str(bundle_json)?;
     metadata.validate()?;
@@ -226,4 +285,69 @@ fn parse_bundle(bundle_json: &str) -> anyhow::Result<FrameBundleMetadata> {
 }
 fn validate_lm_metadata(meta: &FrameBundleMetadata) -> anyhow::Result<()> {
     meta.validate_lm()
+}
+
+#[cfg(test)]
+mod model_reuse_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// One model decoding a run of chunks gives each chunk the scale, codes
+    /// and errors of a new chunk decoder, including after a chunk that
+    /// fails partway.
+    #[test]
+    fn reused_model_matches_new_decoder_per_chunk() {
+        let bundle_dir = Path::new("onnx-bundles/encodec_48khz_12kbps_1333ms");
+        let bundle_path = bundle_dir.join("bundle.json");
+        let weights_path = bundle_dir.join("lm_weights_q8.bin");
+        if !bundle_path.exists() || !weights_path.exists() {
+            eprintln!("skipping model reuse test; fixed q8 bundle is unavailable");
+            return;
+        }
+        let bundle_json = std::fs::read_to_string(bundle_path).unwrap();
+        let weights = std::fs::read(weights_path).unwrap();
+
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut model = QuantizedLmModel::new(&bundle_json, &weights).unwrap();
+        let window = model.lm_window_frame_length();
+        let mut decoded = 0;
+        for round in 0..12 {
+            let length = match round % 4 {
+                0 => 3,
+                1 => 64,
+                2 => 600,
+                _ => (next() % 2_000) as usize,
+            };
+            let payload: Vec<u8> = (0..length).map(|_| next() as u8).collect();
+            let steps = match round % 3 {
+                0 => 4,
+                1 => window.min(20),
+                _ => window + 1,
+            };
+            let reused = model
+                .decode_chunk(&payload, steps)
+                .map_err(|e| e.to_string());
+            let fresh = QuantizedLmChunkDecoder::new(&bundle_json, &weights, &payload)
+                .and_then(|mut decoder| {
+                    let scale = decoder.scale();
+                    decoder.pull_all(steps).map(|codes| (scale, codes))
+                })
+                .map_err(|e| e.to_string());
+            let view = |result: &Result<(f32, Vec<u16>), String>| {
+                result
+                    .as_ref()
+                    .map(|(scale, codes)| (scale.to_bits(), codes.clone()))
+                    .map_err(Clone::clone)
+            };
+            assert_eq!(view(&reused), view(&fresh), "round {round}");
+            decoded += usize::from(reused.is_ok());
+        }
+        assert!(decoded >= 4, "{decoded} chunks decoded");
+    }
 }
